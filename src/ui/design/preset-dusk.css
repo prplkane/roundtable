@@ -1,0 +1,91 @@
+/* Signature preset: Dusk, version 1.
+   Load after tokens.css. The Ink & paper structure (warm paper, IBM Plex, square tags, LED
+   status lights, hard shadows) with purple where Ink & paper has blue: aubergine chrome, a plum
+   action colour, orchid (the Dusk accent) for brand marks. Green appears only for success.
+   Light theme "Plum paper", dark theme "Night plum". First used by Roundtable. All text pairs
+   checked with design_lint.py --contrast at 4.5:1 or better; border-strong at 3:1 (marks). */
+
+:root {
+  --knob-accent: #c79ad0;
+  --knob-accent-manual: #7d4a8a;
+}
+
+:root,
+:root[data-theme="paper"],
+:root[data-theme="manual"] {
+  color-scheme: light;
+  --color-bg: #f6f2ea;
+  --color-surface: #fdfbf7;
+  --color-surface-raised: #fffdfa;
+  --color-border: #ddd3d6;
+  --color-border-strong: #8c7f8f;
+  --color-text: #241c2b;
+  --color-text-muted: #645a6c;
+  --color-accent: var(--knob-accent-manual);
+  --color-logo-ink: #2b1d38;
+  --color-action: #5b3478;
+  --color-on-action: #ffffff;
+  --color-selection: #ece3f0;
+  --color-ok: #3f6b3a;
+  --color-warn: #8f5a00;
+  --color-danger: #a8402d;
+  --color-info: #5b3478;
+  --color-focus: #5b3478;
+  --color-chrome: #2b1d38;
+  --color-chrome-text: #f1eaf4;
+  --color-chrome-muted: #c3b3cc;
+  --color-chrome-accent: #c79ad0;
+}
+
+:root[data-theme="night"],
+:root[data-theme="terminal"] {
+  color-scheme: dark;
+  --color-bg: #16111c;
+  --color-surface: #1d1724;
+  --color-surface-raised: #251d2e;
+  --color-border: #352a40;
+  --color-border-strong: #6e5d7d;
+  --color-text: #ece5f1;
+  --color-text-muted: #a597b0;
+  --color-accent: var(--knob-accent);
+  --color-logo-ink: #0f0b14;
+  --color-action: #c9a3e6;
+  --color-on-action: #16111c;
+  --color-selection: #2a2035;
+  --color-ok: #8fbf86;
+  --color-warn: #d9a45a;
+  --color-danger: #e58a78;
+  --color-info: #c9a3e6;
+  --color-focus: #c9a3e6;
+  --color-chrome: #0f0b14;
+  --color-chrome-text: #ece5f1;
+  --color-chrome-muted: #a597b0;
+  --color-chrome-accent: #c79ad0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    color-scheme: dark;
+    --color-bg: #16111c;
+    --color-surface: #1d1724;
+    --color-surface-raised: #251d2e;
+    --color-border: #352a40;
+    --color-border-strong: #6e5d7d;
+    --color-text: #ece5f1;
+    --color-text-muted: #a597b0;
+    --color-accent: var(--knob-accent);
+    --color-logo-ink: #0f0b14;
+    --color-action: #c9a3e6;
+    --color-on-action: #16111c;
+    --color-selection: #2a2035;
+    --color-ok: #8fbf86;
+    --color-warn: #d9a45a;
+    --color-danger: #e58a78;
+    --color-info: #c9a3e6;
+    --color-focus: #c9a3e6;
+    --color-chrome: #0f0b14;
+    --color-chrome-text: #ece5f1;
+    --color-chrome-muted: #a597b0;
+    --color-chrome-accent: #c79ad0;
+  }
+}

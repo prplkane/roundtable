@@ -1,0 +1,7 @@
+# The package has no runtime dependencies; the workflow's actions are the only thing to keep current.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

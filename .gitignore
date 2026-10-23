@@ -1,0 +1,5 @@
+node_modules/
+debates/
+debates-fake/
+*.log
+.DS_Store
