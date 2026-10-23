@@ -1,0 +1,51 @@
+{
+  "name": "@prplkane/roundtable",
+  "version": "0.3.0",
+  "description": "Bounded debates between CLI coding agents on their subscriptions, with the human kept in a seat.",
+  "keywords": [
+    "claude",
+    "codex",
+    "antigravity",
+    "cli",
+    "debate",
+    "decision",
+    "multi-agent",
+    "subscription"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "roundtable": "src/cli.js"
+  },
+  "files": [
+    "src",
+    "scripts",
+    "docs/workflow.md",
+    "README.md",
+    "SECURITY.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "start": "node src/server.js",
+    "fake": "node src/server.js --fake",
+    "test": "node --test test/*.test.js",
+    "doctor": "node src/doctor.js",
+    "export": "node scripts/export.mjs",
+    "debate": "node scripts/run-debate.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/prplkane/roundtable.git"
+  },
+  "homepage": "https://github.com/prplkane/roundtable#readme",
+  "bugs": {
+    "url": "https://github.com/prplkane/roundtable/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

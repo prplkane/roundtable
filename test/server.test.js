@@ -1,0 +1,370 @@
+// End to end over the real server with the scripted runner: no CLI is needed. Starts
+// src/server.js --fake on a free port, posts a three-seat debate, reads the SSE stream to
+// `done`, answers every gate through the API, then checks the transcript on disk.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import net from 'node:net';
+import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
+import { rollup } from '../src/engine.js';
+import { decisionRecord } from '../src/export.js';
+import os from 'node:os';
+import path from 'node:path';
+
+const freePort = () => new Promise((resolve, reject) => {
+  const srv = net.createServer();
+  srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); });
+  srv.on('error', reject);
+});
+
+async function startFakeServer(debatesDir) {
+  const port = await freePort();
+  const child = spawn(process.execPath, ['src/server.js', '--fake'], { env: { ...process.env, PORT: String(port), ROUNDTABLE_DEBATES_DIR: debatesDir }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  let log = '';
+  child.stdout.setEncoding('utf8').on('data', (d) => { log += d; });
+  child.stderr.setEncoding('utf8').on('data', (d) => { log += d; });
+  const t0 = Date.now();
+  while (!/roundtable \(fake seats\)/.test(log)) {
+    if (Date.now() - t0 > 15_000) throw new Error(`server did not start: ${log}`);
+    if (child.exitCode != null) throw new Error(`server exited ${child.exitCode}: ${log}`);
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  const token = /token ([0-9a-f]{32})/.exec(log)?.[1];
+  return { port, child, log: () => log, base: `http://127.0.0.1:${port}`, token };
+}
+
+// Read `data:` events from an SSE response until `until(event)` is true (or the stream ends).
+async function readEvents(res, until, onEvent) {
+  const events = [];
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf('\n\n')) >= 0) {
+      const chunk = buf.slice(0, i); buf = buf.slice(i + 2);
+      const line = chunk.split('\n').find((l) => l.startsWith('data: '));
+      if (!line) continue;
+      const e = JSON.parse(line.slice(6));
+      events.push(e);
+      await onEvent?.(e);
+      if (until(e)) { reader.cancel().catch(() => {}); return events; }
+    }
+  }
+  return events;
+}
+
+test('fake server end to end: three seats, gates answered through the API, transcript and strip events on disk and on the wire', { timeout: 90_000 }, async () => {
+  const debatesDir = mkdtempSync(path.join(os.tmpdir(), 'rt-debates-'));
+  const srv = await startFakeServer(debatesDir);
+  try {
+    const body = {
+      fieldNotes: { decision: 'Integration: ship the new checkout?', options: ['Ship now', 'Wait a sprint'], constraints: 'two devs' },
+      seats: [{ vendor: 'claude', lens: 'risk' }, { vendor: 'codex', lens: 'cost', mood: 'builder' }, { vendor: 'agy', lens: 'customer' }],
+      chairman: { vendor: 'claude' },
+      options: { critiqueRounds: 1, autoContinueMs: 400 },
+    };
+    const post = async (p, b) => { const r = await fetch(`${srv.base}${p}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token }, body: JSON.stringify(b) }); return { ok: r.ok, body: await r.json() }; };
+    const seatsApi = await (await fetch(`${srv.base}/api/seats`)).json();
+    assert.equal(seatsApi.vendors.length, 4); // three CLIs and the API endpoint vendor
+    assert.deepEqual(seatsApi.vendors.map((v) => v.kind), ['cli', 'cli', 'cli', 'api'], 'every vendor says whether it is a CLI or an API');
+    assert.equal(seatsApi.vendors.find((v) => v.vendor === 'api').profiles, true, 'API pools are per endpoint host');
+    assert.equal(seatsApi.defaults.memory, 'stateless');
+    const started = await post('/api/debates', body);
+    assert.ok(started.ok, JSON.stringify(started.body));
+    const slug = started.body.slug;
+    assert.match(slug, /^\d{4}-\d{2}-\d{2}-integration-ship-the-new-checkout$/);
+
+    const gates = [];
+    const stream = await fetch(`${srv.base}/api/debates/${slug}/events`);
+    assert.equal(stream.headers.get('content-type'), 'text/event-stream');
+    const events = await readEvents(stream, (e) => e.type === 'done' || e.type === 'error', async (e) => {
+      if (e.type === 'gate') {
+        gates.push(e);
+        // round 0 gets a note; later gates (a seat's question, or the countdown) continue
+        const r = await post(`/api/debates/${slug}/continue`, { message: e.round === 0 ? 'Mind the deadline' : '' });
+        assert.equal(r.body.ok, true);
+      }
+    });
+    assert.equal(events.at(-1).type, 'done', srv.log());
+    assert.equal(gates[0].round, 0);
+    assert.equal(gates[0].mode, 'blocking');
+
+    const types = events.map((e) => e.type);
+    assert.equal(events.find((e) => e.type === 'started').seats.length, 3);
+    assert.equal(events.filter((e) => e.type === 'reply').length, 6, 'three seats, two rounds');
+    // every reply names its attempt; the attempt carries the usage
+    const attemptsLive = events.filter((e) => e.type === 'attempt');
+    assert.ok(events.filter((e) => e.type === 'reply').every((e) => e.usage === undefined && attemptsLive.some((a) => a.attemptId === e.attemptId && a.usage.input > 0)), 'every reply names an attempt with usage');
+    assert.ok(attemptsLive.some((a) => a.kind === 'reprompt'), 'the fake agy seat is re-prompted in round 0');
+    assert.ok(events.some((e) => e.type === 'seat-state' && e.state === 'thinking'));
+    assert.ok(events.some((e) => e.type === 'seat-state' && e.state === 'replied'));
+    assert.ok(events.some((e) => e.type === 'round-done' && e.positions), 'positions ride on round-done');
+    assert.ok(events.some((e) => e.type === 'human' && e.text === 'Mind the deadline'));
+    assert.ok(types.includes('quota'), 'the fake quota reaches the strip');
+    // codex is read at boot and after each reply, so its round 0 is measured; claude's first
+    // reading arrives with its first reply, so its round 1 is the first measured one
+    const measured = events.filter((e) => e.type === 'calibration' && e.round != null && e.tokens > 0).map((e) => `${e.vendor}:${e.round}`);
+    assert.ok(measured.includes('codex:0'), `rounds were measured against the fake windows: ${measured}`);
+    assert.ok(measured.includes('claude:1'), `claude's second round is measured: ${measured}`);
+    assert.ok(types.includes('stopped'));
+    assert.ok(types.includes('verdict'));
+    assert.ok(events.find((e) => e.type === 'verdict').text.includes('RECOMMENDATION'));
+
+    // the transcript on disk
+    const file = path.join(debatesDir, slug, 'transcript.jsonl');
+    assert.ok(existsSync(file));
+    const rows = readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const head = rows[0];
+    assert.equal(head.type, 'field-notes');
+    assert.equal(head.schemaVersion, 3);
+    assert.equal(head.fake, true, 'the fake server marks its head row');
+    assert.equal(head.seats.length, 3);
+    assert.equal(head.options.memory, 'stateless');
+    const replies = rows.filter((r) => r.type === 'reply');
+    assert.equal(replies.length, 6);
+    assert.ok(replies.every((r) => r.fresh === true && r.sessionId && r.state), 'stateless rows: fresh, with the session the runner reported and a state');
+    assert.ok(rows.some((r) => r.type === 'stop'));
+    assert.ok(rows.some((r) => r.type === 'verdict' && r.text));
+    assert.ok(existsSync(path.join(debatesDir, slug, 'verdict.md')));
+    assert.ok(existsSync(path.join(debatesDir, slug, 'field-notes.md')));
+    assert.ok(existsSync(path.join(debatesDir, '_calibration.fake.json')), 'the fake board measures into its own file');
+    assert.ok(!existsSync(path.join(debatesDir, '_calibration.json')));
+
+    // a second board connecting after the fact replays everything, ending in done
+    const again = await fetch(`${srv.base}/api/debates/${slug}/events`);
+    const replay = await readEvents(again, (e) => e.type === 'done');
+    assert.equal(replay[0].type, 'quota');
+    assert.ok(replay.some((e) => e.type === 'started'));
+    assert.equal(replay.filter((e) => e.type === 'reply').length, 6);
+    // one ledger, three readers: the live board, a replaying board, and the transcript (which the
+    // decision record reads) all reconcile exactly, re-prompt included
+    const live = rollup(events), replayed = rollup(replay), disk = rollup(rows);
+    for (const k of ['input', 'cacheRead', 'cacheWrite', 'output']) {
+      assert.equal(live.total[k], disk.total[k], `live = transcript: ${k}`);
+      assert.equal(replayed.total[k], disk.total[k], `replay = transcript: ${k}`);
+    }
+    assert.equal(rows.filter((r) => r.type === 'attempt').length, attemptsLive.length, 'one attempt row per call');
+    const record = decisionRecord(rows, slug).markdown;
+    assert.ok(record.includes(`| **debate** | ${disk.total.input.toLocaleString('en-US')} |`), 'the record total is the transcript total');
+    // and a stop on a finished debate is refused
+    const refused = await post(`/api/debates/${slug}/stop`, {});
+    assert.equal(refused.ok, false);
+  } finally {
+    srv.child.kill();
+  }
+});
+
+test('local API boundary: token, Host, Origin, method, content type and size are all enforced', { timeout: 30_000 }, async () => {
+  const debatesDir = mkdtempSync(path.join(os.tmpdir(), 'rt-debates-'));
+  const srv = await startFakeServer(debatesDir);
+  try {
+    assert.match(srv.token || '', /^[0-9a-f]{32}$/, 'the startup line prints the launch token');
+    const body = JSON.stringify({ fieldNotes: { decision: 'Boundary?', options: ['A', 'B'] }, seats: [{ vendor: 'claude', lens: 'one' }, { vendor: 'codex', lens: 'two' }], chairman: { vendor: 'claude' } });
+    const json = { 'content-type': 'application/json' };
+    const call = (p, init = {}) => fetch(`${srv.base}${p}`, { method: 'POST', body, ...init, headers: { ...json, 'x-roundtable-token': srv.token, ...(init.headers || {}) } }).then((r) => r.status);
+    assert.equal(await call('/api/debates', { headers: { 'x-roundtable-token': '' } }), 401, 'no token');
+    assert.equal(await call('/api/debates', { headers: { 'x-roundtable-token': 'f'.repeat(32) } }), 401, 'wrong token');
+    assert.equal(await call('/api/debates', { headers: { origin: 'https://evil.example' } }), 403, 'foreign Origin');
+    assert.equal(await call('/api/debates', { headers: { 'content-type': 'text/plain' } }), 415, 'text/plain');
+    assert.equal(await call('/api/debates', { body: 'x'.repeat(300 * 1024) }), 413, 'over the body limit');
+    assert.equal(await fetch(`${srv.base}/api/debates/x/continue`).then((r) => r.status), 405, 'GET on a mutation route');
+    // a DNS-rebound name reaches the socket with a foreign Host header
+    const http = await import('node:http');
+    const hostStatus = await new Promise((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port: srv.port, path: '/api/seats', headers: { host: `rebound.example:${srv.port}` } }, (res) => { res.resume(); resolve(res.statusCode); });
+      req.on('error', reject); req.end();
+    });
+    assert.equal(hostStatus, 403, 'bad Host');
+    // a streamed body with no content-length is cut off at the limit too
+    const streamed = await new Promise((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port: srv.port, path: '/api/debates', method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token, 'transfer-encoding': 'chunked' } }, (res) => { res.resume(); resolve(res.statusCode); });
+      req.on('error', reject);
+      for (let i = 0; i < 40; i++) req.write('x'.repeat(8 * 1024));
+      req.end();
+    });
+    assert.equal(streamed, 413, 'streamed body over the limit');
+    // the page carries the token; the same request with it is accepted
+    const page = await fetch(`${srv.base}/`).then((r) => r.text());
+    assert.ok(page.includes(`content="${srv.token}"`), 'the served page carries the token');
+    assert.equal(await call('/api/debates', { headers: { origin: srv.base } }), 200, 'same-origin with the token');
+  } finally {
+    srv.child.kill();
+  }
+});
+
+test('after a restart, a debate whose verdict was skipped gets one through /synthesize: only the chairman runs', { timeout: 60_000 }, async () => {
+  const { mkdirSync, writeFileSync } = await import('node:fs');
+  const debatesDir = mkdtempSync(path.join(os.tmpdir(), 'rt-debates-'));
+  const slug = '2026-10-20-synthesize-after-restart';
+  const seats = [{ id: 'seat-0', vendor: 'claude', lens: 'risk', colour: 'rust', index: 0 }, { id: 'seat-1', vendor: 'codex', lens: 'cost', colour: 'olive', index: 1 }];
+  const reply = (seat, stance) => ({ type: 'reply', round: 0, seat, text: `STANCE: ${stance}\nAGREE_WITH: []\nDISAGREE:\n- x\nNEW:\n- none\nASSUMPTIONS:\n- y`, parsed: { pass: false, stance, agreeWith: [], disagree: ['x'], new: ['none'], assumptions: ['y'], question: null }, valid: true, errors: [], stanceKey: stance, attemptId: `a-${seat.id}`, reprompted: false, failed: false, fresh: true, sessionId: `s-${seat.id}` });
+  const attempt = (seat) => ({ type: 'attempt', attemptId: `a-${seat.id}`, round: 0, kind: 'reply', seat, fresh: true, usage: { input: 100, cacheRead: 0, cacheWrite: 0, output: 10, cost: null, usageVersion: 3 } });
+  const rowsOnDisk = [
+    { type: 'field-notes', schemaVersion: 3, fake: true, fieldNotes: { decision: 'Synthesize after restart?', options: ['Ship now', 'Wait a sprint'] }, seats, chairman: { vendor: 'claude' }, options: { critiqueRounds: 0 }, deadlineAt: 1 },
+    attempt(seats[0]), reply(seats[0], 'opt-1'), attempt(seats[1]), reply(seats[1], 'opt-2'),
+    { type: 'stop', reason: 'wall-clock', rounds: 1 },
+    { type: 'verdict', seat: null, text: 'Verdict not written: the wall clock ran out.', usage: null, skipped: true, reason: 'wall-clock' },
+  ];
+  mkdirSync(path.join(debatesDir, slug));
+  writeFileSync(path.join(debatesDir, slug, 'transcript.jsonl'), rowsOnDisk.map((r) => JSON.stringify(r)).join('\n') + '\n');
+  const srv = await startFakeServer(debatesDir);
+  try {
+    const post = (p) => fetch(`${srv.base}${p}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token }, body: '{}' });
+    const r = await post(`/api/debates/${slug}/synthesize`);
+    assert.equal(r.status, 200, await r.clone().text());
+    const stream = await fetch(`${srv.base}/api/debates/${slug}/events`);
+    const events = await readEvents(stream, (e) => e.type === 'done' && !e.replayed);
+    const done = events.at(-1);
+    assert.equal(done.synthesis, 'done');
+    assert.equal(done.reason, 'wall-clock', 'the original stop reason is kept');
+    const after = readFileSync(path.join(debatesDir, slug, 'transcript.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const added = after.slice(rowsOnDisk.length);
+    assert.deepEqual([...new Set(added.filter((x) => x.type === 'attempt').map((x) => x.seat.id))], ['chairman'], 'only the chairman ran');
+    assert.ok(added.some((x) => x.type === 'synthesize'));
+    const verdict = added.filter((x) => x.type === 'verdict').at(-1);
+    assert.ok(verdict && !verdict.skipped && !verdict.failed);
+    const again = await post(`/api/debates/${slug}/synthesize`);
+    assert.equal(again.status, 400, 'a debate with its verdict is not synthesized twice');
+  } finally {
+    srv.child.kill();
+  }
+});
+
+test('a seat on a named profile gets its own quota pool', { timeout: 60_000 }, async () => {
+  const debatesDir = mkdtempSync(path.join(os.tmpdir(), 'rt-debates-'));
+  const srv = await startFakeServer(debatesDir);
+  try {
+    const body = { fieldNotes: { decision: 'Profiles?', options: ['A', 'B'] }, seats: [{ vendor: 'claude', lens: 'one' }, { vendor: 'codex', lens: 'two', account: 'work' }], chairman: { vendor: 'claude' }, options: { critiqueRounds: 0 } };
+    const r = await fetch(`${srv.base}/api/debates`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token }, body: JSON.stringify(body) }).then((x) => x.json());
+    const stream = await fetch(`${srv.base}/api/debates/${r.slug}/events`);
+    const events = await readEvents(stream, (e) => e.type === 'quota' && e.vendor === 'codex@work');
+    assert.ok(events.some((e) => e.type === 'quota' && e.vendor === 'codex@work'), 'the work profile is read as its own pool');
+  } finally {
+    srv.child.kill();
+  }
+});
+
+test('accept is refused before the debate is done, checks the option, and is recorded apart from the recommendation', { timeout: 60_000 }, async () => {
+  const debatesDir = mkdtempSync(path.join(os.tmpdir(), 'rt-debates-'));
+  const srv = await startFakeServer(debatesDir);
+  try {
+    const post = (p, b) => fetch(`${srv.base}${p}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token }, body: JSON.stringify(b) });
+    const body = { fieldNotes: { decision: 'Accept flow?', options: ['Ship now', 'Wait a sprint'] }, seats: [{ vendor: 'claude', lens: 'one' }, { vendor: 'codex', lens: 'two' }], chairman: { vendor: 'claude' }, options: { critiqueRounds: 0 } };
+    const { slug } = await post('/api/debates', body).then((r) => r.json());
+    assert.equal((await post(`/api/debates/${slug}/accept`, { option: 'opt-1' })).status, 400, 'refused while the debate runs');
+    const stream = await fetch(`${srv.base}/api/debates/${slug}/events`);
+    await readEvents(stream, (e) => e.type === 'done', async (e) => { if (e.type === 'gate') await post(`/api/debates/${slug}/continue`, {}); });
+    assert.equal((await post(`/api/debates/${slug}/accept`, { option: 'opt-9' })).status, 400, 'an option the debate does not have');
+    const ok = await post(`/api/debates/${slug}/accept`, { option: 'opt-2', note: 'Busy week.' });
+    assert.equal(ok.status, 200);
+    const rows = readFileSync(path.join(debatesDir, slug, 'transcript.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const acc = rows.find((r) => r.type === 'accepted');
+    assert.deepEqual({ option: acc.option, note: acc.note }, { option: 'opt-2', note: 'Busy week.' });
+    assert.equal(decisionRecord(rows, slug).meta.status, 'accepted');
+  } finally {
+    srv.child.kill();
+  }
+});
+
+test('GET /api/debates lists the debates on disk with the status and pick the record would carry', { timeout: 60_000 }, async () => {
+  const { mkdirSync, writeFileSync } = await import('node:fs');
+  const debatesDir = mkdtempSync(path.join(os.tmpdir(), 'rt-debates-'));
+  const seats = [{ id: 'seat-0', vendor: 'claude', lens: 'risk', colour: 'rust', index: 0 }, { id: 'seat-1', vendor: 'codex', lens: 'cost', colour: 'olive', index: 1 }];
+  const reply = (seat) => ({ type: 'reply', round: 0, seat, text: 'STANCE: opt-1', parsed: { pass: false, stance: 'opt-1', agreeWith: [], disagree: [], new: [], assumptions: [], question: null }, valid: true, errors: [], stanceKey: 'opt-1', attemptId: `a-${seat.id}`, failed: false });
+  const attempt = (seat, id = seat.id) => ({ type: 'attempt', attemptId: `a-${id}`, round: 0, kind: 'reply', seat, usage: { input: 100, cacheRead: 0, cacheWrite: 0, output: 10, cost: seat.vendor === 'claude' ? 0.02 : null, usageVersion: 3 } });
+  const slug = '2026-10-20-listed';
+  mkdirSync(path.join(debatesDir, slug));
+  writeFileSync(path.join(debatesDir, slug, 'transcript.jsonl'), [
+    { type: 'field-notes', schemaVersion: 3, fieldNotes: { decision: 'Listed?', options: ['Yes', 'No'] }, seats, chairman: { vendor: 'claude' }, options: {} },
+    attempt(seats[0]), reply(seats[0]), attempt(seats[1]), reply(seats[1]),
+    { type: 'stop', reason: 'consensus', rounds: 1 },
+    { type: 'verdict', seat: { id: 'chairman', vendor: 'claude', lens: 'chairman' }, text: 'RECOMMENDATION: opt-1\nWhy.\nDISSENT: x\nKILL_CRITERIA:\n- y\nOPEN_QUESTIONS:\n- z' },
+  ].map((r) => JSON.stringify(r)).join('\n') + '\n');
+  const srv = await startFakeServer(debatesDir);
+  try {
+    const { debates } = await fetch(`${srv.base}/api/debates`).then((r) => r.json());
+    assert.equal(debates.length, 1);
+    const d = debates[0];
+    assert.deepEqual({ slug: d.slug, decision: d.decision, state: d.state, status: d.status, recommended: d.recommended, rounds: d.rounds, seats: d.seats, tokens: d.tokens, costPartial: d.costPartial },
+      { slug, decision: 'Listed?', state: 'finished', status: 'recommended', recommended: 'Yes', rounds: 1, seats: 2, tokens: 220, costPartial: true });
+    const foreign = await fetch(`${srv.base}/api/debates`, { headers: { origin: 'https://evil.example' } });
+    assert.equal(foreign.status, 403, 'the list is readable only from this page');
+  } finally {
+    srv.child.kill();
+  }
+});
+
+test('GET /api/preflight answers per pool, read-only, without a model call', { timeout: 60_000 }, async () => {
+  const srv = await startFakeServer(mkdtempSync(path.join(os.tmpdir(), 'rt-debates-')));
+  try {
+    const { pools } = await fetch(`${srv.base}/api/preflight?pools=claude,codex,codex@work,nope@x,BAD!`).then((r) => r.json());
+    assert.deepEqual(pools.map((p) => p.key), ['claude', 'codex', 'codex@work', 'nope@x']);
+    assert.ok(pools.slice(0, 3).every((p) => p.installed && p.loggedIn === true && ['ok', 'warn', 'danger'].includes(p.state)));
+    assert.equal(pools[3].kind, 'missing');
+  } finally {
+    srv.child.kill();
+  }
+});
+
+test('POST /api/preflight takes API pools with their endpoint and key variable, needs the launch token, and sends nothing out', { timeout: 60_000 }, async () => {
+  const srv = await startFakeServer(mkdtempSync(path.join(os.tmpdir(), 'rt-debates-')));
+  try {
+    const body = { pools: ['claude', 'api@localhost-11434', 'api@api.deepseek.com'], endpoints: { 'api@localhost-11434': { url: 'http://localhost:11434/v1' }, 'api@api.deepseek.com': { url: 'https://api.deepseek.com/v1', keyEnv: 'RT_TEST_KEY_THAT_IS_NOT_SET' } } };
+    const noToken = await fetch(`${srv.base}/api/preflight`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    assert.equal(noToken.status, 401, 'an endpoint check names a variable of this process: token required');
+    const { pools } = await fetch(`${srv.base}/api/preflight`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token }, body: JSON.stringify(body) }).then((r) => r.json());
+    assert.deepEqual(pools.map((p) => p.key), ['claude', 'api@localhost-11434', 'api@api.deepseek.com']);
+    assert.deepEqual(pools.slice(1).map((p) => p.state), ['ok', 'danger']);
+    assert.match(pools[1].note, /API · local · checked on the first call/);
+    assert.match(pools[2].note, /RT_TEST_KEY_THAT_IS_NOT_SET is not set/);
+    // GET knows nothing about endpoints: an API pool answers idle, never a probe
+    const viaGet = await fetch(`${srv.base}/api/preflight?pools=api@localhost-11434`).then((r) => r.json());
+    assert.equal(viaGet.pools[0].state, 'idle');
+  } finally {
+    srv.child.kill();
+  }
+});
+
+test('a verdict that failed for quota can be written with another chairman', { timeout: 60_000 }, async () => {
+  const { mkdirSync, writeFileSync } = await import('node:fs');
+  const debatesDir = mkdtempSync(path.join(os.tmpdir(), 'rt-debates-'));
+  const slug = '2026-10-21-another-chairman';
+  const seats = [{ id: 'seat-0', vendor: 'claude', lens: 'risk', colour: 'rust', index: 0 }, { id: 'seat-1', vendor: 'codex', lens: 'cost', colour: 'olive', index: 1 }];
+  const reply = (seat) => ({ type: 'reply', round: 0, seat, text: 'STANCE: opt-1', parsed: { pass: false, stance: 'opt-1', agreeWith: [], disagree: [], new: [], assumptions: [], question: null }, valid: true, errors: [], stanceKey: 'opt-1', failed: false });
+  mkdirSync(path.join(debatesDir, slug));
+  writeFileSync(path.join(debatesDir, slug, 'transcript.jsonl'), [
+    { type: 'field-notes', schemaVersion: 3, fake: true, fieldNotes: { decision: 'Another chairman?', options: ['Yes', 'No'] }, seats, chairman: { vendor: 'claude' }, options: { critiqueRounds: 0 } },
+    reply(seats[0]), reply(seats[1]), { type: 'stop', reason: 'consensus', rounds: 1 },
+    { type: 'pool-down', key: 'claude@', vendor: 'claude', kind: 'quota', message: 'Claude: usage limit reached.' },
+    { type: 'verdict', seat: { id: 'chairman', vendor: 'claude', lens: 'chairman' }, text: 'Chairman failed: Claude: usage limit reached.', failed: true, errorKind: 'quota' },
+  ].map((r) => JSON.stringify(r)).join('\n') + '\n');
+  const srv = await startFakeServer(debatesDir);
+  try {
+    const post = (b) => fetch(`${srv.base}/api/debates/${slug}/synthesize`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token }, body: JSON.stringify(b) });
+    assert.equal((await post({ chairman: { vendor: 'nope' } })).status, 400);
+    assert.equal((await post({ chairman: { vendor: 'agy' } })).status, 200);
+    const events = await readEvents(await fetch(`${srv.base}/api/debates/${slug}/events`), (e) => e.type === 'done' && !e.replayed);
+    assert.ok(events.some((e) => e.type === 'pool-down' && e.vendor === 'claude'), 'the replay carries the login that went down');
+    const v = events.filter((e) => e.type === 'verdict').at(-1);
+    assert.equal(v.seat.vendor, 'agy');
+    assert.ok(!v.failed);
+  } finally {
+    srv.child.kill();
+  }
+});
+
+test('a retired model is refused at debate start, with what to use instead', { timeout: 60_000 }, async () => {
+  const srv = await startFakeServer(mkdtempSync(path.join(os.tmpdir(), 'rt-debates-')));
+  try {
+    const body = { fieldNotes: { decision: 'Retired?', options: ['A', 'B'] }, seats: [{ vendor: 'claude', lens: 'one' }, { vendor: 'codex', lens: 'two', model: 'gpt-5.5' }], chairman: { vendor: 'claude' } };
+    const r = await fetch(`${srv.base}/api/debates`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token }, body: JSON.stringify(body) });
+    assert.equal(r.status, 400);
+    assert.match((await r.json()).error, /Codex retired gpt-5\.5 \(2026-10-14\); use gpt-6\.1-sol/);
+  } finally {
+    srv.child.kill();
+  }
+});

@@ -1,0 +1,6 @@
+node_modules/
+debates/
+debates-fake/
+*.log
+.DS_Store
+.claude/settings.local.json

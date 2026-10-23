@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en" data-theme="paper">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="roundtable-token" content="">
+<title>Roundtable</title>
+<link rel="icon" href="/ui/logo.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/ui/design/tokens.css">
+<link rel="stylesheet" href="/ui/design/preset-dusk.css">
+<link rel="stylesheet" href="/ui/design/app.css">
+</head>
+<body>
+<div class="app">
+  <header class="header">
+    <svg class="logo" viewBox="0 0 16 16" shape-rendering="crispEdges" role="img" aria-label="Roundtable logo">
+      <rect class="tile" width="16" height="16"/>
+      <g class="ink">
+        <rect x="6" y="2" width="4" height="1"/><rect x="4" y="3" width="2" height="1"/><rect x="10" y="3" width="2" height="1"/>
+        <rect x="3" y="4" width="1" height="2"/><rect x="12" y="4" width="1" height="2"/><rect x="6" y="5" width="4" height="1"/>
+        <rect x="2" y="6" width="1" height="3"/><rect x="13" y="6" width="1" height="3"/><rect x="5" y="6" width="6" height="3"/>
+        <rect x="3" y="9" width="1" height="2"/><rect x="12" y="9" width="1" height="2"/><rect x="6" y="9" width="4" height="1"/>
+        <rect x="4" y="11" width="2" height="1"/><rect x="10" y="11" width="2" height="1"/><rect x="6" y="12" width="4" height="1"/>
+      </g>
+    </svg>
+    ROUNDTABLE<span class="cursor" aria-hidden="true"></span>
+    <span class="meta">
+      <a class="btn btn-small" id="nav-debates" href="#" hidden>Debates</a>
+      <button class="btn btn-small" id="theme" type="button">Night</button>
+    </span>
+  </header>
+
+  <main id="main">
+    <!-- Setup screen -->
+    <section id="setup" class="screen">
+      <section class="panel" id="recent" aria-label="Debates">
+        <div class="panel-title"><span>Debates</span><span class="hint" id="recent-count"></span></div>
+        <div id="recent-list" class="debates"></div>
+      </section>
+      <div>
+        <h1>New debate</h1>
+        <p class="lede">Round 0 is blind: the seats see only these notes.</p>
+      </div>
+      <form id="notes" class="panel form-grid" autocomplete="off">
+        <div class="panel-title"><span>Field notes</span></div>
+        <div class="fields">
+          <div class="field wide">
+            <label class="label" for="decision">Decision</label>
+            <input id="decision" name="decision" required placeholder="What has to be decided, as one question">
+          </div>
+          <div class="field wide">
+            <span class="label" id="options-label">Options</span>
+            <div id="options-editor" class="options" role="group" aria-labelledby="options-label"></div>
+          </div>
+          <div class="field wide"><label class="label" for="constraints">Constraints</label><input id="constraints" name="constraints" placeholder="Team, budget, platform: what any answer must live within"></div>
+          <details class="more wide" id="more-context">
+            <summary><span class="label">More context</span> <span class="more-filled" id="more-filled"></span></summary>
+            <div class="fields">
+              <div class="field"><label class="label" for="known">Known</label><textarea id="known" name="known" rows="2" placeholder="Measured facts"></textarea></div>
+              <div class="field"><label class="label" for="assumed">Assumed</label><textarea id="assumed" name="assumed" rows="2" placeholder="Believed, not measured"></textarea></div>
+              <div class="field"><label class="label" for="reversibility">Reversibility</label><input id="reversibility" name="reversibility" placeholder="Can it be undone, at what cost"></div>
+              <div class="field"><label class="label" for="deadline">Deadline</label><input id="deadline" name="deadline"></div>
+              <div class="field wide"><label class="label" for="exportTo">Export to</label><input id="exportTo" name="exportTo" placeholder="A decisions folder in a codebase; the record is written there when the verdict lands"></div>
+            </div>
+          </details>
+        </div>
+      </form>
+
+      <section class="panel">
+        <div class="panel-title"><span>Seats</span><span class="hint">Seats know each other by lens only, never by vendor.</span></div>
+        <div id="seats" class="seats" role="list"></div>
+        <div id="datalists"></div>
+        <div class="row seats-actions">
+          <span class="error" id="seats-error" role="alert"></span>
+          <button class="btn btn-small" id="add-seat" type="button">+ Add seat</button>
+        </div>
+        <div class="chair-wrap">
+          <article class="seat-card chair-card" id="chair-card">
+            <div class="seat-hd">
+              <span class="avatar avatar-lg" id="chair-avatar"></span>
+              <div class="seat-id">
+                <span class="chair-title">Chairman <select id="chairman" class="flat vendor" aria-label="Chairman vendor"></select><span class="kind-tag" id="chair-kind"></span></span>
+                <span id="chair-model-slot"></span><input id="chairman-model" class="flat model" placeholder="model id" aria-label="Chairman model id" hidden>
+              </div>
+              <span class="lamp idle" id="chair-lamp" title="not checked"></span>
+            </div>
+            <div class="seat-bd">
+              <p class="chair-role">A fresh session that took no part. It reads every round and writes the verdict, sceptically: agreement between seats is not evidence. You decide.</p>
+              <div id="chair-api" hidden>
+                <label class="f"><span class="label">Endpoint</span><input id="chairman-endpoint" class="flat" list="endpoints" placeholder="http://localhost:11434/v1" aria-label="Chairman endpoint base URL" title="The base URL of an OpenAI-compatible server, ending in /v1. Plain http only on this machine or a private network."></label>
+                <label class="f"><span class="label">Key var</span><input id="chairman-keyenv" class="flat" placeholder="none (local server)" aria-label="Chairman key environment variable" title="The NAME of the environment variable that holds the key, set in the shell roundtable was started from. Never the key itself."></label>
+              </div>
+              <div class="f"><span class="label">Effort</span><span class="pips" id="chair-pips"></span><select id="chairman-effort" class="effort" hidden><option value="">default</option></select></div>
+              <span class="seat-note" id="chair-note"></span>
+              <details class="seat-more" id="chair-profile"><summary>Login profile</summary><input id="chairman-account" class="flat" placeholder="none: your usual login" aria-label="Chairman login profile"></details>
+            </div>
+          </article>
+        </div>
+        <div class="fields fields-row rules">
+          <div class="field"><label class="label" for="critique-rounds">Critique rounds</label><input id="critique-rounds" type="number" min="0" max="8" value="3"></div>
+          <div class="field"><label class="label" for="auto">Auto-continue (s)</label><input id="auto" type="number" min="5" max="600" value="60"></div>
+          <div class="field"><label class="label" for="wall">Wall clock (min)</label><input id="wall" type="number" min="1" max="180" value="30"></div>
+          <div class="field"><label class="label" for="memory">Memory</label><select id="memory"><option value="stateless">stateless: fresh call per round</option><option value="resume">resume: re-send the thread</option></select></div>
+        </div>
+      </section>
+
+      <section class="panel" id="projection-panel">
+        <div class="panel-title"><span>Quota picture</span></div>
+        <p class="hint seats-hint">One pool per account: every seat on it draws from the same limit. Figures are estimates from past debates on this machine; other use of the same account moves the windows too.</p>
+        <div id="projection" class="pools"></div>
+      </section>
+
+      <div class="startbar">
+        <span class="startbar-summary" id="start-summary"></span>
+        <span class="error" id="setup-error" role="alert"></span>
+        <button class="btn btn-primary" id="start" type="button">Open the table</button>
+      </div>
+    </section>
+
+    <!-- Board screen -->
+    <section id="board" class="screen" hidden>
+      <div id="banners" class="banners" role="status" aria-live="polite"></div>
+      <section class="panel strip" aria-label="Usage">
+        <div class="panel-title"><span id="board-title"></span></div>
+        <table id="usage"><thead><tr><th class="label">Pool / seat</th><th class="label">In</th><th class="label">Cache</th><th class="label">Out</th><th class="label">Cost</th><th class="label">Time</th><th class="label" title="Input tokens, cache included, that this seat sent in the latest round">Round in</th></tr></thead><tbody></tbody></table>
+      </section>
+
+      <section id="verdict" class="panel verdict" hidden>
+        <div class="panel-title"><span>Verdict</span></div>
+        <div class="verdict-body" id="verdict-body"></div>
+        <form class="export-bar accept-bar" id="accept-form">
+          <label class="label" for="accept-option">Your decision</label>
+          <select id="accept-option"></select>
+          <input id="accept-note" placeholder="Why, in one line (optional)" aria-label="Note on your decision">
+          <button class="btn btn-small" type="submit">Accept</button>
+          <span id="accept-status" class="hint"></span>
+        </form>
+        <form class="export-bar" id="export-form">
+          <input id="export-target" placeholder="Export to: an existing directory in a codebase" aria-label="Export target directory">
+          <button class="btn btn-small" id="export" type="submit">Export record</button>
+          <span id="export-status" class="hint"></span>
+        </form>
+      </section>
+
+      <div id="rounds" class="rounds"></div>
+
+      <div class="empty" id="board-empty">
+        <span><span class="prompt">&gt;</span> waiting for round 0<br>&nbsp;&nbsp;three blind positions arrive together_</span>
+      </div>
+    </section>
+  </main>
+
+  <div id="humanbar" class="humanbar" hidden>
+    <div class="humanbar-status" id="gate-status"></div>
+    <form id="human-form" class="humanbar-form">
+      <input id="human-msg" placeholder="Say something to every seat, or /stop" autocomplete="off">
+      <button class="btn btn-primary" id="continue" type="submit">Continue</button>
+      <button class="btn btn-danger" id="stop" type="button">Stop</button>
+    </form>
+  </div>
+
+  <footer class="statusline">
+    <span id="sys" class="status ok">idle</span>
+    <span id="st-round"></span>
+    <span id="st-seats"></span>
+    <span id="st-elapsed"></span>
+    <span class="end">v0.3.0</span>
+  </footer>
+</div>
+<script type="module" src="/ui/app.js"></script>
+</body>
+</html>
