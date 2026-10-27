@@ -3,18 +3,18 @@ import { mkdirSync, appendFileSync, readFileSync, renameSync, lstatSync, existsS
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 
-const CODES = new Set(['request-failed', 'provider-failed', 'reply-invalid', 'engine-failed', 'export-failed',
+const CODES = new Set(['request-failed', 'provider-failed', 'call-cancelled', 'reply-invalid', 'engine-failed', 'export-failed',
   'transcript-warning', 'status-failed', 'storage-failed', 'server-crash', 'server-start',
   'browser-network', 'browser-timeout', 'browser-response', 'browser-error', 'browser-rejection', 'browser-stream', 'browser-validation']);
 export const BROWSER_CODES = new Set([...CODES].filter((c) => c.startsWith('browser-')));
-const ACTIONS = new Set(['setup', 'history', 'preflight', 'create', 'events', 'continue', 'stop', 'hold',
+const ACTIONS = new Set(['setup', 'history', 'preflight', 'preview', 'create', 'events', 'state', 'continue', 'stop', 'hold',
   'resume', 'export', 'synthesize', 'accept', 'pools', 'diagnostics', 'catalogue', 'quota', 'calibration', 'startup', 'unknown']);
 const KINDS = new Set(['quota', 'auth', 'missing', 'network', 'timeout', 'killed', 'format', 'budget', 'other']);
 const SYSTEM_CODES = new Set(['ENOENT', 'EACCES', 'EPERM', 'ENOSPC', 'EIO', 'EISDIR', 'EROFS', 'EMFILE', 'ENFILE',
   'EADDRINUSE', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'TIMEOUT', 'KILLED', 'TRANSCRIPT_CORRUPT', 'TRANSCRIPT_TAIL',
   'SEAT_LENS_REQUIRED', 'SEAT_LENS_DUPLICATE', 'SEAT_MOOD_REQUIRED']);
 const FILES = new Set(['server.js', 'store.js', 'engine.js', 'export.js', 'validate.js', 'estimate.js',
-  'seats.js', 'preflight.js', 'diagnostics.js', 'ui/app.js', 'adapters/common.js', 'adapters/spawn.js',
+  'seats.js', 'preflight.js', 'diagnostics.js', 'snapshot.js', 'review-view.js', 'ui/app.js', 'ui/help.js', 'adapters/common.js', 'adapters/spawn.js',
   'adapters/endpoint.js', 'adapters/claude.js', 'adapters/codex.js', 'adapters/agy.js']);
 const ID = /^RT-[a-f0-9]{16}$/;
 const integer = (n, max) => Number.isInteger(n) && n >= 0 && n <= max;
@@ -24,6 +24,7 @@ export function diagnosticAction(pathname) {
   if (pathname === '/api/seats') return 'setup';
   if (pathname === '/api/debates') return 'history';
   if (pathname === '/api/preflight') return 'preflight';
+  if (pathname === '/api/preview') return 'preview';
   if (/^\/api\/pools\/[a-z]+$/.test(pathname)) return 'pools';
   if (pathname.startsWith('/api/diagnostics')) return 'diagnostics';
   const match = /^\/api\/debates\/[^/]+\/([a-z]+)$/.exec(pathname);
@@ -39,6 +40,7 @@ function fields(input) {
   if (KINDS.has(input?.kind)) out.kind = input.kind;
   if (SYSTEM_CODES.has(input?.systemCode)) out.systemCode = input.systemCode;
   if (['lens', 'moodText'].includes(input?.field)) out.field = input.field;
+  if (['human', 'wall-clock'].includes(input?.cancelReason)) out.cancelReason = input.cancelReason;
   for (const [key, max] of Object.entries({ seatIndex: 7, status: 599, round: 100, line: 1_000_000, column: 1_000_000 })) {
     if (integer(input?.[key], max)) out[key] = input[key];
   }

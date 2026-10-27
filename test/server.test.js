@@ -3,7 +3,7 @@
 // `done`, answers every gate through the API, then checks the transcript on disk.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import net from 'node:net';
 import { mkdtempSync, readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync } from 'node:fs';
 import { rollup } from '../src/engine.js';
@@ -56,6 +56,53 @@ async function readEvents(res, until, onEvent) {
   }
   return events;
 }
+
+test('the JSON agent checks without calls, answers grouped questions, rejects stale rounds and reads completion', { timeout: 60_000 }, async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rt-agent-'));
+  const srv = await startFakeServer(root);
+  const agent = (command, args = [], body) => new Promise((resolve, reject) => {
+    const child = execFile(process.execPath, ['src/cli.js', 'agent', command, '--port', String(srv.port), ...args, ...(body ? ['--input', '-'] : [])],
+      { env: { ...process.env, ROUNDTABLE_TOKEN: '' }, windowsHide: true, timeout: 35_000 }, (error, stdout, stderr) => {
+        try { resolve({ exit: error?.code || 0, result: JSON.parse(stdout) }); } catch { reject(new Error(`Agent did not return JSON: ${stderr}`)); }
+      });
+    child.stdin.end(body ? JSON.stringify(body) : '');
+  });
+  const body = { fieldNotes: { decision: 'Synthetic automated review', options: ['Trial', 'Wait'] },
+    seats: [{ vendor: 'claude', lens: 'risk' }, { vendor: 'codex', lens: 'cost' }, { vendor: 'agy', lens: 'evidence' }],
+    chairman: { vendor: 'claude', effort: 'low' }, options: { critiqueRounds: 1 } };
+  try {
+    assert.equal((await fetch(`${srv.base}/api/preview`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })).status, 401);
+    const setup = await agent('status');
+    assert.equal(setup.exit, 0); assert.equal(setup.result.mode, 'demo');
+    const preview = await agent('check', [], body);
+    assert.equal(preview.exit, 0); assert.equal(preview.result.plannedCalls, 7);
+    assert.equal((await fetch(`${srv.base}/api/debates`).then((r) => r.json())).debates.length, 0);
+    const started = await agent('start', [], body), id = started.result.id;
+    assert.equal(started.exit, 0); assert.ok(id);
+    const waiting = (await agent('wait', ['--id', id])).result;
+    assert.equal(waiting.status, 'waiting'); assert.equal(waiting.gate.round, 0);
+    assert.equal(waiting.gate.questions.length, 2);
+    assert.equal(waiting.gate.questions.find((q) => q.sources.includes('risk')).sources.length, 2);
+    assert.doesNotMatch(JSON.stringify(waiting), new RegExp(srv.token));
+    assert.equal((await fetch(`${srv.base}/api/debates/${id}/state`, { headers: { origin: 'https://untrusted.example' } })).status, 403);
+    const stale = await agent('answer', ['--id', id], { round: 1, answers: [{ id: 'q1', text: 'Not sent.' }] });
+    assert.equal(stale.exit, 1); assert.equal(stale.result.status, 409);
+    const answered = await agent('answer', ['--id', id], { round: 0, answers: [{ id: 'q1', text: 'The deadline can move by one week.' }] });
+    assert.equal(answered.exit, 0);
+    let done = (await agent('wait', ['--id', id])).result;
+    if (done.status === 'waiting') {
+      await agent('answer', ['--id', id], { round: done.gate.round, message: '' });
+      done = (await agent('wait', ['--id', id])).result;
+    }
+    assert.equal(done.status, 'done'); assert.equal(done.verdict.status, 'ready'); assert.equal(done.gate, null);
+    assert.deepEqual(done.actions, []);
+    const transcript = readFileSync(path.join(root, id, 'transcript.jsonl'), 'utf8');
+    assert.match(transcript, /The deadline can move by one week/);
+    assert.doesNotMatch(transcript, /Not sent\./);
+    const status = (await agent('status', ['--id', id])).result;
+    assert.equal(status.verdict.status, 'ready');
+  } finally { srv.child.kill(); }
+});
 
 test('local diagnostics require the launch token, preserve error references and exclude request content', { timeout: 30_000 }, async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'rt-server-diagnostics-'));

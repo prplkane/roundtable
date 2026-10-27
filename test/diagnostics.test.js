@@ -23,6 +23,8 @@ test('diagnostics retain actionable categories and source lines without private 
   assert.deepEqual(event.frames, [{ file: 'server.js', line: 25, column: 7 }]);
   assert.equal(event.vendor, 'claude');
   assert.equal(diagnosticAction('/api/debates/private-title/export'), 'export');
+  assert.equal(diagnosticAction('/api/debates/private-title/state'), 'state');
+  assert.equal(diagnosticAction('/api/preview'), 'preview');
   // Download re-projects even a locally modified file instead of returning its raw contents.
   writeFileSync(path.join(root, '_diagnostics', 'events.jsonl'), JSON.stringify({ ...event, extra: 'PRIVATE-MARKER', vendor: 'PRIVATE-MARKER' }) + '\n');
   assert.doesNotMatch(JSON.stringify(log.read()), /PRIVATE-MARKER/);

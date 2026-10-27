@@ -37,7 +37,7 @@ export function fakeRunner({ consensus = false } = {}) {
       text = `RECOMMENDATION: opt-1\n${pick(options, 0)}, on the balance of risk and cost; the customer lens did not overturn it.\nDISSENT: The customer lens argued that ${pick(options, 1)} protects adoption; that risk is real and should be watched.\nKILL_CRITERIA:\n- Support tickets about the change exceed 5% of weekly volume\n- The migration takes more than two sprints\nOPEN_QUESTIONS:\n- Is the deadline movable by a week?`;
     } else if (!consensus && round >= 2 && who === 'codex') {
       text = 'PASS';
-    } else if (!consensus && round === 0 && who === 'agy') {
+    } else if (!consensus && round === 0 && who === 'agy' && !/did not follow the contract/.test(prompt)) {
       text = `I think ${pick(options, 1)} is right because customers hate surprises.`; // off contract, forces a re-prompt
     } else {
       // claude answers with the id, the others with the exact label: the contract accepts both
@@ -49,7 +49,8 @@ export function fakeRunner({ consensus = false } = {}) {
         'DISAGREE:', `- The ${who === 'agy' ? 'cost' : 'customer'} argument assumes a traffic pattern we have not measured`,
         'NEW:', round === 1 ? '- A staged rollout to 10% of accounts gives both sides their evidence' : '- none',
         'ASSUMPTIONS:', '- The team stays at two developers', '- No regulatory change before the deadline',
-        !consensus && round === 1 && who === 'agy' ? 'QUESTION_FOR_HUMAN: Is the deadline movable by one week?' : null,
+        !consensus && round === 0 ? `QUESTION_FOR_HUMAN: ${who === 'agy' ? 'What evidence would make you stop the trial?' : 'Is the deadline movable by one week?'}`
+          : !consensus && round === 1 && who === 'agy' && !/Answer:/.test(prompt) ? 'QUESTION_FOR_HUMAN: Is the deadline movable by one week?' : null,
       ].filter(Boolean).join('\n');
     }
     const quota = vendor === 'claude' ? fakeQuota(vendor, n) : null; // claude's rides on each reply

@@ -67,6 +67,12 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   per minute. A tab can retain up to 20 sanitized events in session storage until delivered;
   closing it can discard pending events. Logs stay local until you choose to share a download.
   Transcripts, terminal output and provider logs have their own data handling described above.
+- **Agent client:** `roundtable agent` connects only to a numeric loopback port. It reads the
+  page's launch token into memory for authenticated writes, refuses redirects and does not
+  print or persist the token. Setup checks and state reads make no model call. Start, answers,
+  resume and verdict requests can make calls under the same budgets and limits as the board.
+  Writes are never automatically retried. JSON output contains private review content; treat
+  request files, answer files and saved command output like transcripts.
 - **Tool restrictions depend on the installed CLI.** Claude seats are configured with no tool
   and no MCP server; Codex seats with
   the sandbox read-only, no MCP server, no web search and no tool feature; Antigravity seats in

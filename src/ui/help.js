@@ -80,7 +80,7 @@ export function installHelp() {
     bubble.replaceChildren(title, text); position();
     bubble.classList.add('is-open'); revealText(text, { duration: 480 });
   }
-  function schedule(target, delay = 320) {
+  function schedule(target, delay = 900) {
     if (!HELP[target?.dataset.help]) return;
     clearTimeout(closeTimer);
     if (active === target && bubble.classList.contains('is-open')) return;
@@ -92,17 +92,23 @@ export function installHelp() {
     const target = e.target.closest('[data-help]');
     if (target && !target.contains(e.relatedTarget) && !bubble.contains(e.relatedTarget)) leave();
   });
-  document.addEventListener('focusin', (e) => { if (e.target.matches('.help-trigger')) schedule(e.target.closest('[data-help]'), 180); });
-  document.addEventListener('focusout', (e) => { if (e.target.matches('.help-trigger')) leave(); });
+  document.addEventListener('focusin', (e) => { if (e.target.matches('[data-help]')) schedule(e.target, 900); });
+  document.addEventListener('focusout', (e) => { if (e.target.matches('[data-help]')) leave(); });
   document.addEventListener('click', (e) => {
-    const trigger = e.target.closest('.help-trigger');
+    const trigger = e.target.closest('[data-help]');
     if (trigger) {
-      e.preventDefault();
+      e.preventDefault(); // A label's forwarded input click would immediately dismiss its hint.
       const target = trigger.closest('[data-help]');
       if (active === target && bubble.classList.contains('is-open')) close(); else show(target);
     } else if (!bubble.contains(e.target) && !e.target.closest('[data-help]')) close();
   });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') close();
+    else if (['Enter', ' '].includes(e.key) && e.target.matches('[data-help]')) {
+      e.preventDefault();
+      if (active === e.target && bubble.classList.contains('is-open')) close(); else show(e.target);
+    }
+  });
   bubble.addEventListener('pointerenter', () => clearTimeout(closeTimer));
   bubble.addEventListener('pointerleave', leave);
   window.addEventListener('resize', () => { if (active) position(); });

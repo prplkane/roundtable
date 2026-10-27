@@ -83,7 +83,14 @@ export function validateDebateRequest(body, { adapters }) {
 // continue / stop / resume / accept: an optional message.
 export function validateMessage(body) {
   if (!body || typeof body !== 'object') return { message: '' };
-  return { ...body, message: str(body.message, 'message', LIMITS.message) };
+  const out = { ...body, message: str(body.message, 'message', LIMITS.message) };
+  if (body.round != null) out.round = int(body.round, 'round', [0, 8]);
+  if (body.answers != null) {
+    if (!Array.isArray(body.answers) || body.answers.length > 8) fail('answers', 'a list of at most 8 answers');
+    if (body.round == null) fail('round', 'required with answers');
+    out.answers = body.answers.map((a) => ({ id: str(a?.id, 'question id', 8, { required: true }), text: str(a?.text, 'answer', 1200) }));
+  }
+  return out;
 }
 
 // accept: an option id from this debate's options, or 'none' (decline every option), and a note.

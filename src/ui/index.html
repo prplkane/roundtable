@@ -112,10 +112,10 @@
           </article>
         </div>
         <div class="fields fields-row rules">
-          <div class="field"><span class="field-label" data-help="critique"><label class="label" for="critique-rounds">Critique rounds</label><button class="help-trigger" type="button" aria-label="About critique rounds" aria-describedby="help-critique">?</button></span><input id="critique-rounds" type="number" min="0" max="8" value="1" aria-describedby="help-critique"></div>
-          <div class="field"><span class="field-label" data-help="auto"><label class="label" for="auto">Auto-continue (s)</label><button class="help-trigger" type="button" aria-label="About auto-continue" aria-describedby="help-auto">?</button></span><input id="auto" type="number" min="0.1" step="0.1" max="600" value="60" aria-describedby="help-auto"></div>
-          <div class="field"><span class="field-label" data-help="wall"><label class="label" for="wall">Wall clock (min)</label><button class="help-trigger" type="button" aria-label="About wall clock" aria-describedby="help-wall">?</button></span><input id="wall" type="number" min="1" max="180" value="30" aria-describedby="help-wall"></div>
-          <div class="field"><span class="field-label" data-help="memory"><label class="label" for="memory">Memory</label><button class="help-trigger" type="button" aria-label="About memory" aria-describedby="help-memory">?</button></span><select id="memory" aria-describedby="help-memory"><option value="stateless">stateless: fresh call per round</option><option value="resume">resume: re-send the thread</option></select></div>
+          <div class="field"><label class="label help-label" data-help="critique" tabindex="0" for="critique-rounds" aria-describedby="help-critique">Critique rounds</label><input id="critique-rounds" type="number" min="0" max="8" value="1" aria-describedby="help-critique"></div>
+          <div class="field"><label class="label help-label" data-help="auto" tabindex="0" for="auto" aria-describedby="help-auto">Auto-continue (s)</label><input id="auto" type="number" min="0.1" step="0.1" max="600" value="60" aria-describedby="help-auto"></div>
+          <div class="field"><label class="label help-label" data-help="wall" tabindex="0" for="wall" aria-describedby="help-wall">Wall clock (min)</label><input id="wall" type="number" min="1" max="180" value="30" aria-describedby="help-wall"></div>
+          <div class="field"><label class="label help-label" data-help="memory" tabindex="0" for="memory" aria-describedby="help-memory">Memory</label><select id="memory" aria-describedby="help-memory"><option value="stateless">stateless: fresh call per round</option><option value="resume">resume: re-send the thread</option></select></div>
         </div>
       </section>
 
@@ -137,12 +137,25 @@
       <div id="banners" class="banners" role="status" aria-live="polite"></div>
       <section class="panel strip" aria-label="Usage">
         <div class="panel-title"><span id="board-title"></span></div>
+        <div id="review-state" class="review-state" role="status"></div>
+        <div id="usage-summary" class="usage-summary" aria-label="Reported quota remaining"></div>
+        <details id="usage-details" class="usage-details"><summary>Usage details</summary>
         <table id="usage"><thead><tr><th class="label">Pool / seat</th><th class="label">In</th><th class="label">Cache</th><th class="label">Out</th><th class="label">Cost</th><th class="label">Time</th><th class="label" title="Input tokens, cache included, that this seat sent in the latest round">Round in</th></tr></thead><tbody></tbody></table>
+        </details>
+      </section>
+
+      <section id="questions-panel" class="panel questions-panel" hidden aria-labelledby="questions-heading">
+        <div class="panel-title"><span id="questions-heading">Questions for you</span><span id="questions-count" class="hint"></span></div>
+        <p class="hint">Answer here once. Identical questions share an answer; each answer goes to every seat with its question. Leave anything you do not know blank.</p>
+        <div id="question-inputs"></div>
+        <div class="row question-actions"><span id="answer-count" class="hint" role="status"></span><button class="btn btn-primary" id="send-answers" type="button">Send answers and continue</button></div>
       </section>
 
       <section id="verdict" class="panel verdict" hidden>
         <div class="panel-title"><span>Verdict</span></div>
         <div class="verdict-body" id="verdict-body"></div>
+        <details id="decision-actions" class="decision-actions"><summary>Record your decision</summary>
+        <p class="hint">The discussion is finished. This note records your decision; it is not sent to the agents.</p>
         <form class="export-bar accept-bar" id="accept-form">
           <label class="label" for="accept-option">Your decision</label>
           <select id="accept-option"></select>
@@ -150,6 +163,7 @@
           <button class="btn btn-small" id="accept" type="submit">Accept</button>
           <span id="accept-status" class="hint" role="status"></span>
         </form>
+        </details>
         <form class="export-bar" id="export-form">
           <input id="export-target" placeholder="Export to: an existing directory in a codebase" aria-label="Export target directory">
           <button class="btn btn-small" id="export" type="submit">Export record</button>
@@ -170,6 +184,7 @@
     <div class="error" id="human-error" role="alert" hidden></div>
     <form id="human-form" class="humanbar-form">
       <input id="human-msg" aria-label="Note to every seat" placeholder="Say something to every seat, or /stop" autocomplete="off">
+      <button class="btn" id="answer-questions" type="button" hidden>Answer questions</button>
       <button class="btn btn-primary" id="continue" type="submit">Continue</button>
       <button class="btn btn-danger" id="stop" type="button">Stop</button>
     </form>

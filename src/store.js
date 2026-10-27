@@ -231,7 +231,7 @@ export function rebuildDebate(rows) {
 
   // The event list the board replays. Same shapes as the live engine emits.
   const t = (row) => ({ type: row.type });
-  const events = [{ type: 'started', seats, fieldNotes: head.fieldNotes, options: head.options, chairman: head.chairman, replayed: true }];
+  const events = [{ type: 'started', seats, fieldNotes: head.fieldNotes, options: head.options, chairman: head.chairman, deadlineAt, replayed: true }];
   const recoveryWarnings = rows.filter((r) => r.type === 'transcript-recovered').map((r) => ({ ...r, type: 'transcript-warning' }));
   events.push(...recoveryWarnings);
   events.push(...initialNotes.map((text) => ({ type: 'human', round: -1, text })));
@@ -250,15 +250,16 @@ export function rebuildDebate(rows) {
   events.push(...rows.filter((r) => r.type === 'budget'));
   for (const x of downs) events.push({ ...x, type: 'pool-down' });
   if (fallback) events.push({ ...fallback, type: 'chairman-fallback' });
-  if (stop) events.push({ type: 'stopped', reason: stop.reason, rounds: stop.rounds });
+  for (const expired of rows.filter((r) => r.type === 'gate-expired')) events.push({ type: 'gate-expired', round: expired.round });
+  if (stop) events.push({ type: 'stopped', reason: stop.reason, rounds: stop.rounds, context: stop.context });
   if (verdict && verdict.skipped) events.push({ type: 'verdict', seat: null, text: verdict.text, usage: null, failed: true, skipped: true, reason: verdict.reason });
-  else if (verdict) events.push({ type: 'chairman-start', seat: verdict.seat }, { type: 'verdict', seat: verdict.seat, text: verdict.text, usage: verdict.usage, attemptId: verdict.attemptId, ...(verdict.failed ? { failed: true, errors: verdict.errors, errorKind: verdict.errorKind } : {}) });
+  else if (verdict) events.push({ type: 'chairman-start', seat: verdict.seat }, { type: 'verdict', seat: verdict.seat, text: verdict.text, usage: verdict.usage, attemptId: verdict.attemptId, ...(verdict.failed ? { failed: true, errors: verdict.errors, errorKind: verdict.errorKind, cancelReason: verdict.cancelReason } : {}) });
   if (error && !finished) events.push({ type: 'error', message: error.message });
   if (finished) events.push({ type: 'done', reason: stop?.reason ?? null, replayed: true, synthesis });
   else events.push({ type: 'interrupted', round: rounds.length, partialRound, resumedBefore: resumedRows });
   if (accepted) events.push({ ...accepted, type: 'accepted' });
   return {
     fieldNotes: head.fieldNotes, seats: seatsWithSessions, chairman: head.chairman, options: head.options,
-    rounds, humanNotes, initialNotes, partialRound, finished, synthesis, deadlineAt, accepted, stopReason: stop?.reason ?? null, verdict, nextRound: rounds.length, events, ledger, recoveryWarnings,
+    rounds, humanNotes, initialNotes, partialRound, finished, synthesis, deadlineAt, accepted, stopReason: stop?.reason ?? null, stopContext: stop?.context ?? null, verdict, nextRound: rounds.length, events, ledger, recoveryWarnings,
   };
 }

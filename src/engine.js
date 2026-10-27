@@ -58,7 +58,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     down: {}, // vendor@account -> { kind, message, resetsAt }: a login that cannot take calls this debate
     seats: seats.map((s, i) => ({ ...s, id: s.id || `seat-${i}`, index: i, sessionId: (resume && s.sessionId) || null, mood: s.mood || { preset: 'grill' } })),
     chairman: chairman || { vendor: seats[0].vendor },
-    startedAt: null, fieldNotes, options: opts, usage: [],
+    startedAt: null, deadlineAt: null, stopContext: null, fieldNotes, options: opts, usage: [],
   };
   const fire = (type, payload = {}) => emit(type, { ...payload, type });
   const record = (row) => { store?.append?.(row); };
@@ -110,7 +110,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     if (down) return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false, error: `skipped: ${down.message}`, kind: down.kind, resetsAt: down.resetsAt, skipped: true, fresh: true, attemptId: null };
     for (let attemptNo = 1; ; attemptNo++) {
       if (stopRequested && (!isChairman || stopVerdict)) return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false,
-        error: 'stopped by the human', kind: 'killed', fresh: !resumes || seat.sessionId == null, attemptId: null };
+        error: 'stopped by the human', kind: 'killed', cancelReason: 'human', fresh: !resumes || seat.sessionId == null, attemptId: null };
       const action = attemptNo > 1 ? 'network retry' : kind === 'reprompt' ? 're-prompt' : kind;
       const what = action === 'verdict' ? 'verdict' : `${action} of ${isChairman ? 'the chairman' : seat.lens}`;
       // Check and reserve synchronously at the dispatch boundary. A retry sees the failed
@@ -126,7 +126,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       const attempt = { type: 'attempt', attemptId, round, kind, seat: pub(seat), fresh: res.fresh, usage: res.reported ? res.usage : null,
         ...(res.reported ? {} : { unknown: true, ms: res.usage.ms,
           ...(res.usage.cost != null ? { cost: res.usage.cost } : {}), ...(res.usage.raw?.cost != null ? { rawCost: res.usage.raw.cost } : {}) }),
-        ...(res.ok ? {} : { errorKind: res.kind }) };
+        ...(res.ok ? {} : { errorKind: res.kind, ...(res.cancelReason ? { cancelReason: res.cancelReason } : {}) }) };
       ledger.push(attempt);
       reserved.delete(attemptId);
       record(attempt);
@@ -159,7 +159,8 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       const kind = deadlineHit ? 'killed' : e.kind || (e.code === 'TIMEOUT' ? 'timeout' : e.code === 'KILLED' ? 'killed' : 'other');
       // a failed call can still report what it cost (an error result); keep it in the ledger
       const usage = accounting(e);
-      return { ok: false, text: '', usage, reported: !!e.usage, error, kind, resetsAt: e.resetsAt || null, timedOut: e.code === 'TIMEOUT', fresh: sessionId == null };
+      const cancelReason = deadlineHit ? 'wall-clock' : stopRequested && kind === 'killed' ? 'human' : null;
+      return { ok: false, text: '', usage, reported: !!e.usage, error, kind, cancelReason, resetsAt: e.resetsAt || null, timedOut: !cancelReason && e.code === 'TIMEOUT', fresh: sessionId == null };
     }
   }
 
@@ -201,7 +202,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       // The re-prompt is a call like any other: it must fit the cap with everything in flight and
       // the chairman still affordable. Refused, the seat fails for this round.
       if (expired()) {
-        res = { ...res, ok: false, error: 'the wall clock ran out before the re-prompt' };
+        res = { ...res, ok: false, error: 'the wall clock ran out before the re-prompt', kind: 'killed', cancelReason: 'wall-clock' };
         v = { ok: false, errors: [res.error], parsed: null, tools: false };
       } else if ((crossing = budgetGate(`re-prompt of ${seat.lens}`, sumProjections(oneCall(seat, round), chairmanCall())))) {
         res = { ...res, ok: false, error: budgetRefusal(crossing, 're-prompt'), kind: 'budget' };
@@ -223,7 +224,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       round, seat: pub(seat), text: res.text, parsed, valid: v.ok, errors: v.ok ? [] : v.errors,
       stanceKey: v.ok ? parsed.stanceKey : (res.ok ? 'other: unparsed' : 'other: no reply'),
       question: v.ok ? parsed.question : null, attemptId: res.attemptId, reprompted, failed: !res.ok,
-      ...(res.ok ? {} : { errorKind: res.kind || 'other', resetsAt: res.resetsAt || null, skipped: !!res.skipped }),
+      ...(res.ok ? {} : { errorKind: res.kind || 'other', resetsAt: res.resetsAt || null, skipped: !!res.skipped, ...(res.cancelReason ? { cancelReason: res.cancelReason } : {}) }),
       // fresh: the first call of the turn had no session to resume (estimate.js baselines
       // keep fresh and resumed calls apart). sessionId: what the CLI reported, for a resume.
       fresh: res.fresh, sessionId: seat.sessionId || null,
@@ -259,6 +260,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
   }
 
   function stopCheck(round) {
+    if (expired()) return 'wall-clock';
     const all = state.rounds[round];
     const live = all.filter((r) => !r.failed);
     if (live.length === 0) return 'all-failed';
@@ -319,7 +321,10 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     const atDeadline = new Promise((resolve) => { timer = setTimeout(() => resolve({ action: 'stop', reason: 'wall-clock' }), Math.max(0, (deadlineAt ?? Infinity) - now())); });
     const answer = (await Promise.race([gate(info), atDeadline])) || { action: 'continue' };
     clearTimeout(timer);
-    if (answer.reason === 'wall-clock') { state.status = 'running'; fire('gate-expired', { round }); return 'wall-clock'; }
+    if (answer.reason === 'wall-clock') {
+      state.status = 'running'; state.stopContext = 'waiting';
+      record({ type: 'gate-expired', round }); fire('gate-expired', { round }); return 'wall-clock';
+    }
     state.status = 'running';
     const message = (answer.message || '').trim();
     saveHumanNote(round, message);
@@ -381,8 +386,8 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     const failed = !res.ok || !v.ok;
     const text = res.ok ? res.text : `Chairman failed: ${res.error}`;
     const errorKind = failed ? (res.ok ? 'format' : res.kind || 'other') : null;
-    state.verdict = { text, attemptId: res.attemptId, seat: pub(seat), failed, ...(failed ? { errors: v.errors, errorKind } : {}) };
-    record({ type: 'verdict', seat: pub(seat), text, attemptId: res.attemptId, ...(failed ? { failed: true, errors: v.errors, errorKind } : {}) });
+    state.verdict = { text, attemptId: res.attemptId, seat: pub(seat), failed, ...(failed ? { errors: v.errors, errorKind, ...(res.cancelReason ? { cancelReason: res.cancelReason } : {}) } : {}) };
+    record({ type: 'verdict', ...state.verdict });
     store?.writeVerdict?.(text, { decision: fieldNotes.decision, chairman: seat.vendor, rounds: state.rounds.length, stopReason: state.stopReason });
     fire('verdict', state.verdict);
   }
@@ -444,6 +449,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     state.status = 'running';
     state.startedAt = now();
     deadlineAt = resume?.deadlineAt ?? state.startedAt + opts.wallClockMs;
+    state.deadlineAt = deadlineAt;
     // At the deadline the calls in flight are stopped; each fails for its round.
     const deadlineTimer = setTimeout(() => { deadlineHit = true; if (state.status !== 'done') cancel(); }, Math.max(0, deadlineAt - now()));
     try { return await runInner(); } finally { clearTimeout(deadlineTimer); }
@@ -472,11 +478,11 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       ledger.push(...(resume.ledger || []));
       from = state.rounds.length;
       record({ type: 'resumed', from, seats: state.seats.map(pub), deadlineAt });
-      fire('resumed', { from, seats: state.seats.map(pub), fieldNotes, options: opts });
+      fire('resumed', { from, seats: state.seats.map(pub), fieldNotes, options: opts, deadlineAt });
     } else {
       record({ type: 'field-notes', schemaVersion: 3, ...provenance, fieldNotes, seats: state.seats.map(pub), chairman: state.chairman, options: opts, deadlineAt });
       store?.writeFieldNotes?.(fieldNotes, state.seats);
-      fire('started', { seats: state.seats.map(pub), fieldNotes, options: opts, chairman: state.chairman });
+      fire('started', { seats: state.seats.map(pub), fieldNotes, options: opts, chairman: state.chairman, deadlineAt });
     }
     try {
       const carried = from > 0 ? stopAfterResume(from - 1) : null;
@@ -490,7 +496,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
         if (stopRequested) { state.stopReason = 'human'; break; }
         let stop = stopCheck(round);
         // Round 0 always shows the blind positions and waits, even when a stop condition is met.
-        if (round === 0 || !stop) {
+        if (!expired() && (round === 0 || !stop || state.rounds[round].some((r) => r.question))) {
           const humanStop = await humanGate(round, stop);
           if (humanStop) { state.stopReason = humanStop; break; }
           // A note at a unanimous round 0 is meant for the seats, not just the chairman: defer the
@@ -503,8 +509,8 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
         }
         if (stop) { state.stopReason = stop; break; }
       }
-      record({ type: 'stop', reason: state.stopReason, rounds: state.rounds.length });
-      fire('stopped', { reason: state.stopReason, rounds: state.rounds.length });
+      record({ type: 'stop', reason: state.stopReason, rounds: state.rounds.length, ...(state.stopContext ? { context: state.stopContext } : {}) });
+      fire('stopped', { reason: state.stopReason, rounds: state.rounds.length, context: state.stopContext });
       // The verdict is under the cap and the wall clock too. A verdict skipped for either can be
       // written later, on request, through POST .../synthesize.
       if (!state.rounds.length) skipVerdict('no round ran', 'no-round');

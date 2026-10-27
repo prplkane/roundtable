@@ -7,6 +7,7 @@ import { project, projectedWindows } from '/src/estimate.js';
 import { PREFLIGHT_TTL_MS } from '/src/preflight.js';
 import { createBrowserDiagnostics, requestAction } from '/ui/diagnostics.js';
 import { installHelp, revealText, MOOD_HELP } from '/ui/help.js';
+import { groupQuestions, answerMessage, stopExplanation, cancellationReason, remainingWindow, argumentHtml } from '/src/review-view.js';
 
 const $ = (id) => document.getElementById(id);
 const helpNotes = installHelp();
@@ -109,14 +110,14 @@ const S = {
   draft: [], // setup screen: the seat rows being edited
   budget: {}, // setup screen: vendor -> { tokens, usd } caps
 };
-const CONN_LABEL = { idle: 'idle', thinking: 'thinking', replied: 'replied', reprompted: 're-prompted', failed: 'failed', 'timed-out': 'timed out', down: 'out for this debate' };
+const CONN_LABEL = { idle: 'idle', thinking: 'thinking', replied: 'replied', reprompted: 're-prompted', failed: 'failed', cancelled: 'cancelled', 'timed-out': 'timed out', down: 'out for this debate' };
 // What a failed call's kind means for the human, in one line (adapters/errors.js classifies).
 const ERROR_LINE = {
   quota: 'Provider usage limit reached. Wait for the reset or choose another provider.',
   auth: 'Provider login needs attention. Sign in with its CLI, then refresh status.',
   missing: 'Provider CLI not found. Install it and restart Roundtable.',
   network: 'Could not reach the provider. Check your connection and its service status.',
-  timeout: 'The provider took too long. Try a smaller review or another model.',
+  timeout: 'This provider reached its per-call time limit. Other replies are kept. Try a smaller review or another model.',
   killed: 'Stopped before it answered.', format: 'The reply did not follow the required format. Try another model.',
   budget: 'The budget blocked this call. Check the cap and reported usage before continuing.',
 };
@@ -357,15 +358,15 @@ function seatRow(s, i) {
     </div>
     <button class="btn remove" type="button" aria-label="Remove seat" title="Remove seat">×</button>
     <div class="seat-bd">
-      <div class="f"><span class="field-label" data-help="lens"><label class="label" for="seat-lens-${i}">Lens</label><button class="help-trigger" type="button" aria-label="About lens" aria-describedby="help-lens">?</button></span><input id="seat-lens-${i}" class="flat lens" value="${esc(s.lens)}" placeholder="e.g. long-term effects" aria-describedby="help-lens seat-error-${i}" ${invalid('lens')}></div>
-      <div class="f"><span class="field-label" data-help="mood"><label class="label" for="seat-mood-${i}">Mood</label><button class="help-trigger" type="button" aria-label="About mood" aria-describedby="help-mood seat-mood-help-${i}">?</button></span><select id="seat-mood-${i}" class="flat mood" aria-describedby="help-mood seat-mood-help-${i}">${Object.keys(MOODS).map((m) => `<option value="${m}" ${m === s.mood ? 'selected' : ''}>${m}</option>`).join('')}<option value="custom" ${s.mood === 'custom' ? 'selected' : ''}>custom…</option></select></div>
+      <div class="f"><label class="label help-label" data-help="lens" tabindex="0" for="seat-lens-${i}" aria-describedby="help-lens">Lens</label><input id="seat-lens-${i}" class="flat lens" value="${esc(s.lens)}" placeholder="e.g. long-term effects" aria-describedby="help-lens seat-error-${i}" ${invalid('lens')}></div>
+      <div class="f"><label class="label help-label" data-help="mood" tabindex="0" for="seat-mood-${i}" aria-describedby="help-mood seat-mood-help-${i}">Mood</label><select id="seat-mood-${i}" class="flat mood" aria-describedby="help-mood seat-mood-help-${i}">${Object.keys(MOODS).map((m) => `<option value="${m}" ${m === s.mood ? 'selected' : ''}>${m}</option>`).join('')}<option value="custom" ${s.mood === 'custom' ? 'selected' : ''}>custom…</option></select></div>
       <span class="sr-only" id="seat-mood-help-${i}">${esc(MOOD_HELP[s.mood] || '')}</span>
       <input class="flat mood-text" aria-label="Custom mood" aria-describedby="seat-error-${i}" ${invalid('moodText')} value="${esc(s.moodText)}" placeholder="One sentence: how this seat approaches the question" ${s.mood === 'custom' ? '' : 'hidden'}>
       <p class="seat-field-error error" id="seat-error-${i}" ${issue ? '' : 'hidden'}>${esc(issue?.message || '')}</p>
       ${gone ? `<span class="seat-note danger">${esc(s.model)} was retired (${esc(gone.date)}); use ${esc(gone.instead)}.</span>` : ''}
       ${api ? `<label class="f"><span class="label">Endpoint</span><input class="flat endpoint" aria-label="Endpoint base URL" list="endpoints" value="${esc(s.endpoint || '')}" placeholder="http://localhost:11434/v1" title="The base URL of an OpenAI-compatible server, ending in /v1. Plain http only on this machine or a private network."></label>
       <label class="f"><span class="label">Key var</span><input class="flat keyenv" aria-label="Key environment variable" value="${esc(s.keyEnv || '')}" placeholder="none (local server)" title="The NAME of the environment variable that holds the key, set in the shell roundtable was started from. Never the key itself."></label>` : ''}
-      <div class="f"><span class="field-label" data-help="effort"><span class="label">Effort</span><button class="help-trigger" type="button" aria-label="About effort" aria-describedby="help-effort">?</button></span><span class="pips">${pipsHtml(s.vendor, s.effort, s.model)}</span><select class="effort" hidden>${effortOptions(s.vendor, s.effort)}</select></div>
+      <div class="f"><span class="label help-label" data-help="effort" tabindex="0" aria-describedby="help-effort">Effort</span><span class="pips">${pipsHtml(s.vendor, s.effort, s.model)}</span><select class="effort" hidden>${effortOptions(s.vendor, s.effort)}</select></div>
       <span class="seat-note lamp-note ${lamp.cls === 'danger' || lamp.cls === 'warn' ? lamp.cls : ''}">${esc(lamp.note)}</span>
       ${api ? '' : `<details class="seat-more" ${s.account ? 'open' : ''}><summary>Login profile</summary><input class="flat account" aria-label="Login profile" value="${esc(s.account || '')}" placeholder="none: your usual login" title="A second login of this CLI, for example a work subscription; node src/doctor.js shows how to log a profile in"></details>`}
     </div>
@@ -838,7 +839,9 @@ function resetBoard({ clearDrafts = false } = {}) {
   replyReveals.clear();
   Object.assign(S, { seats: [], fieldNotes: null, rows: [], rounds: [], humanNotes: [], initialNotes: [], gate: null, deadline: null, held: false, verdict: null, status: 'idle', startedAt: null, stopReason: null, pending: new Set(), chairman: null, configuredChairman: null, interrupted: null, stopQueued: false, error: null, conn: {}, positions: [], accepted: null, synthesis: null, down: {},
     budgetStop: null, exported: null, exportError: null, replayed: false, connected: null, chairmanFallback: null, transcriptWarning: null,
-    actionPending: null, actionError: null, holdPending: false, synthChoice: null }); // hash routing reuses S: nothing from the last board
+    actionPending: null, actionError: null, holdPending: false, synthChoice: null, stopContext: null, reviewDeadline: null }); // hash routing reuses S: nothing from the last board
+  if (clearDrafts || !S.questionDrafts) S.questionDrafts = {};
+  if (clearDrafts) { $('question-inputs').replaceChildren(); delete $('question-inputs').dataset.signature; $('usage-details').open = false; $('decision-actions').open = false; }
   if (clearDrafts) {
     $('human-msg').value = ''; $('accept-note').value = ''; $('export-status').textContent = '';
     delete $('accept-option').dataset.applied;
@@ -849,8 +852,8 @@ function resetBoard({ clearDrafts = false } = {}) {
 function handle(e) {
   if (!e.replayed && !e.failed && !e.skipped && ['reply', 'verdict'].includes(e.type)) replyReveals.set(replyKey(e), performance.now());
   switch (e.type) {
-    case 'started': resetBoard(); S.seats = e.seats; S.fieldNotes = e.fieldNotes; S.configuredChairman = e.chairman || null; S.status = 'running'; S.startedAt = Date.now(); $('board-title').textContent = e.fieldNotes.decision; document.title = `${e.fieldNotes.decision} · Roundtable`; $('board-empty').hidden = false; break;
-    case 'resumed': S.status = 'running'; S.interrupted = null; S.startedAt = Date.now(); S.pending.clear(); break;
+    case 'started': resetBoard(); S.seats = e.seats; S.fieldNotes = e.fieldNotes; S.configuredChairman = e.chairman || null; S.reviewDeadline = e.deadlineAt; S.status = 'running'; S.startedAt = Date.now(); $('board-title').textContent = e.fieldNotes.decision; document.title = `${e.fieldNotes.decision} · Roundtable`; $('board-empty').hidden = false; break;
+    case 'resumed': S.status = 'running'; S.interrupted = null; S.reviewDeadline = e.deadlineAt; S.startedAt = Date.now(); S.pending.clear(); break;
     case 'interrupted': S.status = 'interrupted'; S.interrupted = e; S.pending.clear(); break;
     case 'round-start': S.rounds[e.round] = []; S.pending = new Set(S.seats.map((s) => s.index)); $('board-empty').hidden = true; break;
     case 'seat-start': break;
@@ -858,7 +861,8 @@ function handle(e) {
     case 'reprompt': S.pending.add(e.seat.index); break;
     case 'reply': S.rows.push(e); S.rounds[e.round] = S.rounds[e.round] || []; S.rounds[e.round].push(e); S.pending.delete(e.seat.index); break;
     case 'round-done': S.pending.clear(); if (e.positions) S.positions[e.round] = e.positions; break;
-    case 'gate': S.gate = e; S.deadline = null; S.held = false; S.status = 'waiting'; break;
+    case 'gate': S.gate = e; S.reviewDeadline = e.deadlineAt; S.deadline = null; S.held = false; S.status = 'waiting'; break;
+    case 'gate-expired': S.stopContext = 'waiting'; S.gate = null; S.deadline = null; break;
     case 'countdown': S.deadline = e.deadline; break;
     case 'held': S.held = true; S.deadline = null; break;
     case 'gate-closed': S.gate = null; S.deadline = null; S.status = 'running'; break;
@@ -869,19 +873,19 @@ function handle(e) {
     case 'pool': S.pools[e.vendor] = e.pool; break;
     case 'pool-down': S.down[e.key] = e; break;
     case 'budget': S.budgetStop = e; break;
-    case 'stopped': S.stopReason = e.reason; S.status = 'verdict'; break;
+    case 'stopped': S.stopReason = e.reason; S.stopContext = e.context || S.stopContext; S.gate = null; S.deadline = null; S.pending.clear(); S.status = 'verdict'; break;
     case 'chairman-start': S.chairman = e.seat; break;
     case 'chairman-fallback': S.chairmanFallback = e; break;
     case 'attempt': S.rows.push(e); break;
     case 'verdict': S.rows.push(e); S.verdict = e; break;
-    case 'done': S.status = 'done'; S.replayed = !!e.replayed; S.synthesis = e.synthesis || (S.verdict ? (S.verdict.skipped ? 'skipped' : S.verdict.failed ? 'failed' : 'done') : 'missing'); break;
+    case 'done': S.status = 'done'; S.gate = null; S.deadline = null; S.pending.clear(); S.stopReason = e.reason || S.stopReason; S.replayed = !!e.replayed; S.synthesis = e.synthesis || (S.verdict ? (S.verdict.skipped ? 'skipped' : S.verdict.failed ? 'failed' : 'done') : 'missing'); break;
     case 'synthesize': S.status = 'verdict'; S.verdict = null; break;
     case 'accepted': S.accepted = e; break;
     case 'exported': S.exported = e; S.exportError = null; break;
     case 'export-failed': S.exportError = e.error + errorReference(e.diagnostic); break;
     case 'transcript-warning': S.transcriptWarning = e; break;
     case 'error':
-      S.status = 'error'; S.error = e.message + errorReference(e.diagnostic);
+      S.status = 'error'; S.gate = null; S.deadline = null; S.pending.clear(); S.error = e.message + errorReference(e.diagnostic);
       if (e.fatal) { closeBoard(); $('board-title').textContent = 'Transcript needs repair'; document.title = 'Transcript needs repair · Roundtable'; }
       break;
   }
@@ -895,28 +899,34 @@ const seatMeta = (seat) => [seat.endpoint ? 'API' : 'CLI', seat.model, seat.effo
 
 function card(r) {
   const seat = r.seat;
+  const cancelled = cancellationReason(r, S.stopReason, S.rounds.length - 1);
   const flags = [];
   if (r.reprompted) flags.push('<span class="status warn">re-prompted</span>');
   if (r.usedTools) flags.push(`<span class="status ${r.toolFail ? 'danger' : 'warn'}">used tools</span>`);
-  if (r.failed) flags.push('<span class="status danger">no reply</span>');
+  if (r.failed) flags.push(`<span class="status ${cancelled ? 'warn' : 'danger'}">${cancelled ? 'cancelled' : r.timedOut ? 'call timed out' : 'no reply'}</span>`);
   else if (!r.valid) flags.push('<span class="status warn">off contract</span>');
   let body;
   if (r.failed) {
-    const line = (r.skipped ? `Skipped: ${VENDOR_LABEL[seat.vendor] || seat.vendor} is out for this debate.` : (ERROR_LINE[r.errorKind] || 'The provider call failed. Check the details and save the error log.')) + errorReference(r.diagnostic);
-    body = `<p class="fail-line danger">${esc(line)}${r.resetsAt ? ` Resets ${esc(new Date(r.resetsAt).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}.` : ''}</p><details class="fail-detail"><summary>details</summary><pre>${esc(r.errors.join('\n'))}</pre></details>`;
+    const line = cancelled === 'human' ? 'Cancelled when you pressed Stop. Earlier replies are kept; this seat did not finish this round.'
+      : cancelled === 'wall-clock' ? 'Cancelled because the review time limit expired. Earlier replies are kept.'
+      : (r.skipped ? `Skipped: ${VENDOR_LABEL[seat.vendor] || seat.vendor} is out for this debate.` : (ERROR_LINE[r.errorKind] || 'The provider call failed. Check the details and save the error log.')) + errorReference(r.diagnostic);
+    body = `<p class="fail-line ${cancelled ? 'muted' : 'danger'}">${esc(line)}${r.resetsAt ? ` Resets ${esc(new Date(r.resetsAt).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}.` : ''}</p><details class="fail-detail"><summary>Details</summary><pre>${esc((r.errors || []).join('\n') + (cancelled ? errorReference(r.diagnostic) : ''))}</pre></details>`;
   }
   else if (r.parsed.pass) body = '<span class="muted">Nothing new to add.</span>';
   else if (!r.valid) body = `<pre>${esc(r.text)}</pre>`;
-  else body = `<dl>
-      ${r.round > 0 ? `<dt>agrees with</dt><dd>${r.parsed.agreeWith.length ? esc(r.parsed.agreeWith.join(', ')) : '<span class="muted">no one</span>'}</dd>` : ''}
-      <dt>disagree</dt><dd>${list(r.parsed.disagree)}</dd>
-      <dt>new</dt><dd>${list(r.parsed.new)}</dd>
-      <dt>assumes</dt><dd>${list(r.parsed.assumptions)}</dd>
-    </dl>${r.question ? `<div class="question"><b>QUESTION FOR YOU</b> ${esc(r.question)}</div>` : ''}`;
+  else {
+    const section = (title, items, tone) => `<section class="argument-section argument-${tone}"><h4>${title}</h4>${items.length ? `<ul>${items.map((text) => `<li>${argumentHtml(text, tone)}</li>`).join('')}</ul>` : '<span class="muted">None stated.</span>'}</section>`;
+    body = `<div class="seat-stance"><span class="label">Position</span><strong>${esc(optionLabel(r.stanceKey, S.fieldNotes?.options))}</strong></div>
+      ${r.parsed.agreeWith.length ? section('Agrees with', r.parsed.agreeWith, 'agree') : ''}
+      ${section('Disagrees with · why', r.parsed.disagree, 'disagree')}
+      ${section('New points', r.parsed.new, 'new')}
+      ${section('Assumptions', r.parsed.assumptions, 'assumptions')}
+      ${r.question ? `<details class="question"><summary>Question for you${S.gate?.round === r.round ? ' · answer above' : ''}</summary><p>${esc(r.question)}</p></details>` : ''}`;
+  }
   const meta = seatMeta(seat);
   // the dot is the live connection state in the current round, the recorded one in older rounds
   const current = r.round === S.rounds.length - 1;
-  const conn = current ? (S.conn[seat.id] || r.state) : (r.state || (r.failed ? 'failed' : 'replied'));
+  const conn = cancelled ? 'cancelled' : current ? (S.conn[seat.id] || r.state) : (r.state || (r.failed ? 'failed' : 'replied'));
   const position = S.positions[r.round]?.[seat.id] || null;
   return `<article class="card" style="--seat: var(--seat-${esc(seat.colour)})" data-position="${esc(position || 'none')}" title="${esc(position ? POSITION_LABEL[position] : '')}">
     <div class="card-head"><span class="vendor" title="${esc(meta)}">${esc(seatName(seat))}</span><span class="lens">${esc(seat.lens)}</span>${led(conn)}${seat.mood?.preset && seat.mood.preset !== 'grill' ? `<span class="muted">${esc(seat.mood.preset)}</span>` : ''}<span class="flags">${flags.join('')}</span></div>
@@ -930,7 +940,7 @@ function pendingCard(seat) {
 
 function renderRound(i, replies, isCurrent) {
   const groups = new Map();
-  for (const r of replies) { const k = optionLabel(r.stanceKey || 'other: unparsed', S.fieldNotes?.options); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); }
+  for (const r of replies) { const k = r.failed ? cancellationReason(r, S.stopReason, S.rounds.length - 1) ? 'Cancelled calls' : r.timedOut ? 'Calls that timed out' : 'No reply' : optionLabel(r.stanceKey || 'Unformatted reply', S.fieldNotes?.options); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); }
   const pendingSeats = isCurrent ? S.seats.filter((s) => S.pending.has(s.index) && !replies.some((r) => r.seat.index === s.index)) : [];
   const tally = [...groups.entries()].map(([k, v]) => `${k} (${v.length})`).join(' · ') || (pendingSeats.length ? 'in progress' : '');
   const groupHtml = [...groups.entries()].map(([k, v]) => `<section class="group ${v.length > 1 ? 'span' : ''}">
@@ -978,6 +988,15 @@ function renderUsage() {
   if (cur != null && u.byRound[String(cur)]) rows.push(row(`Round ${cur}`, u.byRound[String(cur)], 'muted'));
   rows.push(row('Debate', u.total, 'total'));
   $('usage').querySelector('tbody').innerHTML = rows.join('');
+  const keys = [...new Set([...S.seats, ...(S.chairman || S.configuredChairman ? [S.chairman || S.configuredChairman] : [])].map((seat) => poolKey(seat.vendor, seat.account, !!VENDOR_META[seat.vendor]?.profiles)))];
+  $('usage-summary').innerHTML = keys.map((key) => {
+    const window = remainingWindow(S.quota[key]);
+    const name = `${VENDOR_LABEL[poolVendor(key)] || poolVendor(key)}${poolAccount(key) ? ` · ${poolAccount(key)}` : ''}`;
+    const remaining = window && Math.floor(window.remaining);
+    const manual = S.pools[poolVendor(key)];
+    return `<div class="quota-compact"><div><b>${esc(name)}</b><span>${window ? `${remaining}% left` : manual ? `${esc(manual.remaining.toLocaleString())} ${esc(manual.unit)} left` : 'not reported'}</span></div>
+      ${window ? `<div class="quota-track ${remaining < 10 ? 'danger' : remaining < 25 ? 'warn' : 'ok'}" role="meter" aria-label="${esc(name)} quota remaining" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${remaining}"><span style="width:${remaining}%"></span></div><small>${esc(window.label)} · reported ${esc(agoText(window.at))}</small>` : '<small>Open details for available figures.</small>'}</div>`;
+  }).join('');
 }
 
 // The pool row on the board: name, one readout per live window, then freshness and the usage link.
@@ -1050,8 +1069,10 @@ function renderGate() {
   const g = S.gate;
   const st = $('gate-status');
   const interrupted = S.status === 'interrupted';
+  renderQuestions();
+  renderReviewState();
   $('continue').disabled = !!S.actionPending || !g && !interrupted; $('stop').disabled = !!S.actionPending || ['done', 'error'].includes(S.status) || interrupted;
-  $('human-form').hidden = S.status === 'done'; // a finished debate takes no note; its bar keeps the status
+  $('human-form').hidden = ['done', 'error', 'verdict', 'idle'].includes(S.status);
   $('continue').textContent = ['continue', 'resume'].includes(S.actionPending) ? 'Sending…' : interrupted ? 'Resume' : 'Continue';
   $('stop').textContent = S.actionPending === 'stop' ? 'Stopping…' : 'Stop';
   const actionError = S.actionError && !['accept', 'export'].includes(S.actionError.action) ? S.actionError.message : '';
@@ -1070,10 +1091,10 @@ function renderGate() {
     const synth = S.status === 'done' && S.synthesis && S.synthesis !== 'done' && S.rounds.length
       ? ` <span class="synth">Write the verdict with <select id="synth-chair" aria-label="Chairman for the verdict">${pickable.map((v) => `<option value="${v}" ${v === first ? 'selected' : ''}>${esc(VENDOR_LABEL[v])}${v === savedChair?.vendor ? esc([savedChair.model, savedChair.effort, savedChair.account].filter(Boolean).map((s) => ` · ${s}`).join('')) : ''}</option>`).join('')}${apiSeats.map((o) => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join('')}</select> <button class="btn btn-small" id="synthesize" type="button" ${S.actionPending ? 'disabled' : ''}>${S.actionPending === 'synthesize' ? 'Starting…' : 'Write'}</button></span>` : '';
     const focused = st.contains(document.activeElement) ? document.activeElement.id : null;
-    st.innerHTML = link + (S.status === 'done' ? `<span class="status ok">done</span>${synth} stopped: ${esc(S.stopReason)}. Record saved locally.${S.exported ? ' Decision record exported.' : ''}${S.exportError ? ` <span class="danger">Export failed: ${esc(S.exportError)}</span>` : ''}${S.replayed ? ' <span class="muted">loaded from the transcript</span>' : ''}`
+    st.innerHTML = link + (S.status === 'done' ? `<span class="status ${S.synthesis === 'done' ? 'ok' : 'warn'}">${S.synthesis === 'done' ? 'Review finished' : 'Review ended without a verdict'}</span> ${esc(stopExplanation(S.stopReason, S.stopContext))}${synth} Record saved locally.${S.exported ? ' Decision record exported.' : ''}${S.exportError ? ` <span class="danger">Export failed: ${esc(S.exportError)}</span>` : ''}${S.replayed ? ' <span class="muted">saved review</span>' : ''}`
       : interrupted ? `<span class="status warn">interrupted</span> ${S.interrupted?.round ? `after round ${S.interrupted.round - 1}` : 'before round 0 finished'}${S.interrupted?.partialRound != null ? `, round ${S.interrupted.partialRound} will be re-run` : ''}. Add a note or resume.`
       : S.status === 'idle' ? '<span class="status warn">loading</span> waiting for the transcript'
-      : S.status === 'verdict' ? '<span class="status warn">chairman writing the verdict</span>'
+      : S.status === 'verdict' ? '<span class="status warn">Discussion finished</span> The chairman is writing the verdict. No further comments are being requested.'
       : S.status === 'error' ? `<span class="status danger">error</span> ${esc(S.error)}`
       : S.stopQueued ? '<span class="status warn">stop queued</span> waiting for calls already in flight to settle; the round closes, then the chairman writes the verdict'
       : `<span class="status warn">round ${S.rounds.length - 1} in flight</span> ${S.pending.size} seat${S.pending.size === 1 ? '' : 's'} still thinking`);
@@ -1083,14 +1104,49 @@ function renderGate() {
     return;
   }
   const parts = [];
-  if (g.reason === 'round0') parts.push(`<span class="status warn">waiting for you</span> ${S.seats.length} blind positions are on the table. Add a note or continue.`);
-  if (g.reason === 'question') parts.push(`<span class="status warn">question</span> ${g.questions.map((q) => `<b>${esc(q.lens)}</b>: ${esc(q.question)}`).join(' · ')}`);
-  if (g.stop) parts.push(`<span class="status ok">${esc(g.stop)}</span> ${g.reopenable ? 'Continue goes straight to the verdict; a note runs one more round.' : 'Continue goes straight to the verdict.'}`);
+  if (g.questions.length) parts.push(`<span class="status warn">${groupQuestions(g.questions).length} question${groupQuestions(g.questions).length === 1 ? '' : 's'} for you</span> Answer above, or continue without answers.`);
+  else if (g.reason === 'round0') parts.push(`<span class="status warn">waiting for you</span> ${S.seats.length} blind positions are on the table. Add a note or continue.`);
+  if (g.stop) parts.push(`<span class="hint">${g.reopenable ? 'Next: the verdict, or one more round if you add a note.' : 'Next: the verdict.'}</span>`);
   if (g.mode === 'countdown') {
     if (S.held) parts.push('<span class="status muted">countdown held</span> waiting for you');
     else if (S.deadline) parts.push(`<span class="countdown">auto-continue in <span id="cd">${Math.max(0, Math.ceil((S.deadline - Date.now()) / 1000))}</span> s</span>`);
   }
+  if (S.reviewDeadline) parts.push(`<span class="hint">Review time left: <span id="review-time-left"></span>. Reading and answering count toward this limit.</span>`);
   st.innerHTML = link + parts.join(' ');
+  updateReviewTime();
+}
+
+function updateReviewTime() {
+  const el = $('review-time-left');
+  if (el && S.reviewDeadline) { const seconds = Math.max(0, Math.ceil((S.reviewDeadline - Date.now()) / 1000)); el.textContent = `${Math.floor(seconds / 60)}m ${seconds % 60}s`; }
+}
+
+function renderReviewState() {
+  const terminal = ['done', 'error'].includes(S.status);
+  const title = S.status === 'done' ? S.synthesis === 'done' ? 'Review finished' : 'Review ended · no verdict' : S.status === 'verdict' ? 'Discussion finished · writing verdict' : S.status === 'waiting' ? 'Waiting for your input' : S.status === 'interrupted' ? 'Review interrupted' : S.status === 'error' ? 'Review stopped unexpectedly' : 'Discussion in progress';
+  const text = S.status === 'done' ? `${stopExplanation(S.stopReason, S.stopContext)} ${S.synthesis === 'done' ? 'Read the verdict below, then record your decision if ready.' : 'You can request a verdict from the saved replies.'}` : S.status === 'verdict' ? 'Your notes are saved. The chairman is preparing the recommendation.' : S.status === 'waiting' ? 'Questions are collected below. Your answers are sent together.' : terminal ? 'Review the saved replies and error log before retrying.' : '';
+  $('review-state').innerHTML = `<strong>${esc(title)}</strong>${text ? `<p>${esc(text)}</p>` : ''}`;
+  $('review-state').classList.toggle('finished', terminal);
+}
+
+const questionKey = (round, q) => `${round}:${q.id}:${q.question}`;
+function renderQuestions() {
+  const groups = groupQuestions(S.gate?.questions);
+  const visible = S.status === 'waiting' && groups.length > 0;
+  $('questions-panel').hidden = !visible;
+  $('answer-questions').hidden = !visible;
+  if (!visible) return;
+  $('questions-count').textContent = `${groups.length} distinct · ${S.gate.questions.length} asked`;
+  const inputs = $('question-inputs'), signature = JSON.stringify([S.gate.round, groups]);
+  if (inputs.dataset.signature !== signature) {
+    inputs.dataset.signature = signature;
+    inputs.innerHTML = groups.map((q) => `<div class="question-answer"><label for="answer-${q.id}"><span class="question-sources">${q.sources.map(esc).join(' · ')}</span><strong>${esc(q.question)}</strong></label><textarea id="answer-${q.id}" data-question="${q.id}" rows="2" maxlength="1200" placeholder="Your answer, or leave blank">${esc(S.questionDrafts[questionKey(S.gate.round, q)] || '')}</textarea></div>`).join('');
+  }
+  const answered = groups.filter((q) => S.questionDrafts[questionKey(S.gate.round, q)]?.trim()).length;
+  $('answer-count').textContent = `${answered} of ${groups.length} answered · one send to all seats`;
+  $('send-answers').disabled = !!S.actionPending;
+  $('send-answers').textContent = S.actionPending === 'continue' ? 'Sending…' : answered ? 'Send answers and continue' : 'Continue without answers';
+  $('answer-questions').textContent = `Answer ${groups.length} question${groups.length === 1 ? '' : 's'}`;
 }
 
 // Which vendor would cross its cap, and by how much: shown wherever the gate status is.
@@ -1135,6 +1191,7 @@ function render() {
 }
 
 function tick() {
+  updateReviewTime();
   if (S.startedAt && S.status !== 'done') $('st-elapsed').textContent = `${Math.floor((Date.now() - S.startedAt) / 60000)}m ${Math.floor(((Date.now() - S.startedAt) / 1000) % 60)}s`;
   const cd = $('cd');
   if (cd && S.deadline) cd.textContent = Math.max(0, Math.ceil((S.deadline - Date.now()) / 1000));
@@ -1188,9 +1245,29 @@ $('human-form').addEventListener('submit', (ev) => {
 });
 function sendHuman(action) {
   const value = $('human-msg').value;
-  return boardAction(action, { message: value.trim() }, () => { if ($('human-msg').value === value) $('human-msg').value = ''; });
+  const gate = S.gate, groups = groupQuestions(gate?.questions);
+  const drafts = groups.map((q) => ({ key: questionKey(gate.round, q), id: q.id, text: S.questionDrafts[questionKey(gate.round, q)] || '' }));
+  const answers = drafts.filter((a) => a.text.trim()).map(({ id, text }) => ({ id, text }));
+  const message = answerMessage(gate?.questions, answers, value);
+  if (message.length > 4000) { S.actionError = { action, message: 'The answers, questions and note together exceed 4,000 characters. Shorten your answers before sending; your draft is kept.' }; renderGate(); return; }
+  return boardAction(action, { message, ...(gate ? { round: gate.round } : {}) }, () => {
+    if ($('human-msg').value === value) $('human-msg').value = '';
+    for (const draft of drafts) if (S.questionDrafts[draft.key] === draft.text) delete S.questionDrafts[draft.key];
+    delete $('question-inputs').dataset.signature;
+  });
 }
 $('stop').addEventListener('click', () => sendHuman('stop'));
+$('question-inputs').addEventListener('input', (event) => {
+  const q = groupQuestions(S.gate?.questions).find((q) => q.id === event.target.dataset.question);
+  if (!q || !S.gate) return;
+  S.questionDrafts[questionKey(S.gate.round, q)] = event.target.value;
+  renderQuestions();
+});
+$('send-answers').addEventListener('click', () => sendHuman('continue'));
+$('answer-questions').addEventListener('click', () => {
+  $('questions-panel').scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
+  $('question-inputs').querySelector('textarea')?.focus({ preventScroll: true });
+});
 
 // ---------- export ----------
 try { $('export-target').value = localStorage.getItem('roundtable.exportTarget') || ''; } catch {}

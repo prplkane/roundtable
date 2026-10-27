@@ -16,11 +16,13 @@ import { normaliseSeats, normaliseChairman, MOODS, COLOURS, poolKey, poolVendor,
 import { slugFor, openDebateDir, readAllTranscripts, rebuildDebate, normaliseRows } from './store.js';
 import { exportDebate, validateTarget, decisionRecord } from './export.js';
 import { rollup } from './engine.js';
-import { baselinesFrom, windowDeltas, updateCalibration, migrateCalibration, CALIBRATION_VERSION } from './estimate.js';
+import { baselinesFrom, windowDeltas, updateCalibration, migrateCalibration, CALIBRATION_VERSION, project } from './estimate.js';
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { fakeRunner, fakeQuota } from './fake.js';
 import { validateDebateRequest, validateMessage, validateAccept, BODY_LIMIT } from './validate.js';
 import { createDiagnostics, diagnosticAction, validateBrowserDiagnostics } from './diagnostics.js';
+import { answerMessage } from './review-view.js';
+import { reviewSnapshot } from './snapshot.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const UI = path.join(ROOT, 'src', 'ui');
@@ -138,7 +140,8 @@ function watchRounds(d, payload) {
 function sseLine(d, i, replayed = false) { return `id: ${d.gen}:${i}\ndata: ${JSON.stringify(replayed ? { ...d.events[i], replayed: true } : d.events[i])}\n\n`; }
 function push(d, event) {
   let code;
-  if (event.type === 'attempt' && event.errorKind) code = 'provider-failed';
+  if (event.cancelReason) code = 'call-cancelled';
+  else if (event.type === 'attempt' && event.errorKind) code = 'provider-failed';
   else if ((event.type === 'reply' && event.valid === false) || (event.type === 'verdict' && event.failed)) code = event.failed && event.errorKind !== 'format' ? 'provider-failed' : 'reply-invalid';
   else if (event.type === 'reprompt') code = 'reply-invalid';
   else if (event.type === 'error') code = 'engine-failed';
@@ -147,7 +150,7 @@ function push(d, event) {
   else if (event.type === 'budget') code = 'provider-failed';
   if (code && !event.diagnostic) {
     const diagnostic = diagnostics.write({ code, action: event.type === 'export-failed' ? 'export' : 'events',
-      vendor: event.seat?.vendor, kind: event.errorKind || (event.type === 'budget' ? 'budget' : undefined), round: event.round, line: event.line });
+      vendor: event.seat?.vendor, kind: event.errorKind || (event.type === 'budget' ? 'budget' : undefined), cancelReason: event.cancelReason, round: event.round, line: event.line });
     event = { ...event, diagnostic };
   }
   d.events.push(event);
@@ -350,7 +353,7 @@ function answerGate(d, answer) {
   return true;
 }
 
-function startDebate(raw) {
+function prepareDebate(raw) {
   const body = validateDebateRequest(raw, { adapters: ADAPTERS });
   const fieldNotes = body.fieldNotes;
   if (fieldNotes.exportTo) fieldNotes.exportTo = validateTarget(fieldNotes.exportTo, { forbid: [DEBATES_DIR] }); // checked up front, not when the verdict lands
@@ -361,9 +364,13 @@ function startDebate(raw) {
     if (r) throw new Error(`${ADAPTERS[s.vendor].label} retired ${s.model} (${r.date}); use ${r.instead}.`);
   }
   const chairman = normaliseChairman(body.chairman, { vendors: ADAPTERS, efforts: effortsByVendor() });
+  return { fieldNotes, seats, chairman, options: { ...DEFAULTS, ...body.options } };
+}
+
+function startDebate(raw) {
+  const { fieldNotes, seats, chairman, options } = prepareDebate(raw);
   const slug = slugFor(fieldNotes.decision, DEBATES_DIR);
   const store = openDebateDir(DEBATES_DIR, slug);
-  const options = { ...DEFAULTS, ...body.options };
   const d = { slug, gen: Date.now(), events: [], clients: new Set(), pending: null, timer: null, store, qAtRound: {}, settled: new Set(), interrupted: false, finished: false };
   debates.set(slug, d);
   for (const [vendor, q] of Object.entries(quota)) push(d, { type: 'quota', vendor, quota: q }); // replayed to late boards
@@ -505,7 +512,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const p = url.pathname;
   try {
-    const isRead = req.method === 'GET' && (!p.startsWith('/api/') || p === '/api/seats' || p === '/api/debates' || p === '/api/preflight' || /\/events$/.test(p));
+    const isRead = req.method === 'GET' && (!p.startsWith('/api/') || p === '/api/seats' || p === '/api/debates' || p === '/api/preflight' || /\/(events|state)$/.test(p));
     const no = refuse(req, isRead);
     if (no) return requestError(res, no[0], no[1], diagnosticAction(p));
     if (p === '/') {
@@ -545,6 +552,13 @@ const server = http.createServer(async (req, res) => {
     const pm = p.match(/^\/api\/pools\/([a-z]+)$/);
     if (pm && req.method === 'POST') return json(res, 200, { pool: setPool(pm[1], await readBody(req)) });
     if (req.method === 'GET' && p === '/api/debates') return json(res, 200, { debates: listDebates() });
+    if (req.method === 'POST' && p === '/api/preview') {
+      const plan = prepareDebate(await readBody(req));
+      return json(res, 200, { valid: true, mode: FAKE ? 'demo' : 'live',
+        plannedCalls: plan.seats.length * (plan.options.critiqueRounds + 1) + 1,
+        projection: project({ seats: plan.seats, chairman: plan.chairman || { vendor: plan.seats[0].vendor }, critiqueRounds: plan.options.critiqueRounds, memory: plan.options.memory, baselines }),
+        note: 'Estimate before retries. Checking does not start a review or call a model.' });
+    }
     if (p === '/api/preflight' && (req.method === 'GET' || req.method === 'POST')) {
       // GET never executes, even with ?fresh. POST {pools, endpoints, fresh} refreshes under
       // the launch token; forced refresh still shares in-flight work and obeys the cooldown.
@@ -560,7 +574,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       return json(res, 200, { slug: startDebate(body) });
     }
-    const m = p.match(/^\/api\/debates\/([^/]+)\/(events|continue|stop|hold|resume|export|synthesize|accept)$/);
+    const m = p.match(/^\/api\/debates\/([^/]+)\/(events|state|continue|stop|hold|resume|export|synthesize|accept)$/);
     if (m) {
       let d;
       try { d = debates.get(m[1]) || loadDebate(m[1]); } catch (e) {
@@ -571,6 +585,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       if (!d) return requestError(res, 404, 'This review was not found on this server. Return to Debates and choose an existing review.', diagnosticAction(p));
+      if (m[2] === 'state' && req.method === 'GET') return json(res, 200, reviewSnapshot(d));
       if (m[2] === 'events') {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
         for (let i = replayFrom(d, req.headers['last-event-id']); i < d.events.length; i++) res.write(sseLine(d, i, true));
@@ -579,6 +594,12 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const body = validateMessage(await readBody(req));
+      if (['continue', 'stop'].includes(m[2]) && body.round != null && d.pending?.info.round !== body.round)
+        return requestError(res, 409, 'The review has moved to another step. Your answers were not sent. Read the current questions before retrying.', m[2]);
+      if (body.answers?.length) {
+        if (!d.pending) return requestError(res, 409, 'The review is not waiting for answers. Your draft was not sent.', m[2]);
+        body.message = validateMessage({ message: answerMessage(d.pending.info.questions, body.answers, body.message) }).message;
+      }
       if (m[2] === 'resume') { resumeDebate(d, body); return json(res, 200, { ok: true }); }
       if (m[2] === 'synthesize') { synthesizeDebate(d, body); return json(res, 200, { ok: true }); }
       if (m[2] === 'accept') return json(res, 200, acceptDecision(d, body));

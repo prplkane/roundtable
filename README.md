@@ -75,9 +75,14 @@ local and exclude review text, credentials and personal paths.
 | `npm run fake` | Scripted demo on port 4748 |
 | `npm run doctor` | Inspect installed providers, versions and available status without model calls |
 | `npm run doctor -- --live` | Add one small model call per CLI provider |
+| `node src/cli.js agent --help` | Check setup and run reviews through compact JSON commands; no GUI needed |
 | `npm run debate -- --token <hex> --rounds 1 < debate.json` | Run a review against an existing server without the board |
 | `npm run export -- <debate> <folder>` | Export a decision record and update its index |
 | `npm test` | Offline unit and integration tests; no vendor CLI or model call |
+
+For coding agents, use `agent status`, `check`, `start`, `wait` and `answer`. Questions remain
+paused until answered, explicitly skipped, or the review time limit expires.
+See the [agent workflow](docs/workflow.md#8-run-a-debate-without-the-browser).
 
 ## Documentation
 

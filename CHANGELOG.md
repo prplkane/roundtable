@@ -25,6 +25,14 @@
 
 ### Local operation and interface
 
+- Put delayed hover explanations on text labels. Separate positions from arguments, emphasize
+  rejection words, and collapse usage into quota bars with expandable details.
+- Collect questions and answers in one area, combine identical questions without a model call,
+  and wait for final-round answers before the verdict. Reject stale-round submissions.
+- Close discussion controls when rounds end. Explain Stop, provider timeout and review expiry
+  separately, including expiry while waiting for input; retain those reasons on replay.
+- Add JSON agent commands for setup checks, estimates, start, bounded waits, answers and recovery.
+  Keep launch tokens in memory and require explicit actions for calls. Shorten response targets.
 - Give added seats distinct starter lenses and recover empty lenses in saved drafts. Highlight
   and focus missing or duplicate lenses and empty custom moods before a review starts.
 - Explain lenses, moods and round settings with delayed, keyboard-accessible hints. Add a

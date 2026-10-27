@@ -183,8 +183,8 @@ starter perspective and a notice to review it. If you clear a lens, reuse anothe
 or leave a custom mood blank, **Open the table** highlights and focuses that field before
 any model call. Your draft stays in place.
 
-Hover over the **?** beside Lens, Mood, Effort or a round setting for a short explanation.
-You can also focus the **?** with the keyboard or tap it. Hints appear after a brief delay,
+Hover over the Lens, Mood, Effort or round-setting label for about a second for an explanation.
+You can also focus the label with the keyboard or tap it. Hints appear after a deliberate delay,
 remain open while you read them, and close with Escape or a tap outside. The Mood hint
 explains the selected approach. New agent replies use a brief text reveal; saved replies
 appear in full. The interface respects your device's reduced-motion setting.
@@ -244,6 +244,10 @@ likely to draw in this debate, stacked in the seat's colour, the vendor's live r
 window where it reports one, and the measured share each seat would take. Antigravity reports
 no remaining credits, so you can type the figure from its credits page into its block.
 
+On the running board, usage starts collapsed. Each account shows its lowest reported percentage
+remaining and a small bar, with the window and reading age. Missing figures say **not reported**.
+Open **Usage details** for per-seat tokens, partial totals, costs, timing and other windows.
+
 ### Open the table and take part
 
 Press **Open the table**.
@@ -254,8 +258,10 @@ Press **Open the table**.
    press Continue.
 2. **Critique rounds.** Each seat sees the others' replies under their lens names and argues.
    Between rounds the countdown runs; type to hold it.
-3. **Questions for you.** When a seat needs a fact only you have, the board stops and shows the
-   question. Answer in the bar.
+3. **Questions for you.** Answer in one area above the replies. Identical questions share a field
+   and list all asking lenses; distinct questions stay separate. Send all answers together, add
+   a general note, or continue with unknowns left blank. Final-round questions also wait before
+   the verdict. No extra model call is used to collect questions.
 4. **Stop** ends the debate at any time. So does typing `/stop`.
 
 Cards with the same position share an outer box, so agreement is visible at a glance. Each
@@ -263,18 +269,29 @@ card has a small dot for what the seat is doing (grey idle, blinking amber think
 replied, red failed) and a faint tint for its position (with the majority, against it, its own
 stance, or passed).
 
+Each card separates its position, disagreements, new points and assumptions. Red emphasis marks
+literal rejection or negation words inside disagreement sections; green marks agreement.
+The labels and text carry the meaning too. These colors are reading aids, not sentiment scores.
+
 The debate also stops by itself when all seats agree, all pass, a round changes nothing, the
 round limit or wall clock is reached, or a budget cap would be crossed.
 
 **Stop** during a round saves your note immediately, cancels owned CLI processes, and prevents
 further seat retries or rounds. Calls already in flight settle before the chairman runs under
 the existing limits. A natural stop such as consensus does not discard your stop request.
+Cancelled calls say why they stopped. A provider timeout is shown separately from the review's
+overall time limit. Waiting for your input counts toward that limit; the answer area shows the
+remaining time. If it expires, the board says that no answer was assumed.
 
 ### The verdict
 
 The chairman writes the recommendation, the tally per seat, the strongest dissent, kill
 criteria (what would prove the decision wrong) and open questions. Everything is saved in
 `debates/<date-and-question>/`: the transcript, the field notes and the verdict.
+
+When discussion ends, its comment controls close. The board first says **writing verdict**, then
+**Review finished** or **Review ended · no verdict**. **Record your decision** opens a separate
+form; its note records your choice and is not sent to the agents.
 
 If the verdict was skipped or failed, **Write** requests it separately, subject to the existing
 budget. Choosing the original CLI chairman keeps its model, effort and login profile; the
@@ -301,12 +318,17 @@ silently skips a corrupt completed line.
 
 ## 5. Keep the cost low
 
-- One or two critique rounds, not more.
-- Two or three seats.
+- Start with two seats and zero critique rounds: three planned calls, including the verdict.
+  One critique round with three seats makes seven calls before retries.
 - Lighter models (Sonnet, Flash) or lower effort for seats that only need to poke holes.
 - A light chairman: it makes the longest single call.
 - Keep memory on `stateless`.
 - Set a budget cap per vendor when you are near a limit.
+
+The prompts ask for roughly 140 words per seat and 220 for the verdict, and discourage repeated
+questions and field notes. These are writing targets, not enforced output limits. Actual usage
+also includes CLI overhead, reasoning and retries. Shorter visible replies do not guarantee the
+same reduction in billed tokens. No reasoning settings or budgets are changed automatically.
 
 ## 6. Export the decision into your codebase
 
@@ -329,7 +351,7 @@ questions, your notes and the usage. The same folder gets a `README.md` index of
 (`DECISIONS.md` instead when the folder already has a README that roundtable did not write).
 Roundtable only ever replaces files it wrote; anything else in the way is refused.
 
-A record says **recommended** until you decide. Under the verdict, **Your decision** has the
+A record says **recommended** until you decide. Open **Record your decision** under the verdict. **Your decision** has the
 chairman's pick preselected; choose it, another option or "none of these", add a line on why if
 you like, and press **Accept**. The record then says **accepted**, names your choice and the
 recommendation side by side, and is written again if the debate has an Export to folder.
@@ -403,42 +425,66 @@ names the endpoint on each seat's line (`API http://localhost:11434/v1`) and on 
 
 ## 8. Run a debate without the browser
 
-Agents and scripts can run a debate headless against a running server:
+Use the JSON client for coding agents. It returns one compact object per command and waits for
+input instead of answering questions automatically. From a checkout:
 
 ```bash
-npm start
+npm start -- --no-open
+node src/cli.js agent status --refresh
+node src/cli.js agent check --input review.json
+node src/cli.js agent start --input review.json
+node src/cli.js agent wait --id <review-id>
 ```
 
-The server prints a token on its startup line (`roundtable: http://localhost:4747  token
-<hex>`). Every request that changes something must carry it, so pass it on:
+Installed packages use `roundtable agent` with the same arguments. Add `--port <number>` to
+target another local server. `status --refresh` checks installed CLIs and cached account state;
+`check` validates the request and estimates its size. Neither makes a model call. `start`,
+`answer`, `resume` and `verdict` can cause calls under the review's existing limits.
+
+When `wait` returns `waiting`, use its question IDs and round number in an answer file:
+
+```json
+{ "round": 0, "answers": [{ "id": "q1", "text": "The deadline can move by a week." }], "message": "Keep the trial reversible." }
+```
 
 ```bash
-npm run debate -- --token <hex> --rounds 1 --note "Your note for round 0" < debate.json
+node src/cli.js agent answer --id <review-id> --input answers.json
+node src/cli.js agent wait --id <review-id>
+node src/cli.js agent status --id <review-id>
 ```
 
-`ROUNDTABLE_TOKEN=<hex>` in the environment works too. Without it the server answers 401.
+`wait` returns at a question or completion, or after 25 seconds (configurable from 1 to 30 with
+`--seconds`). It does not continue a round. Read `status`, answer only from supplied facts, and
+ask the user for missing facts. Empty answers leave questions open. Stale-round answers fail
+without being sent. Writes are never retried automatically. Use `stop` to end discussion,
+`resume` for an interrupted review, or `verdict` to request a missing verdict. Acceptance and
+export stay explicit user decisions.
 
-`debate.json` is the same thing the board sends:
+The client reads the launch token from the loopback page and holds it in memory, or uses
+`ROUNDTABLE_TOKEN` when supplied. It never prints or stores the token. `--input -` accepts JSON
+on stdin. Keep real request and answer files outside a public repository.
+
+`review.json` uses the same shape as the board. Select providers reported ready by `status`:
 
 ```json
 {
   "fieldNotes": {
     "decision": "Should we ship sync behind a flag?",
     "options": ["Ship it", "Wait", "Data model only"],
-    "constraints": "One developer, three months.",
-    "exportTo": "C:\\code\\my-app\\docs\\decisions"
+    "constraints": "One developer, three months."
   },
   "seats": [
-    { "vendor": "claude", "lens": "risk", "mood": { "preset": "grill" }, "model": "sonnet" },
-    { "vendor": "codex", "lens": "cost", "mood": { "preset": "builder" }, "effort": "low" }
+    { "vendor": "claude", "lens": "risk", "mood": { "preset": "grill" }, "model": "sonnet", "effort": "low" },
+    { "vendor": "claude", "lens": "cost", "mood": { "preset": "builder" }, "model": "sonnet", "effort": "low" }
   ],
-  "chairman": { "vendor": "claude", "model": "sonnet" },
-  "options": { "critiqueRounds": 1, "memory": "stateless", "budget": { "claude": { "usd": 1 } } }
+  "chairman": { "vendor": "claude", "model": "sonnet", "effort": "low" },
+  "options": { "critiqueRounds": 0, "memory": "stateless", "budget": { "claude": { "tokens": 120000 } } }
 }
 ```
 
-The script answers each gate after a short pause, sends your note at round 0, and prints every
-reply, the usage per seat and the quota readings.
+The older `npm run debate -- --token <hex> < review.json` runner is still available for
+unattended scripts. It automatically continues through questions; use `agent` for interactive
+reviews that need answers. The startup line supplies its token, or use `ROUNDTABLE_TOKEN`.
 
 ## 9. When something goes wrong
 

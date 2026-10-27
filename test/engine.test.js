@@ -793,6 +793,8 @@ test('a gate nobody answers ends at the deadline', async () => {
   assert.equal(s.stopReason, 'wall-clock');
   assert.ok(events.some((e) => e.type === 'gate-expired'));
   assert.equal(s.verdict.skipped, true);
+  assert.equal(s.stopContext, 'waiting');
+  assert.equal(events.find((e) => e.type === 'stopped').context, 'waiting');
 });
 
 test('a call in flight at the deadline is cancelled and its seat fails for the round', async () => {
@@ -806,8 +808,21 @@ test('a call in flight at the deadline is cancelled and its seat fails for the r
   assert.equal(cancelled, 1);
   const agy = s.rounds[1].find((r) => r.seat.vendor === 'agy');
   assert.equal(agy.failed, true);
+  assert.equal(agy.cancelReason, 'wall-clock');
   assert.match(agy.errors[0], /wall clock ran out during the call/);
   assert.equal(s.stopReason, 'wall-clock');
+});
+
+test('questions in the final critique round still wait for answers before the verdict', async () => {
+  const gates = [];
+  const fr = fakeRunner((vendor, round) => reply(vendor === 'claude' ? 'opt-1' : 'opt-2', { question: round === 1 ? 'What evidence would change the plan?' : null }));
+  const state = await createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS, runner: fr.runner, store: stub(), options: { critiqueRounds: 1 },
+    gate: async (info) => { gates.push(info); return { action: 'continue', message: info.round === 1 ? 'The pilot must be reversible.' : '' }; },
+  }).run();
+  assert.deepEqual(gates.map((g) => g.round), [0, 1]);
+  assert.equal(gates[1].stop, 'round-cap');
+  assert.equal(state.rounds.length, 2);
+  assert.match(fr.calls.find((c) => c.round === 'verdict').prompt, /The pilot must be reversible/);
 });
 
 test('a resumed debate keeps its original deadline', async () => {
