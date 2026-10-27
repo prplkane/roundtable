@@ -90,6 +90,36 @@ test('local diagnostics require the launch token, preserve error references and 
   } finally { srv.child.kill(); }
 });
 
+test('an empty added lens is a field error before calls; corrected seats start and replay is marked', { timeout: 30_000 }, async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rt-seat-validation-'));
+  const srv = await startFakeServer(root);
+  const post = (p, body = {}) => fetch(`${srv.base}${p}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token }, body: JSON.stringify(body) });
+  try {
+    const body = { fieldNotes: { decision: 'Synthetic starter lens check', options: ['Trial', 'Wait'] },
+      seats: [{ vendor: 'claude', lens: 'risk' }, { vendor: 'claude', lens: 'cost' }, { vendor: 'claude', lens: '' }],
+      chairman: { vendor: 'claude', effort: 'medium' }, options: { critiqueRounds: 0, autoContinueMs: 5000, wallClockMs: 300000, memory: 'stateless', budget: {} } };
+    const invalid = await post('/api/debates', body);
+    assert.equal(invalid.status, 400);
+    const problem = await invalid.json();
+    assert.deepEqual([problem.field, problem.seatIndex], ['lens', 2]);
+    assert.match(problem.error, /Seat 3 needs a lens/);
+    assert.equal((await fetch(`${srv.base}/api/debates`).then((r) => r.json())).debates.length, 0);
+    const diagnostics = await post('/api/diagnostics').then((r) => r.json());
+    const logged = diagnostics.entries.find((e) => e.id === problem.diagnostic.id);
+    assert.equal(logged.systemCode, 'SEAT_LENS_REQUIRED');
+    assert.equal(logged.seatIndex, 2);
+    body.seats[2].lens = 'evidence';
+    const opened = await post('/api/debates', body).then((r) => r.json());
+    assert.ok(opened.slug);
+    const events = await readEvents(await fetch(`${srv.base}/api/debates/${opened.slug}/events`), (e) => e.type === 'done', async (e) => {
+      if (e.type === 'gate') await post(`/api/debates/${opened.slug}/continue`);
+    });
+    assert.ok(events.some((e) => e.type === 'reply' && !e.replayed), 'new replies can use the visual reveal');
+    const replay = await readEvents(await fetch(`${srv.base}/api/debates/${opened.slug}/events`), (e) => e.type === 'done');
+    assert.ok(replay.filter((e) => ['reply', 'verdict'].includes(e.type)).every((e) => e.replayed), 'saved replies do not animate again');
+  } finally { srv.child.kill(); }
+});
+
 test('history and replay preserve unknown usage; a restart cannot bypass its token cap', { timeout: 30_000 }, async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'rt-unknown-server-'));
   const slug = '2026-10-26-unknown';

@@ -5,13 +5,14 @@ import { randomBytes } from 'node:crypto';
 
 const CODES = new Set(['request-failed', 'provider-failed', 'reply-invalid', 'engine-failed', 'export-failed',
   'transcript-warning', 'status-failed', 'storage-failed', 'server-crash', 'server-start',
-  'browser-network', 'browser-timeout', 'browser-response', 'browser-error', 'browser-rejection', 'browser-stream']);
+  'browser-network', 'browser-timeout', 'browser-response', 'browser-error', 'browser-rejection', 'browser-stream', 'browser-validation']);
 export const BROWSER_CODES = new Set([...CODES].filter((c) => c.startsWith('browser-')));
 const ACTIONS = new Set(['setup', 'history', 'preflight', 'create', 'events', 'continue', 'stop', 'hold',
   'resume', 'export', 'synthesize', 'accept', 'pools', 'diagnostics', 'catalogue', 'quota', 'calibration', 'startup', 'unknown']);
 const KINDS = new Set(['quota', 'auth', 'missing', 'network', 'timeout', 'killed', 'format', 'budget', 'other']);
 const SYSTEM_CODES = new Set(['ENOENT', 'EACCES', 'EPERM', 'ENOSPC', 'EIO', 'EISDIR', 'EROFS', 'EMFILE', 'ENFILE',
-  'EADDRINUSE', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'TIMEOUT', 'KILLED', 'TRANSCRIPT_CORRUPT', 'TRANSCRIPT_TAIL']);
+  'EADDRINUSE', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'TIMEOUT', 'KILLED', 'TRANSCRIPT_CORRUPT', 'TRANSCRIPT_TAIL',
+  'SEAT_LENS_REQUIRED', 'SEAT_LENS_DUPLICATE', 'SEAT_MOOD_REQUIRED']);
 const FILES = new Set(['server.js', 'store.js', 'engine.js', 'export.js', 'validate.js', 'estimate.js',
   'seats.js', 'preflight.js', 'diagnostics.js', 'ui/app.js', 'adapters/common.js', 'adapters/spawn.js',
   'adapters/endpoint.js', 'adapters/claude.js', 'adapters/codex.js', 'adapters/agy.js']);
@@ -37,7 +38,8 @@ function fields(input) {
   if (['claude', 'codex', 'agy', 'api'].includes(input?.vendor)) out.vendor = input.vendor;
   if (KINDS.has(input?.kind)) out.kind = input.kind;
   if (SYSTEM_CODES.has(input?.systemCode)) out.systemCode = input.systemCode;
-  for (const [key, max] of Object.entries({ status: 599, round: 100, line: 1_000_000, column: 1_000_000 })) {
+  if (['lens', 'moodText'].includes(input?.field)) out.field = input.field;
+  for (const [key, max] of Object.entries({ seatIndex: 7, status: 599, round: 100, line: 1_000_000, column: 1_000_000 })) {
     if (integer(input?.[key], max)) out[key] = input[key];
   }
   if (Array.isArray(input?.frames)) out.frames = input.frames.filter((f) => FILES.has(f?.file) && integer(f.line, 1_000_000) && integer(f.column, 1_000_000))
@@ -59,7 +61,7 @@ export function validateBrowserDiagnostics(body) {
   return body.events.map((e) => {
     if (!e || !ID.test(e.id) || !BROWSER_CODES.has(e.code) || !ACTIONS.has(e.action)) throw new Error('Invalid diagnostic event.');
     // Browser callers cannot impersonate a server/provider event or inject stack frames.
-    return { id: e.id, ...fields({ code: e.code, action: e.action, status: e.status, line: e.line, column: e.column }) };
+    return { id: e.id, ...fields({ code: e.code, action: e.action, status: e.status, line: e.line, column: e.column, seatIndex: e.seatIndex, field: e.field }) };
   });
 }
 

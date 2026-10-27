@@ -1,9 +1,36 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normaliseSeats, normaliseChairman, moodLine, MOODS, COLOURS, initialSeatVendors } from '../src/seats.js';
+import { normaliseSeats, normaliseChairman, moodLine, MOODS, COLOURS, initialSeatVendors, nextSeatLens, fillMissingSeatLenses, seatSetupIssue } from '../src/seats.js';
 import { ADAPTERS } from '../src/adapters/config.js';
 
 const V = ADAPTERS;
+
+test('added and restored seats get distinct editable lenses without changing existing choices', () => {
+  const original = [{ vendor: 'claude', lens: 'Evidence and assumptions', mood: 'builder' },
+    { vendor: 'codex', lens: '  ', effort: 'low' }, { vendor: 'claude', lens: '' }];
+  const filled = fillMissingSeatLenses(original);
+  assert.deepEqual(filled[0], original[0]);
+  assert.equal(filled[1].effort, 'low');
+  assert.equal(original[1].lens, '  ', 'restoring a draft does not mutate its source');
+  assert.equal(new Set(filled.map((s) => s.lens.toLowerCase())).size, 3);
+  assert.equal(seatSetupIssue(filled), null);
+  assert.ok(!filled.some((s) => s.lens === nextSeatLens(filled)));
+  assert.ok(nextSeatLens(Array.from({ length: 12 }, (_, i) => ({ lens: `perspective ${i + 1}` }))));
+});
+
+test('seat validation identifies the blank or duplicate lens and custom mood without echoing input', () => {
+  const seats = [{ vendor: 'claude', lens: 'PRIVATE-MARKER' }, { vendor: 'codex', lens: '' }];
+  assert.deepEqual([seatSetupIssue(seats).seatIndex, seatSetupIssue(seats).field], [1, 'lens']);
+  assert.throws(() => normaliseSeats(seats, { vendors: V }), (e) => e.status === 400 && e.seatIndex === 1 && e.code === 'SEAT_LENS_REQUIRED');
+  seats[1].lens = ' private-marker ';
+  assert.equal(seatSetupIssue(seats).code, 'SEAT_LENS_DUPLICATE');
+  assert.doesNotMatch(seatSetupIssue(seats).message, /PRIVATE-MARKER|private-marker/);
+  seats[1] = { vendor: 'codex', lens: 'cost', mood: 'custom', moodText: '' };
+  assert.equal(seatSetupIssue(seats).field, 'moodText');
+  assert.throws(() => normaliseSeats([seats[0], { ...seats[1], mood: { preset: 'custom', text: '' } }], { vendors: V }), (e) => e.code === 'SEAT_MOOD_REQUIRED');
+  seats[1].moodText = 'Look for a reversible next step.';
+  assert.equal(seatSetupIssue(seats), null);
+});
 
 test('first use chooses two CLI seats, preferring ready default logins and reusing a sole ready vendor', () => {
   const vendors = Object.entries(V).map(([vendor, a]) => ({ vendor, kind: a.kind }));

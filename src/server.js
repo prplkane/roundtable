@@ -135,7 +135,7 @@ function watchRounds(d, payload) {
 // Every event carries an id (generation:index) so a board that reconnects sends Last-Event-ID
 // and gets only what it missed. A record rebuilt from disk after a restart has a new generation,
 // so such a board gets the whole list again and resets on its `started` event.
-function sseLine(d, i) { return `id: ${d.gen}:${i}\ndata: ${JSON.stringify(d.events[i])}\n\n`; }
+function sseLine(d, i, replayed = false) { return `id: ${d.gen}:${i}\ndata: ${JSON.stringify(replayed ? { ...d.events[i], replayed: true } : d.events[i])}\n\n`; }
 function push(d, event) {
   let code;
   if (event.type === 'attempt' && event.errorKind) code = 'provider-failed';
@@ -458,8 +458,10 @@ function requestError(res, status, message, action, error) {
   if (['EACCES', 'EPERM', 'EROFS'].includes(error?.code)) message = 'Could not save or read local data. Check data-folder permissions, then review the saved state before retrying.';
   else if (error?.code === 'ENOSPC') message = 'The disk is full. Free some space, then review the saved state before retrying.';
   else if (status >= 500) message = 'The server could not complete this action. Your request may have partly completed. Review the saved state and save the error log before retrying.';
-  const diagnostic = diagnostics.write({ code: 'request-failed', action, status, line: error?.line }, error);
-  return json(res, status, { error: message, diagnostic });
+  const location = ['lens', 'moodText'].includes(error?.field) && Number.isInteger(error?.seatIndex) && error.seatIndex >= 0 && error.seatIndex < 8
+    ? { field: error.field, seatIndex: error.seatIndex } : {};
+  const diagnostic = diagnostics.write({ code: 'request-failed', action, status, line: error?.line, ...location }, error);
+  return json(res, status, { error: message, diagnostic, ...location });
 }
 
 async function readBody(req) {
@@ -571,7 +573,7 @@ const server = http.createServer(async (req, res) => {
       if (!d) return requestError(res, 404, 'This review was not found on this server. Return to Debates and choose an existing review.', diagnosticAction(p));
       if (m[2] === 'events') {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
-        for (let i = replayFrom(d, req.headers['last-event-id']); i < d.events.length; i++) res.write(sseLine(d, i));
+        for (let i = replayFrom(d, req.headers['last-event-id']); i < d.events.length; i++) res.write(sseLine(d, i, true));
         d.clients.add(res);
         req.on('close', () => d.clients.delete(res));
         return;

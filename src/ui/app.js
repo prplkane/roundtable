@@ -1,13 +1,17 @@
 import { rollup } from '/src/engine.js';
 import { optionLabel } from '/src/contract.js';
-import { poolKey, poolVendor, poolAccount, hostKey, seatKind, initialSeatVendors } from '/src/seats.js';
+import { poolKey, poolVendor, poolAccount, hostKey, seatKind, initialSeatVendors, nextSeatLens, fillMissingSeatLenses, seatSetupIssue } from '/src/seats.js';
 import { avatar } from '/ui/avatars.js';
 import { modelsForPlan, retired } from '/src/adapters/models.js';
 import { project, projectedWindows } from '/src/estimate.js';
 import { PREFLIGHT_TTL_MS } from '/src/preflight.js';
 import { createBrowserDiagnostics, requestAction } from '/ui/diagnostics.js';
+import { installHelp, revealText, MOOD_HELP } from '/ui/help.js';
 
 const $ = (id) => document.getElementById(id);
+const helpNotes = installHelp();
+const replyReveals = new Map();
+const replyKey = (r) => `${r.type}:${r.attemptId || `${r.seat?.id || 'chairman'}:${r.round ?? -1}`}`;
 // The launch token the server put in the page; every POST carries it (server.js refuse()).
 const SEND = { 'content-type': 'application/json', 'x-roundtable-token': document.querySelector('meta[name="roundtable-token"]')?.content || '' };
 let diagnosticStorage;
@@ -54,7 +58,7 @@ async function requestJson(url, body) {
   if (!out || typeof out !== 'object') throw browserFailure('browser-response', action, 'The server returned an unreadable response. Check the current state before retrying.', { status: res.status });
   if (!res.ok || out.ok === false) {
     const message = res.status === 401 ? 'This page is out of date. Copy any unsent note, reload, then check the review before retrying.' : out.error || 'This action is no longer available. Check the current state before retrying.';
-    if (out.diagnostic) throw new Error(message + errorReference(out.diagnostic));
+    if (out.diagnostic) throw Object.assign(new Error(message + errorReference(out.diagnostic)), { field: out.field, seatIndex: out.seatIndex });
     throw browserFailure('browser-response', action, message, { status: res.status });
   }
   void clientDiagnostics.flush();
@@ -151,7 +155,10 @@ async function setup() {
   try { saved = JSON.parse(localStorage.getItem('roundtable.seats') || 'null'); } catch {}
   try { settings = JSON.parse(localStorage.getItem('roundtable.settings') || '{}') || {}; } catch {}
   const retained = Array.isArray(saved) ? saved.filter((s) => s && VENDOR_META[s.vendor]) : [];
-  S.draft = retained.length >= 2 ? retained : initialDraft(initialSeatVendors(vendors));
+  S.draft = retained.length >= 2 ? fillMissingSeatLenses(retained) : initialDraft(initialSeatVendors(vendors));
+  const filled = retained.length >= 2 ? retained.filter((s) => !String(s.lens || '').trim()).length : 0;
+  $('seat-setup-note').hidden = !filled;
+  $('seat-setup-note').textContent = filled ? `Added starter lenses to ${filled} unfinished seat${filled === 1 ? '' : 's'}. Review or edit them before opening the table.` : '';
   S.initialDraft = retained.length >= 2 ? null : JSON.stringify(S.draft);
   S.initialChair = !settings.chairman;
   for (const [key, id, scale, min, max] of [
@@ -170,7 +177,7 @@ async function setup() {
   if (ch?.effort && [...$('chairman-effort').options].some((o) => o.value === ch.effort)) $('chairman-effort').value = ch.effort;
   renderSeats();
 
-  $('add-seat').addEventListener('click', () => { S.initialDraft = null; S.draft.push({ vendor: vendors[0].vendor, lens: '', mood: 'grill', moodText: '', model: '', effort: '' }); renderSeats(); });
+  $('add-seat').addEventListener('click', () => { S.initialDraft = null; clearSetupValidation(); S.draft.push({ vendor: vendors[0].vendor, lens: nextSeatLens(S.draft), mood: 'grill', moodText: '', model: '', effort: '' }); renderSeats(); });
   $('seats').addEventListener('input', onSeatEdit);
   $('seats').addEventListener('change', onSeatEdit);
   $('seats').addEventListener('click', (ev) => {
@@ -337,7 +344,9 @@ function seatRow(s, i) {
   // an endpoint seat has no catalogue: the model id is typed, and the card says it is required
   const picker = api ? { html: '', other: true } : modelPicker(s.vendor, s.account, s.model || '');
   const gone = retired(s.vendor, (s.model || '').trim());
-  return `<article class="seat seat-card" role="listitem" data-i="${i}" style="--seat: var(--seat-${colour})">
+  const issue = S.seatIssue?.seatIndex === i ? S.seatIssue : null;
+  const invalid = (field) => issue?.field === field ? 'aria-invalid="true"' : '';
+  return `<article class="seat seat-card ${issue ? 'seat-invalid' : ''}" role="listitem" data-i="${i}" style="--seat: var(--seat-${colour})">
     <div class="seat-hd">
       <span class="avatar" title="${esc(s.mood === 'custom' ? 'custom mood' : s.mood)}">${avatar(s.mood === 'custom' ? 'custom' : s.mood)}</span>
       <div class="seat-id">
@@ -348,13 +357,15 @@ function seatRow(s, i) {
     </div>
     <button class="btn remove" type="button" aria-label="Remove seat" title="Remove seat">×</button>
     <div class="seat-bd">
-      <label class="f"><span class="label">Lens</span><input class="flat lens" value="${esc(s.lens)}" placeholder="risk and failure modes"></label>
-      <label class="f"><span class="label">Mood</span><select class="flat mood">${Object.keys(MOODS).map((m) => `<option value="${m}" ${m === s.mood ? 'selected' : ''}>${m}</option>`).join('')}<option value="custom" ${s.mood === 'custom' ? 'selected' : ''}>custom…</option></select></label>
-      <input class="flat mood-text" aria-label="Custom mood" value="${esc(s.moodText)}" placeholder="One sentence: how this seat approaches the question" ${s.mood === 'custom' ? '' : 'hidden'}>
+      <div class="f"><span class="field-label" data-help="lens"><label class="label" for="seat-lens-${i}">Lens</label><button class="help-trigger" type="button" aria-label="About lens" aria-describedby="help-lens">?</button></span><input id="seat-lens-${i}" class="flat lens" value="${esc(s.lens)}" placeholder="e.g. long-term effects" aria-describedby="help-lens seat-error-${i}" ${invalid('lens')}></div>
+      <div class="f"><span class="field-label" data-help="mood"><label class="label" for="seat-mood-${i}">Mood</label><button class="help-trigger" type="button" aria-label="About mood" aria-describedby="help-mood seat-mood-help-${i}">?</button></span><select id="seat-mood-${i}" class="flat mood" aria-describedby="help-mood seat-mood-help-${i}">${Object.keys(MOODS).map((m) => `<option value="${m}" ${m === s.mood ? 'selected' : ''}>${m}</option>`).join('')}<option value="custom" ${s.mood === 'custom' ? 'selected' : ''}>custom…</option></select></div>
+      <span class="sr-only" id="seat-mood-help-${i}">${esc(MOOD_HELP[s.mood] || '')}</span>
+      <input class="flat mood-text" aria-label="Custom mood" aria-describedby="seat-error-${i}" ${invalid('moodText')} value="${esc(s.moodText)}" placeholder="One sentence: how this seat approaches the question" ${s.mood === 'custom' ? '' : 'hidden'}>
+      <p class="seat-field-error error" id="seat-error-${i}" ${issue ? '' : 'hidden'}>${esc(issue?.message || '')}</p>
       ${gone ? `<span class="seat-note danger">${esc(s.model)} was retired (${esc(gone.date)}); use ${esc(gone.instead)}.</span>` : ''}
       ${api ? `<label class="f"><span class="label">Endpoint</span><input class="flat endpoint" aria-label="Endpoint base URL" list="endpoints" value="${esc(s.endpoint || '')}" placeholder="http://localhost:11434/v1" title="The base URL of an OpenAI-compatible server, ending in /v1. Plain http only on this machine or a private network."></label>
       <label class="f"><span class="label">Key var</span><input class="flat keyenv" aria-label="Key environment variable" value="${esc(s.keyEnv || '')}" placeholder="none (local server)" title="The NAME of the environment variable that holds the key, set in the shell roundtable was started from. Never the key itself."></label>` : ''}
-      <div class="f"><span class="label">Effort</span><span class="pips">${pipsHtml(s.vendor, s.effort, s.model)}</span><select class="effort" hidden>${effortOptions(s.vendor, s.effort)}</select></div>
+      <div class="f"><span class="field-label" data-help="effort"><span class="label">Effort</span><button class="help-trigger" type="button" aria-label="About effort" aria-describedby="help-effort">?</button></span><span class="pips">${pipsHtml(s.vendor, s.effort, s.model)}</span><select class="effort" hidden>${effortOptions(s.vendor, s.effort)}</select></div>
       <span class="seat-note lamp-note ${lamp.cls === 'danger' || lamp.cls === 'warn' ? lamp.cls : ''}">${esc(lamp.note)}</span>
       ${api ? '' : `<details class="seat-more" ${s.account ? 'open' : ''}><summary>Login profile</summary><input class="flat account" aria-label="Login profile" value="${esc(s.account || '')}" placeholder="none: your usual login" title="A second login of this CLI, for example a work subscription; node src/doctor.js shows how to log a profile in"></details>`}
     </div>
@@ -505,6 +516,7 @@ function rememberFocus(root) {
   };
 }
 function renderSeats() {
+  helpNotes.close();
   const restoreFocus = rememberFocus($('seats'));
   $('seats').innerHTML = S.draft.map(seatRow).join('');
   requestPreflight();
@@ -514,6 +526,7 @@ function renderSeats() {
 
 function onSeatEdit(ev) {
   const row = ev.target.closest('.seat'); if (!row) return;
+  clearSetupValidation();
   S.initialDraft = null;
   const s = S.draft[Number(row.dataset.i)];
   if (ev.target.classList.contains('model-pick')) {
@@ -668,18 +681,27 @@ function renderProjection() {
   $('start-summary').innerHTML = seats.length ? `<b>${seats.length} seats</b> · ${seats.length * (rounds + 1) + 1} planned calls before retries · ≈ ${k(vs.reduce((n, v) => n + v.total, 0))} tokens${priced.length ? ` · ≈ $${priced.reduce((n, v) => n + v.cost, 0).toFixed(2)} for ${priced.map((v) => esc(VENDOR_LABEL[v.vendor] || v.vendor)).join(', ')}` : ''}` : '';
 }
 
+function clearSetupValidation() {
+  S.seatIssue = null;
+  $('setup-error').textContent = ''; $('seats-error').textContent = '';
+  for (const el of $('seats').querySelectorAll('[aria-invalid]')) el.removeAttribute('aria-invalid');
+  for (const el of $('seats').querySelectorAll('.seat-invalid')) el.classList.remove('seat-invalid');
+  for (const el of $('seats').querySelectorAll('.seat-field-error')) { el.textContent = ''; el.hidden = true; }
+}
+
+function showSetupError(error) {
+  $('setup-error').textContent = error.message;
+  if (!['lens', 'moodText'].includes(error.field) || !Number.isInteger(error.seatIndex) || !S.draft[error.seatIndex]) return;
+  S.seatIssue = error; renderSeats();
+  const row = $('seats').querySelectorAll('.seat')[error.seatIndex];
+  const field = row.querySelector(error.field === 'lens' ? '.lens' : '.mood-text');
+  field.focus({ preventScroll: true });
+  row.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
+}
+
 async function start() {
   if (S.startPending) return;
-  // a seat whose lamp is red would fail its first call: say which, and open only on a second click
-  const red = [...S.draft.map((s) => ({ name: `${VENDOR_LABEL[s.vendor]} (${s.lens || 'no lens'})`, l: poolLamp(s.vendor, seatAccount(s)) })),
-    { name: `the chairman (${VENDOR_LABEL[$('chairman').value]})`, l: poolLamp($('chairman').value, chairAccount()) }].filter((x) => x.l.cls === 'danger');
-  const sig = red.map((x) => `${x.name}:${x.l.note}`).join('|');
-  if (red.length && S.startConfirm !== sig) {
-    S.startConfirm = sig;
-    $('setup-error').textContent = `${red.map((x) => `${x.name}: ${x.l.note}`).join('; ')}. Those calls will fail.`;
-    $('start').textContent = 'Open anyway';
-    return;
-  }
+  clearSetupValidation();
   const f = $('notes');
   const notes = {};
   for (const el of f.querySelectorAll('input[name], textarea[name]')) notes[el.name] = el.value.trim();
@@ -699,14 +721,29 @@ async function start() {
       account: $('chairman-account').value, endpoint: $('chairman-endpoint').value, keyEnv: $('chairman-keyenv').value,
     } }));
   } catch {}
-  $('setup-error').textContent = ''; $('seats-error').textContent = '';
+  const issue = seatSetupIssue(S.draft);
+  if (issue) {
+    const id = clientDiagnostics.report('browser-validation', 'create', { field: issue.field, seatIndex: issue.seatIndex });
+    showSetupError({ ...issue, message: issue.message + errorReference({ id }) });
+    return;
+  }
+  // Confirm a known unavailable provider only after the form itself is valid.
+  const red = [...S.draft.map((s) => ({ name: `${VENDOR_LABEL[s.vendor]} (${s.lens})`, l: poolLamp(s.vendor, seatAccount(s)) })),
+    { name: `the chairman (${VENDOR_LABEL[$('chairman').value]})`, l: poolLamp($('chairman').value, chairAccount()) }].filter((x) => x.l.cls === 'danger');
+  const sig = red.map((x) => `${x.name}:${x.l.note}`).join('|');
+  if (red.length && S.startConfirm !== sig) {
+    S.startConfirm = sig;
+    showSetupError({ message: `${red.map((x) => `${x.name}: ${x.l.note}`).join('; ')}. Those calls will fail.` });
+    $('start').textContent = 'Open anyway';
+    return;
+  }
   const revision = viewRevision;
   S.startPending = true; updateLamps();
   try {
     const out = await requestJson('/api/debates', body);
     if (revision === viewRevision) location.hash = out.slug; // route() opens the board
   } catch (e) {
-    (/lens|seat|effort|mood|Chairman/i.test(e.message) ? $('seats-error') : $('setup-error')).textContent = `${e.message} Check recent debates before opening another table.`;
+    showSetupError(e);
     loadRecent();
   } finally { S.startPending = false; updateLamps(); }
 }
@@ -798,6 +835,7 @@ function openBoard(slug) {
 }
 
 function resetBoard({ clearDrafts = false } = {}) {
+  replyReveals.clear();
   Object.assign(S, { seats: [], fieldNotes: null, rows: [], rounds: [], humanNotes: [], initialNotes: [], gate: null, deadline: null, held: false, verdict: null, status: 'idle', startedAt: null, stopReason: null, pending: new Set(), chairman: null, configuredChairman: null, interrupted: null, stopQueued: false, error: null, conn: {}, positions: [], accepted: null, synthesis: null, down: {},
     budgetStop: null, exported: null, exportError: null, replayed: false, connected: null, chairmanFallback: null, transcriptWarning: null,
     actionPending: null, actionError: null, holdPending: false, synthChoice: null }); // hash routing reuses S: nothing from the last board
@@ -809,6 +847,7 @@ function resetBoard({ clearDrafts = false } = {}) {
 }
 
 function handle(e) {
+  if (!e.replayed && !e.failed && !e.skipped && ['reply', 'verdict'].includes(e.type)) replyReveals.set(replyKey(e), performance.now());
   switch (e.type) {
     case 'started': resetBoard(); S.seats = e.seats; S.fieldNotes = e.fieldNotes; S.configuredChairman = e.chairman || null; S.status = 'running'; S.startedAt = Date.now(); $('board-title').textContent = e.fieldNotes.decision; document.title = `${e.fieldNotes.decision} · Roundtable`; $('board-empty').hidden = false; break;
     case 'resumed': S.status = 'running'; S.interrupted = null; S.startedAt = Date.now(); S.pending.clear(); break;
@@ -881,7 +920,7 @@ function card(r) {
   const position = S.positions[r.round]?.[seat.id] || null;
   return `<article class="card" style="--seat: var(--seat-${esc(seat.colour)})" data-position="${esc(position || 'none')}" title="${esc(position ? POSITION_LABEL[position] : '')}">
     <div class="card-head"><span class="vendor" title="${esc(meta)}">${esc(seatName(seat))}</span><span class="lens">${esc(seat.lens)}</span>${led(conn)}${seat.mood?.preset && seat.mood.preset !== 'grill' ? `<span class="muted">${esc(seat.mood.preset)}</span>` : ''}<span class="flags">${flags.join('')}</span></div>
-    ${body}
+    <div class="reply-text" data-reveal="${esc(replyKey(r))}">${body}</div>
   </article>`;
 }
 
@@ -1083,6 +1122,12 @@ function renderBanners() {
 function render() {
   $('rounds').innerHTML = S.rounds.map((r, i) => renderRound(i, r, i === S.rounds.length - 1)).join('');
   renderUsage(); renderVerdict(); renderGate(); renderAccept(); renderExportStatus(); renderBanners();
+  $('verdict-body').dataset.reveal = S.verdict ? replyKey(S.verdict) : '';
+  for (const el of document.querySelectorAll('[data-reveal]')) {
+    const startedAt = replyReveals.get(el.dataset.reveal);
+    if (startedAt != null) revealText(el, { startedAt });
+  }
+  for (const [key, at] of replyReveals) if (performance.now() - at > 960) replyReveals.delete(key);
   $('sys').className = `status ${S.status === 'error' ? 'danger' : S.status === 'waiting' ? 'warn' : 'ok'}`;
   $('sys').textContent = S.status;
   $('st-round').textContent = S.rounds.length ? `round ${S.rounds.length - 1}` : '';

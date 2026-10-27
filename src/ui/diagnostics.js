@@ -1,4 +1,4 @@
-const CODES = new Set(['browser-network', 'browser-timeout', 'browser-response', 'browser-error', 'browser-rejection', 'browser-stream']);
+const CODES = new Set(['browser-network', 'browser-timeout', 'browser-response', 'browser-error', 'browser-rejection', 'browser-stream', 'browser-validation']);
 const ACTIONS = new Set(['setup', 'history', 'preflight', 'create', 'events', 'continue', 'stop', 'hold', 'resume', 'export', 'synthesize', 'accept', 'pools', 'diagnostics', 'unknown']);
 const KEY = 'roundtable.diagnostics';
 
@@ -15,7 +15,8 @@ export function requestAction(url, write = false) {
 function safe(event) {
   if (!/^RT-[a-f0-9]{16}$/.test(event?.id) || !CODES.has(event?.code) || !ACTIONS.has(event?.action)) return null;
   const out = { id: event.id, code: event.code, action: event.action };
-  for (const [key, max] of Object.entries({ status: 599, line: 1_000_000, column: 1_000_000 })) {
+  if (['lens', 'moodText'].includes(event.field)) out.field = event.field;
+  for (const [key, max] of Object.entries({ seatIndex: 7, status: 599, line: 1_000_000, column: 1_000_000 })) {
     if (Number.isInteger(event[key]) && event[key] >= 0 && event[key] <= max) out[key] = event[key];
   }
   return out;

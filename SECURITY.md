@@ -59,8 +59,9 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   policy. Corrupt completed lines block resume and export until restored from a backup.
 - **Diagnostic logs:** `_diagnostics/` in the data folder holds at most two 256 KiB files.
   Entries use fixed error/action categories, reference IDs, timestamps, provider names,
-  runtime versions and source locations. No raw messages, prompts, replies, titles, URLs,
-  account/model identifiers, credentials or personal paths are copied into these logs.
+  runtime versions, fixed field names, seat numbers and source locations. No raw messages,
+  prompts, replies, titles, URLs, account/model identifiers, credentials or personal paths are
+  copied into these logs.
   Browser reports and downloads require the same launch token and origin checks as writes;
   reports accept only known categories and bounded numbers. Logging is limited to 120 entries
   per minute. A tab can retain up to 20 sanitized events in session storage until delivered;

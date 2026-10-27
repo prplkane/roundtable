@@ -80,6 +80,7 @@
 
       <section class="panel">
         <div class="panel-title"><span>Seats</span><span class="hint">Seats know each other by lens only, never by vendor.</span></div>
+        <p class="hint seats-hint" id="seat-setup-note" role="status" hidden></p>
         <div id="seats" class="seats" role="list"></div>
         <div id="datalists"></div>
         <div class="row seats-actions">
@@ -111,10 +112,10 @@
           </article>
         </div>
         <div class="fields fields-row rules">
-          <div class="field"><label class="label" for="critique-rounds">Critique rounds</label><input id="critique-rounds" type="number" min="0" max="8" value="1"></div>
-          <div class="field"><label class="label" for="auto">Auto-continue (s)</label><input id="auto" type="number" min="0.1" step="0.1" max="600" value="60"></div>
-          <div class="field"><label class="label" for="wall">Wall clock (min)</label><input id="wall" type="number" min="1" max="180" value="30"></div>
-          <div class="field"><label class="label" for="memory">Memory</label><select id="memory"><option value="stateless">stateless: fresh call per round</option><option value="resume">resume: re-send the thread</option></select></div>
+          <div class="field"><span class="field-label" data-help="critique"><label class="label" for="critique-rounds">Critique rounds</label><button class="help-trigger" type="button" aria-label="About critique rounds" aria-describedby="help-critique">?</button></span><input id="critique-rounds" type="number" min="0" max="8" value="1" aria-describedby="help-critique"></div>
+          <div class="field"><span class="field-label" data-help="auto"><label class="label" for="auto">Auto-continue (s)</label><button class="help-trigger" type="button" aria-label="About auto-continue" aria-describedby="help-auto">?</button></span><input id="auto" type="number" min="0.1" step="0.1" max="600" value="60" aria-describedby="help-auto"></div>
+          <div class="field"><span class="field-label" data-help="wall"><label class="label" for="wall">Wall clock (min)</label><button class="help-trigger" type="button" aria-label="About wall clock" aria-describedby="help-wall">?</button></span><input id="wall" type="number" min="1" max="180" value="30" aria-describedby="help-wall"></div>
+          <div class="field"><span class="field-label" data-help="memory"><label class="label" for="memory">Memory</label><button class="help-trigger" type="button" aria-label="About memory" aria-describedby="help-memory">?</button></span><select id="memory" aria-describedby="help-memory"><option value="stateless">stateless: fresh call per round</option><option value="resume">resume: re-send the thread</option></select></div>
         </div>
       </section>
 

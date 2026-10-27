@@ -178,6 +178,17 @@ Use **+ Add seat** for more. Two or three seats are enough for most questions. O
 saves its field notes, seats, limits, memory, chairman choices and budgets in this browser for
 this address. These preferences return on reload; unsent edits are not automatically saved.
 
+Added seats start with a distinct, editable lens. Restored seats with an empty lens get a
+starter perspective and a notice to review it. If you clear a lens, reuse another seat's lens,
+or leave a custom mood blank, **Open the table** highlights and focuses that field before
+any model call. Your draft stays in place.
+
+Hover over the **?** beside Lens, Mood, Effort or a round setting for a short explanation.
+You can also focus the **?** with the keyboard or tap it. Hints appear after a brief delay,
+remain open while you read them, and close with Escape or a tap outside. The Mood hint
+explains the selected approach. New agent replies use a brief text reveal; saved replies
+appear in full. The interface respects your device's reduced-motion setting.
+
 Below the seats is the **chairman**: a fresh session that did not argue. It reads every round
 and writes the verdict, sceptically (agreement between seats is not evidence; it recommends
 none when every option rests on assumptions). It does not decide: you accept an option after the

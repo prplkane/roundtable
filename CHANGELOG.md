@@ -25,6 +25,10 @@
 
 ### Local operation and interface
 
+- Give added seats distinct starter lenses and recover empty lenses in saved drafts. Highlight
+  and focus missing or duplicate lenses and empty custom moods before a review starts.
+- Explain lenses, moods and round settings with delayed, keyboard-accessible hints. Add a
+  gentle reveal for hints and new replies, respect reduced motion, and keep replays still.
 - Add local, rotating diagnostic logs and a **Save error log** download. Give failed actions
   reference IDs and next steps; keep pending browser diagnostics through reloads. Exclude
   review content, credentials, URLs and personal paths from the diagnostic data.

@@ -10,6 +10,42 @@ export const MOODS = {
 };
 export const DEFAULT_MOOD = 'grill';
 
+const STARTER_LENSES = ['risk and failure modes', 'cost and effort', 'evidence and assumptions',
+  'long-term effects', 'practical steps', 'alternatives', 'people affected', 'opportunities'];
+export function nextSeatLens(seats) {
+  const used = new Set(seats.map((s) => String(s?.lens || '').trim().toLowerCase()));
+  const starter = STARTER_LENSES.find((lens) => !used.has(lens));
+  if (starter) return starter;
+  let n = seats.length + 1;
+  while (used.has(`perspective ${n}`)) n++;
+  return `perspective ${n}`;
+}
+
+export function fillMissingSeatLenses(seats) {
+  const out = seats.map((s) => ({ ...s }));
+  for (const seat of out) if (!String(seat.lens || '').trim()) seat.lens = nextSeatLens(out);
+  return out;
+}
+
+// Shared by the form and API, with field coordinates rather than private input in errors.
+export function seatSetupIssue(seats) {
+  const seen = new Map();
+  for (const [seatIndex, seat] of seats.entries()) {
+    if (!seat) continue;
+    const lens = String(seat.lens || '').trim().toLowerCase();
+    if (!lens) return { seatIndex, field: 'lens', code: 'SEAT_LENS_REQUIRED',
+      message: `Seat ${seatIndex + 1} needs a lens. Give it a perspective, such as risk, evidence or long-term effects.` };
+    if (seen.has(lens)) return { seatIndex, field: 'lens', code: 'SEAT_LENS_DUPLICATE',
+      message: `Seats ${seen.get(lens) + 1} and ${seatIndex + 1} share the lens. Give each seat a different perspective.` };
+    seen.set(lens, seatIndex);
+    const preset = typeof seat.mood === 'string' ? seat.mood : seat.mood?.preset;
+    const text = typeof seat.mood === 'object' ? seat.mood?.text : seat.moodText;
+    if (preset === 'custom' && !String(text || '').trim()) return { seatIndex, field: 'moodText', code: 'SEAT_MOOD_REQUIRED',
+      message: `Seat ${seatIndex + 1} needs a custom mood sentence. Describe how it should argue, or choose a preset.` };
+  }
+  return null;
+}
+
 // Seat colours from the signature-design accent family, cycled when a table has more seats.
 export const COLOURS = ['rust', 'olive', 'teal', 'dusk', 'steel'];
 
@@ -133,16 +169,13 @@ function normaliseEndpoint(raw, label) {
 // vendors: { [vendor]: { label, effortLevels } } (the adapter table). efforts may widen a
 // vendor's levels from the catalogue (codex reads its list from config.toml).
 export function normaliseSeats(input, { vendors, efforts = {} }) {
+  const issue = seatSetupIssue((input || []).map((raw) => raw && vendors[raw.vendor] ? raw : null));
+  if (issue) throw Object.assign(new Error(issue.message), issue, { status: 400 });
   const seats = [];
-  const seen = new Map(); // lower-cased lens -> index
   const perVendor = {};
   for (const raw of input || []) {
     if (!raw || !vendors[raw.vendor]) continue;
     const lens = String(raw.lens || '').trim();
-    if (!lens) throw new Error(`Every seat needs a lens (${vendors[raw.vendor].label} seat has none).`);
-    const key = lens.toLowerCase();
-    if (seen.has(key)) throw new Error(`Two seats share the lens "${lens}". Lenses are how seats tell each other apart, so each must be unique.`);
-    seen.set(key, seats.length);
     const allowed = efforts[raw.vendor] || vendors[raw.vendor].effortLevels || [];
     const effort = raw.effort ? String(raw.effort).trim() : null;
     if (effort && !allowed.includes(effort)) throw new Error(`${vendors[raw.vendor].label} does not accept effort "${effort}" (allowed: ${allowed.join(', ')}).`);
