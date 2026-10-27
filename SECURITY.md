@@ -57,6 +57,15 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   beside it and atomically replaces the transcript with its complete prefix and a recovery
   notice. Backups contain the same private debate data and belong in your backup/deletion
   policy. Corrupt completed lines block resume and export until restored from a backup.
+- **Diagnostic logs:** `_diagnostics/` in the data folder holds at most two 256 KiB files.
+  Entries use fixed error/action categories, reference IDs, timestamps, provider names,
+  runtime versions and source locations. No raw messages, prompts, replies, titles, URLs,
+  account/model identifiers, credentials or personal paths are copied into these logs.
+  Browser reports and downloads require the same launch token and origin checks as writes;
+  reports accept only known categories and bounded numbers. Logging is limited to 120 entries
+  per minute. A tab can retain up to 20 sanitized events in session storage until delivered;
+  closing it can discard pending events. Logs stay local until you choose to share a download.
+  Transcripts, terminal output and provider logs have their own data handling described above.
 - **Tool restrictions depend on the installed CLI.** Claude seats are configured with no tool
   and no MCP server; Codex seats with
   the sandbox read-only, no MCP server, no web search and no tool feature; Antigravity seats in

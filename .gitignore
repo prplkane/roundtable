@@ -1,5 +1,6 @@
 node_modules/
 debates/
 debates-fake/
+_diagnostics/
 *.log
 .DS_Store

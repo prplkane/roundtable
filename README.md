@@ -63,6 +63,10 @@ Read [SECURITY.md](SECURITY.md) for credentials, billing, endpoint restrictions 
 HTTP boundary. Budget checks use estimates and reported usage; they are not guaranteed
 billing ceilings.
 
+For a first live run, follow the [test-drive steps](docs/workflow.md#a-first-live-test-drive).
+If something fails, use **Save error log** and note the reference ID. Diagnostic logs stay
+local and exclude review text, credentials and personal paths.
+
 ## Commands
 
 | Command | Purpose |

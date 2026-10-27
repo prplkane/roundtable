@@ -27,12 +27,15 @@
     <span class="run-mode" id="run-mode">Connecting</span>
     <span class="meta">
       <a class="btn btn-small" id="nav-debates" href="#" hidden>Debates</a>
+      <button class="btn btn-small" id="save-diagnostics" type="button">Save error log</button>
       <button class="btn btn-small" id="theme" type="button">Night</button>
     </span>
   </header>
 
   <main id="main">
     <p class="mode-note" id="mode-note" role="status">Reading the server mode…</p>
+    <p class="mode-note" id="diagnostics-status" role="status" hidden></p>
+    <p class="error" id="page-error" role="alert" hidden></p>
     <!-- Setup screen -->
     <section id="setup" class="screen">
       <section class="panel" id="recent" aria-label="Debates">
@@ -43,6 +46,7 @@
         <summary>Local data and backups</summary>
         <p>Records for this server are saved in <code id="data-dir"></code>.</p>
         <p>Stop the server before copying this folder. Keep the complete copy, including transcripts and recovery backups. Browser preferences and provider logins are stored separately.</p>
+        <p>Error logs stay in <code>_diagnostics/</code> inside this folder (up to 512 KiB). They contain error categories, reference IDs and code locations, not review text, credentials or personal paths. <b>Save error log</b> downloads a copy for review; nothing is uploaded automatically.</p>
         <a href="/docs/workflow.md" target="_blank" rel="noopener">Full user guide, including startup and backups (text)</a>
       </details>
       <div>

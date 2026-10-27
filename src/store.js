@@ -252,7 +252,7 @@ export function rebuildDebate(rows) {
   if (fallback) events.push({ ...fallback, type: 'chairman-fallback' });
   if (stop) events.push({ type: 'stopped', reason: stop.reason, rounds: stop.rounds });
   if (verdict && verdict.skipped) events.push({ type: 'verdict', seat: null, text: verdict.text, usage: null, failed: true, skipped: true, reason: verdict.reason });
-  else if (verdict) events.push({ type: 'chairman-start', seat: verdict.seat }, { type: 'verdict', seat: verdict.seat, text: verdict.text, usage: verdict.usage, attemptId: verdict.attemptId, ...(verdict.failed ? { failed: true, errors: verdict.errors } : {}) });
+  else if (verdict) events.push({ type: 'chairman-start', seat: verdict.seat }, { type: 'verdict', seat: verdict.seat, text: verdict.text, usage: verdict.usage, attemptId: verdict.attemptId, ...(verdict.failed ? { failed: true, errors: verdict.errors, errorKind: verdict.errorKind } : {}) });
   if (error && !finished) events.push({ type: 'error', message: error.message });
   if (finished) events.push({ type: 'done', reason: stop?.reason ?? null, replayed: true, synthesis });
   else events.push({ type: 'interrupted', round: rounds.length, partialRound, resumedBefore: resumedRows });

@@ -25,6 +25,10 @@
 
 ### Local operation and interface
 
+- Add local, rotating diagnostic logs and a **Save error log** download. Give failed actions
+  reference IDs and next steps; keep pending browser diagnostics through reloads. Exclude
+  review content, credentials, URLs and personal paths from the diagnostic data.
+- Report failed quota saves and distinguish provider failures from malformed verdicts.
 - Show Demo or Live mode, the active data folder, and backup guidance. Default to two seats
   and one critique round; remember saved settings and prefer ready logins on first use.
 - Retain drafts after failed requests, explain errors, and prevent duplicate pending actions.

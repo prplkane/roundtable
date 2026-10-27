@@ -5,25 +5,74 @@ import { avatar } from '/ui/avatars.js';
 import { modelsForPlan, retired } from '/src/adapters/models.js';
 import { project, projectedWindows } from '/src/estimate.js';
 import { PREFLIGHT_TTL_MS } from '/src/preflight.js';
+import { createBrowserDiagnostics, requestAction } from '/ui/diagnostics.js';
 
 const $ = (id) => document.getElementById(id);
 // The launch token the server put in the page; every POST carries it (server.js refuse()).
 const SEND = { 'content-type': 'application/json', 'x-roundtable-token': document.querySelector('meta[name="roundtable-token"]')?.content || '' };
+let diagnosticStorage;
+try { diagnosticStorage = sessionStorage; } catch { /* private browsing may disable storage */ }
+const clientDiagnostics = createBrowserDiagnostics({ storage: diagnosticStorage,
+  send: async (events) => {
+    const res = await fetch('/api/diagnostics/report', { method: 'POST', headers: SEND, body: JSON.stringify({ events }), signal: AbortSignal.timeout(5000) });
+    if (!res.ok) throw new Error('Diagnostic log unavailable.');
+    return res.json();
+  },
+  onPending: (count) => {
+    if (count) { $('diagnostics-status').textContent = 'Some error details have not reached the local log. Keep this tab open; they will retry when the server is available. Save error log includes pending details.'; $('diagnostics-status').hidden = false; }
+    else if ($('diagnostics-status').textContent.startsWith('Some error details')) $('diagnostics-status').hidden = true;
+  },
+});
+const errorReference = (diagnostic) => diagnostic?.id ? ` Reference ${diagnostic.id}.${diagnostic.saved === false ? ' The local log could not save this entry.' : ''}` : '';
+function browserFailure(code, action, message, details) {
+  const id = clientDiagnostics.report(code, action, details);
+  return new Error(`${message}${errorReference({ id })}`);
+}
+function pageFailure(code, event) {
+  const id = clientDiagnostics.report(code, 'unknown', { line: event?.lineno, column: event?.colno });
+  $('page-error').textContent = `A page error interrupted an action. Copy any unsent note, reload, then check the review before retrying.${errorReference({ id })}`;
+  $('page-error').hidden = false;
+}
+window.addEventListener('error', (e) => pageFailure('browser-error', e));
+window.addEventListener('unhandledrejection', () => pageFailure('browser-rejection'));
+window.addEventListener('online', () => void clientDiagnostics.flush());
+setInterval(() => void clientDiagnostics.flush(), 15_000);
+void clientDiagnostics.flush();
 // A failed or timed-out write can already have reached the server. Never retry it automatically.
 async function requestJson(url, body) {
+  const action = requestAction(url, body !== undefined);
   let res;
   try {
     res = await fetch(url, { ...(body === undefined ? {} : { method: 'POST', headers: SEND, body: JSON.stringify(body) }), signal: AbortSignal.timeout(15_000) });
-  } catch {
-    throw new Error(body === undefined ? 'Could not reach the server. Check that it is running, then reload.' : 'Could not confirm the request. Check that the server is running and review the current state before retrying.');
+  } catch (e) {
+    const timeout = ['TimeoutError', 'AbortError'].includes(e.name);
+    throw browserFailure(timeout ? 'browser-timeout' : 'browser-network', action,
+      `${timeout ? 'The server did not respond within 15 seconds.' : 'Could not reach the local server.'} ${body === undefined ? 'Check that it is running, then reload.' : 'The action may already have happened. Keep your note and check the review before retrying.'}`);
   }
-  if (res.status === 401) throw new Error('This page is out of date. Copy any unsent note, reload, then try again.');
   let out;
-  try { out = await res.json(); } catch { throw new Error('The server returned an unreadable response. Check the current state before retrying.'); }
-  if (!out || typeof out !== 'object') throw new Error('The server returned an unreadable response. Check the current state before retrying.');
-  if (!res.ok || out.ok === false) throw new Error(out.error || 'This action is no longer available. Check the current state before retrying.');
+  try { out = await res.json(); } catch { throw browserFailure('browser-response', action, 'The server returned an unreadable response. Check the current state before retrying.', { status: res.status }); }
+  if (!out || typeof out !== 'object') throw browserFailure('browser-response', action, 'The server returned an unreadable response. Check the current state before retrying.', { status: res.status });
+  if (!res.ok || out.ok === false) {
+    const message = res.status === 401 ? 'This page is out of date. Copy any unsent note, reload, then check the review before retrying.' : out.error || 'This action is no longer available. Check the current state before retrying.';
+    if (out.diagnostic) throw new Error(message + errorReference(out.diagnostic));
+    throw browserFailure('browser-response', action, message, { status: res.status });
+  }
+  void clientDiagnostics.flush();
   return out;
 }
+$('save-diagnostics').addEventListener('click', async () => {
+  const button = $('save-diagnostics'); button.disabled = true;
+  try {
+    await clientDiagnostics.flush();
+    const out = await requestJson('/api/diagnostics', {});
+    const blob = new Blob([JSON.stringify({ ...out, pendingBrowserEvents: clientDiagnostics.pending() }, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob), link = document.createElement('a');
+    link.href = url; link.download = `roundtable-errors-${new Date().toISOString().slice(0, 10)}.json`; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    $('diagnostics-status').textContent = `Error log saved. Nothing was uploaded.${!out.available ? ' The server could not read or write part of the log; check disk space and data-folder permissions.' : ''}${out.dropped ? ' Repeated errors exceeded the logging rate limit; some entries were omitted.' : ''}`;
+  } catch (e) { $('diagnostics-status').textContent = `Could not save the error log. ${e.message}`; }
+  finally { button.disabled = false; $('diagnostics-status').hidden = false; }
+});
 const initialDraft = (vendors) => vendors.map((vendor, i) => ({ vendor, lens: ['risk and failure modes', 'cost and effort'][i], mood: 'grill', moodText: '', model: '', effort: '' }));
 const VENDOR_LABEL = {};
 const VENDOR_META = {}; // vendor -> { kind, usageUrl, pool, catalogue, colour, profiles } from /api/seats
@@ -59,8 +108,13 @@ const S = {
 const CONN_LABEL = { idle: 'idle', thinking: 'thinking', replied: 'replied', reprompted: 're-prompted', failed: 'failed', 'timed-out': 'timed out', down: 'out for this debate' };
 // What a failed call's kind means for the human, in one line (adapters/errors.js classifies).
 const ERROR_LINE = {
-  quota: 'Out of quota.', auth: 'Not logged in.', missing: 'CLI not installed.', network: 'Could not reach the service (retried once).',
-  timeout: 'Did not answer in time.', killed: 'Stopped before it answered.', format: 'The reply did not follow the verdict format.',
+  quota: 'Provider usage limit reached. Wait for the reset or choose another provider.',
+  auth: 'Provider login needs attention. Sign in with its CLI, then refresh status.',
+  missing: 'Provider CLI not found. Install it and restart Roundtable.',
+  network: 'Could not reach the provider. Check your connection and its service status.',
+  timeout: 'The provider took too long. Try a smaller review or another model.',
+  killed: 'Stopped before it answered.', format: 'The reply did not follow the required format. Try another model.',
+  budget: 'The budget blocked this call. Check the cap and reported usage before continuing.',
 };
 const POSITION_LABEL = { agreed: 'with the majority', disagreed: 'against the majority', neutral: 'own stance', passed: 'passed' };
 const led = (state) => `<span class="led led-${esc(state || 'idle')}" title="${esc(CONN_LABEL[state] || 'idle')}" aria-label="${esc(CONN_LABEL[state] || 'idle')}"></span>`;
@@ -73,6 +127,7 @@ async function setup() {
   $('run-mode').className = `run-mode ${demo ? 'demo' : 'live'}`;
   $('mode-note').textContent = demo ? 'Demo: replies and usage are scripted. No model calls are made.' : 'Live: debates send your field notes to the providers you select and use their quota or billing.';
   $('data-dir').textContent = runtime?.dataDir || 'unavailable — check the server terminal';
+  if (runtime?.diagnostics?.available === false) { $('diagnostics-status').textContent = 'The local error log is unavailable. Check disk space and data-folder permissions.'; $('diagnostics-status').hidden = false; }
   MOODS = moods; COLOURS = colours; BASELINES = baselines || {}; S.calib = calibration || {}; S.pools = pools || {};
   const chair = $('chairman');
   for (const v of vendors) {
@@ -327,9 +382,7 @@ function requestPreflight({ fresh = false } = {}) {
     if (!needsCheck && !fresh && epSig === S.preflightEndpoints) { S.preflighting = false; updateLamps(); return; }
     S.preflighting = true; S.preflightError = null; updateLamps();
     try {
-      const response = await fetch('/api/preflight', { method: 'POST', headers: SEND, body: JSON.stringify({ pools: keys, endpoints, fresh }) });
-      if (!response.ok) throw new Error(response.status === 401 ? 'Reload this page to reconnect to the server, then refresh status.' : 'Status refresh failed. Try Refresh status again.');
-      const { pools } = await response.json();
+      const { pools } = await requestJson('/api/preflight', { pools: keys, endpoints, fresh });
       if (revision !== preflightRevision) return; // a slow answer cannot overwrite a later edit
       S.preflightError = pools.some((p) => ['busy', 'check-failed'].includes(p.kind)) ? 'Some checks could not finish. Try Refresh status again.' : null;
       const times = pools.map((p) => p.checkedAt).filter((t) => t != null);
@@ -738,8 +791,8 @@ function openBoard(slug) {
   // board; a slug with no transcript keeps retrying and says so.
   const es = new EventSource(`/api/debates/${slug}/events`);
   es.onmessage = (m) => { S.connected = true; handle(JSON.parse(m.data)); };
-  es.onerror = () => { S.connected = false; renderGate(); renderBanners(); };
-  es.onopen = () => { S.connected = true; renderGate(); renderBanners(); };
+  es.onerror = () => { if (S.connected !== false) clientDiagnostics.report('browser-stream', 'events'); S.connected = false; renderGate(); renderBanners(); };
+  es.onopen = () => { S.connected = true; void clientDiagnostics.flush(); renderGate(); renderBanners(); };
   live = { es, timer: setInterval(tick, 1000) };
   render(); // clear what the last board showed, before this one's first event (or a 404)
 }
@@ -786,10 +839,10 @@ function handle(e) {
     case 'synthesize': S.status = 'verdict'; S.verdict = null; break;
     case 'accepted': S.accepted = e; break;
     case 'exported': S.exported = e; S.exportError = null; break;
-    case 'export-failed': S.exportError = e.error; break;
+    case 'export-failed': S.exportError = e.error + errorReference(e.diagnostic); break;
     case 'transcript-warning': S.transcriptWarning = e; break;
     case 'error':
-      S.status = 'error'; S.error = e.message;
+      S.status = 'error'; S.error = e.message + errorReference(e.diagnostic);
       if (e.fatal) { closeBoard(); $('board-title').textContent = 'Transcript needs repair'; document.title = 'Transcript needs repair · Roundtable'; }
       break;
   }
@@ -810,7 +863,7 @@ function card(r) {
   else if (!r.valid) flags.push('<span class="status warn">off contract</span>');
   let body;
   if (r.failed) {
-    const line = r.skipped ? `Skipped: ${VENDOR_LABEL[seat.vendor] || seat.vendor} is out for this debate.` : (ERROR_LINE[r.errorKind] || 'No reply.');
+    const line = (r.skipped ? `Skipped: ${VENDOR_LABEL[seat.vendor] || seat.vendor} is out for this debate.` : (ERROR_LINE[r.errorKind] || 'The provider call failed. Check the details and save the error log.')) + errorReference(r.diagnostic);
     body = `<p class="fail-line danger">${esc(line)}${r.resetsAt ? ` Resets ${esc(new Date(r.resetsAt).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}.` : ''}</p><details class="fail-detail"><summary>details</summary><pre>${esc(r.errors.join('\n'))}</pre></details>`;
   }
   else if (r.parsed.pass) body = '<span class="muted">Nothing new to add.</span>';
@@ -916,7 +969,7 @@ function renderVerdict() {
   if (!v) return;
   if (v.skipped) { $('verdict-body').innerHTML = `<p class="wide">${esc(v.text)}</p><div class="verdict-meta">${S.rounds.length} rounds · stopped: ${esc(S.stopReason)} · debates/${esc(S.slug)}/</div>`; return; }
   // the chairman's reply never met the verdict format: show it as diagnostic text, not a verdict
-  if (v.failed) { $('verdict-body').innerHTML = `<p class="wide danger">The chairman's reply did not follow the verdict format${v.errors?.length ? `: ${esc(v.errors.join('; '))}` : ''}. Write the verdict again from the bar below.</p><pre class="wide">${esc(v.text)}</pre>`; return; }
+  if (v.failed) { $('verdict-body').innerHTML = `<p class="wide danger">${esc(ERROR_LINE[v.errorKind] || 'The chairman could not write a verdict. Check the details and save the error log.')} After resolving the problem, write the verdict again from the bar below.${esc(errorReference(v.diagnostic))}</p><details class="wide"><summary>Details</summary><pre>${esc(v.errors?.join('\n') || v.text)}</pre></details>`; return; }
   const sections = {};
   let cur = null;
   for (const line of v.text.split(/\r?\n/)) {

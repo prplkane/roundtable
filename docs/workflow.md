@@ -118,6 +118,24 @@ too. Each board has its own address, so you can bookmark it. Below the list is a
 bar at the bottom shows how many calls and tokens the table you are setting up is projected to
 take, next to **Open the table**.
 
+### A first live test drive
+
+1. Run `npm run doctor`, then start the live board and check that its header says **Live**.
+   Use **Refresh status** and resolve any login or installation errors first.
+2. Use a small, non-sensitive decision with two clear options. Choose two seats with different
+   lenses. For the first run, use a provider you have already verified; both seats may use it.
+3. Choose a modest model and low effort, **zero critique rounds**, **stateless** memory and a
+   **10-minute** wall clock. Set a token cap with room for two initial replies and the verdict.
+   The cap is an admission check, not a billing guarantee. Zero critique rounds still makes
+   those three calls, plus any retry.
+4. Open the table, read both positions, add a short note at the human gate and continue to the
+   verdict. Accept or override the recommendation, then reload and check the saved decision.
+5. Create an empty folder and export into it. In a separate demo review, try Stop and restart/recovery.
+   Use **Save error log** if anything fails, and note the last action you took.
+
+The stabilization pass included a live Claude Sonnet review at low effort. Other providers
+have offline test coverage and should get their own small live trial before a larger review.
+
 ## 4. Run a debate
 
 ### Write the field notes
@@ -425,6 +443,27 @@ does not cancel model work on the server. If the page reports an expired launch 
 unsent notes and reload. A failed history load says **unavailable**, with **Retry history**;
 it does not claim your records are gone. A setup-load failure offers **Reload**.
 
+### Error logs
+
+Errors include a reference such as `RT-0123456789abcdef`. **Save error log**, available on
+setup and review screens, downloads a JSON file you can share for diagnosis. Note what you
+were doing and the reference ID. Nothing is sent to an assistant or maintainer automatically.
+An assistant working in your local checkout can inspect the same log when you ask it to.
+
+Server, provider, storage and browser failures are recorded in `_diagnostics/` inside the
+active data folder. Two rotating files hold up to 512 KiB total; the server accepts at most
+120 entries per minute and reports omitted entries in the download. Logs survive restarts.
+They contain fixed error categories, action names, reference IDs, provider names, timestamps,
+app/runtime versions and source line numbers. They exclude prompts, replies, titles, account
+names, model IDs, URLs, credentials, raw error messages and personal filesystem paths.
+Transcripts and terminal output are separate and can contain private review data.
+
+If the server is unreachable, the browser keeps up to 20 sanitized events in this tab's
+session storage and retries diagnostic delivery. They survive a reload, but closing the tab
+can discard unsent entries. A download includes entries still waiting to be saved. If the
+page says it cannot write the log, check disk space and data-folder permissions. You can
+delete `_diagnostics/` while the server is stopped without deleting reviews.
+
 Before a debate, each seat card's round lamp says whether that seat can take a call, checked
 for free (no model call): green ready, yellow nearly out of quota or unknown, red not installed,
 not logged in or out of quota (with the reset time), grey not checked yet. **Open the table**
@@ -450,7 +489,7 @@ there is no current snapshot. Refresh with an authenticated JSON `POST /api/pref
 | An API seat's lamp is red: "… is not set in the environment" | Set that variable in the shell you start roundtable from (`set DEEPSEEK_API_KEY=…` on Windows, `export …` elsewhere) and start it again. The board cannot read it for you. |
 | An API seat shows "could not reach" or an HTTP status | Nothing listens at that URL (start the local server, check the port and the `/v1` suffix), or the endpoint refused the call (`401` a wrong key, `402`/`429` no credit or a limit, `404` a model id the server does not know). The seat's card quotes the server's own words. |
 | A red "out" banner on the board | A vendor ran out of quota or lost its login mid-debate. Its seats are skipped from then on (no call, no tokens). If fewer than two seats are left, the debate stops and the chairman writes from what was said. |
-| A seat shows "no reply" in red | Its call failed this round; the card says why in one line, with the CLI's own words under "details". A network failure was already retried once. The others carry on. |
+| A seat shows "no reply" in red | Its call failed this round; the card gives a next step, with the CLI's own words under "details". Network failures may retry once if the budget and time limit allow it. The others carry on. |
 | The verdict failed, or was not written | **Write the verdict with** a vendor of your choice, under the bar. If the chairman's vendor ran out, another one is preselected. |
 | "reconnecting" banner | The board lost the server. The debate keeps running there; the board catches up when the connection is back. |
 | A seat is "re-prompted" | Its reply broke the format or it tried to use a tool. It gets one retry. |

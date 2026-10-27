@@ -20,6 +20,7 @@ import { baselinesFrom, windowDeltas, updateCalibration, migrateCalibration, CAL
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { fakeRunner, fakeQuota } from './fake.js';
 import { validateDebateRequest, validateMessage, validateAccept, BODY_LIMIT } from './validate.js';
+import { createDiagnostics, diagnosticAction, validateBrowserDiagnostics } from './diagnostics.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const UI = path.join(ROOT, 'src', 'ui');
@@ -29,6 +30,8 @@ const FAKE = process.argv.includes('--fake') || FAKE_CONSENSUS;
 // temporary folder so nothing they run teaches the real projection). Scripted seats default to
 // their own folder, so a fake debate never sits next to real ones.
 const DEBATES_DIR = process.env.ROUNDTABLE_DEBATES_DIR ? path.resolve(process.env.ROUNDTABLE_DEBATES_DIR) : path.join(ROOT, FAKE ? 'debates-fake' : 'debates');
+const diagnostics = createDiagnostics(DEBATES_DIR, { mode: FAKE ? 'demo' : 'live', version: JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version });
+diagnostics.write({ code: 'server-start', action: 'startup' });
 const PORT = Number(process.env.PORT) || (FAKE ? 4748 : 4747);
 // Per-launch capability: every request that changes something carries it. The page gets it in a
 // meta tag when it is served; scripts take it from the startup line (ROUNDTABLE_TOKEN).
@@ -44,17 +47,20 @@ const debates = new Map(); // slug -> live debate record
 let catalogue = null;
 const catalogueReady = (FAKE ? vendorCatalogue({ agyModels: async () => [] }) : vendorCatalogue())
   .then((c) => { catalogue = c; return c; })
-  .catch((e) => { console.error('[catalogue]', e.message); return vendorCatalogue({ agyModels: async () => [] }).then((c) => (catalogue = c)); });
+  .catch((e) => { diagnostics.write({ code: 'status-failed', action: 'catalogue' }, e); console.error('[catalogue]', e.message); return vendorCatalogue({ agyModels: async () => [] }).then((c) => (catalogue = c)); });
 const effortsByVendor = () => Object.fromEntries(Object.entries(catalogue || {}).map(([v, c]) => [v, c.efforts]));
 
 // The quota picture. Baselines: tokens per call per vendor from every transcript on disk.
 // Calibration: how much of each vendor window one round took, measured between the quota
 // snapshot at one round's start and the next; persisted so the next debate projects from it.
-const baselines = baselinesFrom(readAllTranscripts(DEBATES_DIR, { excludeSynthetic: true }));
+const baselines = baselinesFrom(readAllTranscripts(DEBATES_DIR, { excludeSynthetic: true, onWarning: (e) => {
+  diagnostics.write({ code: 'transcript-warning', action: 'startup', line: e.line }, e);
+  console.warn(`[transcript] ${e.message}`);
+} }));
 // The fake board must never teach the real projection: it measures into its own file.
 const CALIB_FILE = path.join(DEBATES_DIR, FAKE ? '_calibration.fake.json' : '_calibration.json');
 let calibration = {};
-const saveCalibration = () => { try { writeFileSync(CALIB_FILE, JSON.stringify({ _version: CALIBRATION_VERSION, ...calibration }, null, 2)); } catch (e) { console.warn('[calibration]', e.message); } };
+const saveCalibration = () => { try { writeFileSync(CALIB_FILE, JSON.stringify({ _version: CALIBRATION_VERSION, ...calibration }, null, 2)); } catch (e) { diagnostics.write({ code: 'storage-failed', action: 'calibration' }, e); console.warn('[calibration]', e.message); } };
 try {
   const m = migrateCalibration(JSON.parse(readFileSync(CALIB_FILE, 'utf8')), { subsetVendors: Object.keys(ADAPTERS).filter((v) => ADAPTERS[v].cacheSemantics === 'subset') });
   calibration = m.calibration;
@@ -74,8 +80,9 @@ function setPool(vendor, body) {
   if (!Number.isFinite(remaining) || remaining < 0) throw new Error('Remaining must be a finite number of 0 or more.');
   const perToken = body.perToken == null || body.perToken === '' ? null : Number(body.perToken);
   if (perToken != null && !(Number.isFinite(perToken) && perToken >= 0)) throw new Error('Units per token must be a finite number of 0 or more.');
-  pools[vendor] = { remaining, unit: String(body.unit || 'credits').slice(0, 24), perToken, note: String(body.note || '').slice(0, 120), at: Date.now() };
-  try { writeFileSync(POOLS_FILE, JSON.stringify(pools, null, 2)); } catch (e) { console.warn('[pools]', e.message); }
+  const next = { ...pools, [vendor]: { remaining, unit: String(body.unit || 'credits').slice(0, 24), perToken, note: String(body.note || '').slice(0, 120), at: Date.now() } };
+  writeFileSync(POOLS_FILE, JSON.stringify(next, null, 2));
+  pools = next;
   for (const d of debates.values()) push(d, { type: 'pool', vendor, pool: pools[vendor] });
   return pools[vendor];
 }
@@ -130,6 +137,19 @@ function watchRounds(d, payload) {
 // so such a board gets the whole list again and resets on its `started` event.
 function sseLine(d, i) { return `id: ${d.gen}:${i}\ndata: ${JSON.stringify(d.events[i])}\n\n`; }
 function push(d, event) {
+  let code;
+  if (event.type === 'attempt' && event.errorKind) code = 'provider-failed';
+  else if ((event.type === 'reply' && event.valid === false) || (event.type === 'verdict' && event.failed)) code = event.failed && event.errorKind !== 'format' ? 'provider-failed' : 'reply-invalid';
+  else if (event.type === 'reprompt') code = 'reply-invalid';
+  else if (event.type === 'error') code = 'engine-failed';
+  else if (event.type === 'export-failed') code = 'export-failed';
+  else if (event.type === 'transcript-warning') code = 'transcript-warning';
+  else if (event.type === 'budget') code = 'provider-failed';
+  if (code && !event.diagnostic) {
+    const diagnostic = diagnostics.write({ code, action: event.type === 'export-failed' ? 'export' : 'events',
+      vendor: event.seat?.vendor, kind: event.errorKind || (event.type === 'budget' ? 'budget' : undefined), round: event.round, line: event.line });
+    event = { ...event, diagnostic };
+  }
   d.events.push(event);
   const line = sseLine(d, d.events.length - 1);
   for (const res of d.clients) res.write(line);
@@ -213,7 +233,7 @@ async function loginStatus(vendor, account) {
     const r = await runProcess(resolveBinary(ADAPTERS[vendor].binary, ADAPTERS[vendor].npmBin), s.args, { env: cleanEnv(home), timeoutMs: 20_000 });
     const out = `${r.stdout}\n${r.stderr}`;
     return s.plan ? { loggedIn: s.read(out), plan: s.plan(out) } : s.read(out);
-  } catch { return null; }
+  } catch (e) { diagnostics.write({ code: 'status-failed', action: 'preflight', vendor }, e); return null; }
 }
 // endpoints: { [key]: { url, keyEnv } } for API pools, from the board (POST only: it names a
 // variable of this process, so the launch token is required). No request leaves this server
@@ -256,6 +276,7 @@ function listDebates(limit = 50) {
         tokensPartial: !!(u.tokenCoverage && u.tokenCoverage.reported < u.tokenCoverage.of),
         cost: u.cost, costPartial: !!(u.costCoverage && u.costCoverage.reported < u.costCoverage.of) });
     } catch (e) {
+      diagnostics.write({ code: 'transcript-warning', action: 'history', line: e.line }, e);
       console.warn(`[list] ${slug}: ${e.message}`);
       out.push({ slug, decision: slug, date: slug.slice(0, 10), updated: t, state: 'corrupt', status: 'corrupt', warning: e.message });
     }
@@ -311,9 +332,9 @@ function refreshQuota(key) {
   const p = (async () => {
     try {
       const q = await readers[vendor]({ home: account ? profileHome(vendor, account) : null });
-      if (!q) console.warn(`[quota] ${key}: no figure (read failed or timed out); the strip keeps the last one`);
+      if (!q) { diagnostics.write({ code: 'status-failed', action: 'quota', vendor }); console.warn(`[quota] ${key}: no figure (read failed or timed out); the strip keeps the last one`); }
       setQuota(key, q);
-    } catch (e) { console.error(`[quota] ${key}: ${e.message}`); } finally { reading.delete(key); }
+    } catch (e) { diagnostics.write({ code: 'status-failed', action: 'quota', vendor }, e); console.error(`[quota] ${key}: ${e.message}`); } finally { reading.delete(key); }
   })();
   reading.set(key, p);
   return p;
@@ -411,19 +432,34 @@ function attachEngine(d, { fieldNotes, seats, chairman, options, resume = null, 
     fieldNotes, seats, chairman, options, runner, gate, store, resume, baselines, provenance: FAKE ? { fake: true } : {}, synthesisOnly,
     cancel: () => { const n = killAll(d.slug); if (n) console.log(`[${d.slug}] wall clock: stopped ${n} CLI process${n === 1 ? '' : 'es'}`); },
     emit: (type, payload) => {
+      // run() rejects with the original Error after emitting this. Its catch below logs a
+      // sanitized source location and sends one useful failure instead of exposing internals.
+      if (type === 'error') { d.synthesizing = false; return; }
       // the engine ended an unanswered gate at the deadline: close this side of it too
       if (type === 'gate-expired' && d.pending) { clearTimeout(d.timer); d.timer = null; d.pending = null; push(d, { type: 'gate-closed', action: 'stop' }); }
       push(d, payload); watchRounds(d, payload);
       if (type === 'done') { d.finished = true; d.synthesizing = false; autoExport(d, fieldNotes.exportTo); }
-      if (type === 'error') d.synthesizing = false; // a failed synthesis can be asked for again
     },
   });
-  d.debate.run().catch((e) => console.error(`[${d.slug}]`, e.message));
+  d.debate.run().catch((e) => {
+    const diagnostic = diagnostics.write({ code: 'engine-failed', action: 'events' }, e);
+    push(d, { type: 'error', message: 'The review stopped unexpectedly. Check saved history and save the error log before trying again.', diagnostic });
+    console.error(`[${d.slug}]`, e.message);
+  });
 }
 
 function json(res, code, obj) {
-  res.writeHead(code, { 'content-type': 'application/json' });
+  res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
   res.end(JSON.stringify(obj));
+}
+
+function requestError(res, status, message, action, error) {
+  if (status === 401) message = 'This page belongs to an earlier server session. Copy any unsent note, reload, then check the review before retrying.';
+  if (['EACCES', 'EPERM', 'EROFS'].includes(error?.code)) message = 'Could not save or read local data. Check data-folder permissions, then review the saved state before retrying.';
+  else if (error?.code === 'ENOSPC') message = 'The disk is full. Free some space, then review the saved state before retrying.';
+  else if (status >= 500) message = 'The server could not complete this action. Your request may have partly completed. Review the saved state and save the error log before retrying.';
+  const diagnostic = diagnostics.write({ code: 'request-failed', action, status, line: error?.line }, error);
+  return json(res, status, { error: message, diagnostic });
 }
 
 async function readBody(req) {
@@ -469,7 +505,7 @@ const server = http.createServer(async (req, res) => {
   try {
     const isRead = req.method === 'GET' && (!p.startsWith('/api/') || p === '/api/seats' || p === '/api/debates' || p === '/api/preflight' || /\/events$/.test(p));
     const no = refuse(req, isRead);
-    if (no) return json(res, no[0], { error: no[1] });
+    if (no) return requestError(res, no[0], no[1], diagnosticAction(p));
     if (p === '/') {
       const html = (await readFile(path.join(UI, 'index.html'), 'utf8')).replace('<meta name="roundtable-token" content="">', `<meta name="roundtable-token" content="${TOKEN}">`);
       res.writeHead(200, { 'content-type': MIME['.html'], 'cache-control': 'no-store' });
@@ -482,7 +518,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && p === '/api/seats') {
       const cat = catalogue || await catalogueReady;
       return json(res, 200, {
-        runtime: { mode: FAKE ? 'demo' : 'live', dataDir: DEBATES_DIR },
+        runtime: { mode: FAKE ? 'demo' : 'live', dataDir: DEBATES_DIR, diagnostics: diagnostics.status() },
         vendors: Object.entries(ADAPTERS).map(([vendor, a]) => ({
           vendor, kind: a.kind, label: a.label, colour: a.colour, usageUrl: a.usageUrl || null, quota: quota[vendor] || null, profiles: poolsByAccount(a),
           pool: a.pool, catalogue: cat[vendor],
@@ -494,6 +530,15 @@ const server = http.createServer(async (req, res) => {
         calibration,
         pools,
       });
+    }
+    if (p === '/api/diagnostics/report' && req.method === 'POST') {
+      const events = validateBrowserDiagnostics(await readBody(req));
+      const saved = events.map((e) => diagnostics.write(e)).filter((e) => e.saved).map((e) => e.id);
+      return json(res, 200, { saved, ...diagnostics.status() });
+    }
+    if (p === '/api/diagnostics' && req.method === 'POST') {
+      await readBody(req);
+      return json(res, 200, diagnostics.read());
     }
     const pm = p.match(/^\/api\/pools\/([a-z]+)$/);
     if (pm && req.method === 'POST') return json(res, 200, { pool: setPool(pm[1], await readBody(req)) });
@@ -519,10 +564,11 @@ const server = http.createServer(async (req, res) => {
       try { d = debates.get(m[1]) || loadDebate(m[1]); } catch (e) {
         if (m[2] !== 'events' || e.code !== 'TRANSCRIPT_CORRUPT') throw e;
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
-        res.end(`data: ${JSON.stringify({ type: 'error', message: e.message, fatal: true })}\n\n`);
+        const diagnostic = diagnostics.write({ code: 'transcript-warning', action: 'events', line: e.line }, e);
+        res.end(`data: ${JSON.stringify({ type: 'error', message: e.message, fatal: true, diagnostic })}\n\n`);
         return;
       }
-      if (!d) return json(res, 404, { error: 'No debate with that slug on this server or on disk. Start a new one.' });
+      if (!d) return requestError(res, 404, 'This review was not found on this server. Return to Debates and choose an existing review.', diagnosticAction(p));
       if (m[2] === 'events') {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
         for (let i = replayFrom(d, req.headers['last-event-id']); i < d.events.length; i++) res.write(sseLine(d, i));
@@ -535,12 +581,13 @@ const server = http.createServer(async (req, res) => {
       if (m[2] === 'synthesize') { synthesizeDebate(d, body); return json(res, 200, { ok: true }); }
       if (m[2] === 'accept') return json(res, 200, acceptDecision(d, body));
       if (m[2] === 'export') {
-        if (!d.finished) return json(res, 400, { error: 'Export after the verdict; the record needs the whole debate.' });
+        if (!d.finished) return requestError(res, 400, 'Export after the verdict; the record needs the whole debate.', 'export');
         const out = exportRecord(d, body.target);
         return json(res, 200, { path: out.path, indexPath: out.indexPath, status: out.meta.status, chosen: out.meta.chosen });
       }
-      if (d.finished || d.interrupted) return json(res, 400, { error: d.finished ? 'This debate is finished; it replays read-only.' : 'This debate was interrupted; resume it first.' });
-      if (m[2] === 'continue') return json(res, 200, { ok: answerGate(d, { action: 'continue', message: body.message || '' }) });
+      if (d.finished || d.interrupted) return requestError(res, 400, d.finished ? 'This debate is finished; it replays read-only.' : 'This debate was interrupted; resume it first.', m[2]);
+      if (m[2] === 'continue') return answerGate(d, { action: 'continue', message: body.message || '' }) ? json(res, 200, { ok: true })
+        : requestError(res, 409, 'The review is no longer waiting for input. Your note was not sent. Check the current round before retrying.', 'continue');
       if (m[2] === 'stop') {
         // At a gate the answer is the stop. Mid-call, save its note immediately and stop at
         // the round boundary even if that round ends without a gate. Kill owned CLI children.
@@ -561,7 +608,8 @@ const server = http.createServer(async (req, res) => {
   } catch (e) {
     // An oversized body: answer, close the connection, and discard the rest unread.
     if (e.drain) { res.setHeader('connection', 'close'); req.resume(); }
-    json(res, e.status || 400, { error: e.message });
+    const status = e.status || (e instanceof TypeError || e instanceof ReferenceError || e.code && e.code !== 'TRANSCRIPT_CORRUPT' ? 500 : 400);
+    requestError(res, status, e.message, p === '/api/debates' && req.method === 'POST' ? 'create' : diagnosticAction(p), e);
   }
 });
 
@@ -577,6 +625,7 @@ server.listen(PORT, '127.0.0.1', () => {
   const opened = open && openBrowser(url);
   console.log(`roundtable${FAKE ? ' (fake seats)' : ''}: ${url}  token ${TOKEN}`);
   console.log(`mode: ${FAKE ? 'demo (scripted replies and usage)' : 'live (configured providers)'}; data: ${DEBATES_DIR}`);
+  console.log('diagnostics: _diagnostics in the data folder; use Save error log on the board. Nothing is uploaded.');
   if (opened) console.log('the board is open in your browser; Ctrl+C here stops the server and every CLI it started');
 });
 
@@ -591,6 +640,6 @@ function shutdown(why, code = 0) {
 }
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('uncaughtException', (e) => { console.error('[server] uncaught:', e); shutdown('uncaught error', 1); });
-process.on('unhandledRejection', (e) => { console.error('[server] unhandled rejection:', e); });
+process.on('uncaughtException', (e) => { diagnostics.write({ code: 'server-crash', action: 'unknown' }, e); console.error('[server] uncaught:', e); shutdown('uncaught error', 1); });
+process.on('unhandledRejection', (e) => { diagnostics.write({ code: 'server-crash', action: 'unknown' }, e); console.error('[server] unhandled rejection:', e); });
 for (const vendor of Object.keys(readers)) refreshQuota(vendor); // codex: one app-server read at start

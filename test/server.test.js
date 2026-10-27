@@ -57,6 +57,39 @@ async function readEvents(res, until, onEvent) {
   return events;
 }
 
+test('local diagnostics require the launch token, preserve error references and exclude request content', { timeout: 30_000 }, async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rt-server-diagnostics-'));
+  const srv = await startFakeServer(root);
+  const headers = { 'content-type': 'application/json', 'x-roundtable-token': srv.token };
+  const post = (p, body = {}, extra = {}) => fetch(`${srv.base}${p}`, { method: 'POST', headers: { ...headers, ...extra }, body: JSON.stringify(body) });
+  try {
+    assert.equal((await fetch(`${srv.base}/api/diagnostics`)).status, 405);
+    assert.equal((await post('/api/diagnostics', {}, { 'x-roundtable-token': '' })).status, 401);
+    assert.equal((await post('/api/diagnostics/report', { events: [] }, { origin: 'https://foreign.example' })).status, 403);
+    const invalid = await post('/api/debates', { fieldNotes: { decision: 'PRIVATE-MARKER' } });
+    assert.equal(invalid.status, 400);
+    const failure = await invalid.json();
+    assert.equal(failure.diagnostic.saved, true);
+    const id = 'RT-0123456789abcdef';
+    const report = await post('/api/diagnostics/report', { events: [{ id, code: 'browser-error', action: 'create', line: 90,
+      message: 'PRIVATE-MARKER', token: srv.token, url: 'https://private.example/path' }] }).then((r) => r.json());
+    assert.deepEqual(report.saved, [id]);
+    assert.equal((await post('/api/diagnostics/report', { events: [{ id, code: 'server-crash', action: 'create' }] })).status, 400);
+    // A pool write failure must not report success or update the in-memory value.
+    mkdirSync(path.join(root, '_pools.fake.json'));
+    const pool = await post('/api/pools/claude', { remaining: 100, note: 'PRIVATE-MARKER' });
+    assert.equal(pool.status, 500);
+    assert.match((await pool.json()).error, /could not complete this action/);
+    assert.equal((await fetch(`${srv.base}/api/seats`).then((r) => r.json())).pools.claude, undefined);
+    const bundle = await post('/api/diagnostics').then((r) => r.json());
+    assert.ok(bundle.entries.some((e) => e.id === failure.diagnostic.id && e.action === 'create'));
+    assert.ok(bundle.entries.some((e) => e.id === id && e.line === 90));
+    assert.ok(bundle.entries.some((e) => e.systemCode === 'EISDIR'));
+    assert.doesNotMatch(JSON.stringify(bundle), new RegExp(`PRIVATE-MARKER|private\\.example|${srv.token}`));
+    assert.equal((await fetch(`${srv.base}/api/debates`).then((r) => r.json())).debates.length, 0, 'the log directory never becomes a review');
+  } finally { srv.child.kill(); }
+});
+
 test('history and replay preserve unknown usage; a restart cannot bypass its token cap', { timeout: 30_000 }, async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'rt-unknown-server-'));
   const slug = '2026-10-26-unknown';
@@ -183,7 +216,7 @@ test('fake server end to end: three seats, gates answered through the API, trans
     assert.equal(seatsApi.vendors.find((v) => v.vendor === 'api').profiles, true, 'API pools are per endpoint host');
     assert.equal(seatsApi.defaults.memory, 'stateless');
     assert.equal(seatsApi.defaults.critiqueRounds, 1, 'the default review has one critique round');
-    assert.deepEqual(seatsApi.runtime, { mode: 'demo', dataDir: debatesDir });
+    assert.deepEqual(seatsApi.runtime, { mode: 'demo', dataDir: debatesDir, diagnostics: { available: true, dropped: 0 } });
     assert.ok(srv.log().includes(`data: ${debatesDir}`));
     const page = await fetch(`${srv.base}/`).then((r) => r.text());
     assert.match(page, /id="run-mode"/);
@@ -479,6 +512,7 @@ test('a verdict that failed for quota can be written with another chairman', { t
     assert.equal((await post({ chairman: { vendor: 'agy' } })).status, 200);
     const events = await readEvents(await fetch(`${srv.base}/api/debates/${slug}/events`), (e) => e.type === 'done' && !e.replayed);
     assert.ok(events.some((e) => e.type === 'pool-down' && e.vendor === 'claude'), 'the replay carries the login that went down');
+    assert.equal(events.find((e) => e.type === 'verdict' && e.failed).errorKind, 'quota', 'replay keeps the reason for the failed chairman');
     const v = events.filter((e) => e.type === 'verdict').at(-1);
     assert.equal(v.seat.vendor, 'agy');
     assert.ok(!v.failed);
