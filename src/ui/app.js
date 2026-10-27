@@ -1,4 +1,4 @@
-import { rollup } from '/src/engine.js';
+import { rollup, hasUsableRound } from '/src/engine.js';
 import { optionLabel } from '/src/contract.js';
 import { poolKey, poolVendor, poolAccount, hostKey, seatKind, initialSeatVendors, nextSeatLens, fillMissingSeatLenses, seatSetupIssue } from '/src/seats.js';
 import { avatar } from '/ui/avatars.js';
@@ -8,7 +8,9 @@ import { PREFLIGHT_TTL_MS } from '/src/preflight.js';
 import { createBrowserDiagnostics, requestAction } from '/ui/diagnostics.js';
 import { installHelp, revealText, MOOD_HELP } from '/ui/help.js';
 import { installCeremony } from '/ui/ceremony.js';
-import { groupQuestions, answerMessage, stopExplanation, cancellationReason, remainingWindow, argumentHtml } from '/src/review-view.js';
+import { noteRecord, noteLabel } from '/src/notes.js';
+import { unlock as unlockSound, setSound, soundEnabled, playCue } from '/ui/sound.js';
+import { groupQuestions, answerMessage, stopExplanation, cancellationReason, remainingWindow, argumentHtml, ceremonyOutcome } from '/src/review-view.js';
 
 const $ = (id) => document.getElementById(id);
 const helpNotes = installHelp();
@@ -135,6 +137,8 @@ async function setup() {
   $('run-mode').className = `run-mode ${demo ? 'demo' : 'live'}`;
   $('mode-note').textContent = demo ? 'Demo: replies and usage are scripted. No model calls are made.' : 'Live: debates send your field notes to the providers you select and use their quota or billing.';
   $('data-dir').textContent = runtime?.dataDir || 'unavailable — check the server terminal';
+  $('legacy-data').hidden = !runtime?.legacyDataDir;
+  $('legacy-data').textContent = runtime?.legacyDataDir ? `Older history remains at ${runtime.legacyDataDir}. Stop that server before moving its data; see the user guide.` : '';
   if (runtime?.diagnostics?.available === false) { $('diagnostics-status').textContent = 'The local error log is unavailable. Check disk space and data-folder permissions.'; $('diagnostics-status').hidden = false; }
   MOODS = moods; COLOURS = colours; BASELINES = baselines || {}; S.calib = calibration || {}; S.pools = pools || {};
   const chair = $('chairman');
@@ -705,6 +709,7 @@ function showSetupError(error) {
 
 async function start() {
   if (S.startPending) return;
+  unlockSound(); // inside the click, so the opening cue may play once the board is up
   clearSetupValidation();
   const f = $('notes');
   const notes = {};
@@ -789,6 +794,8 @@ function showSetup() {
 const STATE_CLASS = { running: 'warn', interrupted: 'warn', accepted: 'ok', recommended: 'info', 'no verdict': 'danger', corrupt: 'danger' };
 const STATE_LABEL = { running: 'live', interrupted: 'interrupted', accepted: 'accepted', recommended: 'recommended', split: 'split', stopped: 'stopped', 'no verdict': 'no verdict', corrupt: 'needs repair' };
 let recentRevision = 0;
+let historyEntries = [], historySelection = null, historyBusy = false;
+function historyNotice(message) { $('history-notice').textContent = message; $('history-notice').hidden = !message; }
 async function loadRecent() {
   const revision = ++recentRevision;
   let list;
@@ -796,10 +803,13 @@ async function loadRecent() {
   catch (e) {
     if (revision !== recentRevision) return;
     $('recent-count').textContent = 'unavailable';
+    historyEntries = []; $('clear-finished').disabled = true;
     $('recent-list').innerHTML = `<div class="empty"><span role="alert">Could not load history. ${esc(e.message)}</span><button class="btn btn-small" id="retry-recent" type="button">Retry history</button></div>`;
     return;
   }
   if (revision !== recentRevision) return;
+  historyEntries = list;
+  $('clear-finished').disabled = historyBusy || !list.some((d) => d.state === 'finished');
   $('recent-count').textContent = list.length ? `${list.length} on this machine` : '';
   if (!list.length) {
     $('recent-list').innerHTML = '<div class="empty"><span><span class="prompt">&gt;</span> no debates yet<br>&nbsp;&nbsp;write the field notes below and open the table_</span></div>';
@@ -810,18 +820,50 @@ async function loadRecent() {
     const pick = d.status === 'accepted' ? d.accepted : ['no consensus', 'no pick', 'no verdict'].includes(d.recommended) ? '' : d.recommended;
     const cost = d.cost != null ? ` · $${d.cost.toFixed(2)}${d.costPartial ? '+' : ''}` : '';
     const tag = d.state === 'corrupt' ? 'div' : 'a';
-    return `<${tag} class="debate-row" ${tag === 'a' ? `href="#${esc(d.slug)}"` : ''} title="${esc(d.decision)}">
+    const deletable = ['finished', 'interrupted'].includes(d.state);
+    return `<div class="history-row"><${tag} class="debate-row" ${tag === 'a' ? `href="#${esc(d.slug)}"` : ''} title="${esc(d.decision)}">
       <span class="data">${esc(d.date)}</span>
       <span class="debate-title">${esc(d.decision)}</span>
       <span class="status ${STATE_CLASS[d.status] || 'muted'}">${esc(STATE_LABEL[d.status] || d.status)}</span>
       <span class="debate-pick">${esc(pick || '')}</span>
       <span class="data">${d.state === 'corrupt' ? 'unavailable' : `${d.rounds} rd · ${d.tokens == null ? 'tokens unknown' : `${k(d.tokens)}${d.tokensPartial ? ' (partial)' : ''}`}${cost}`}</span>
       ${d.warning ? `<span class="debate-warning">${esc(d.warning)}</span>` : ''}
-    </${tag}>`;
+    </${tag}><button class="btn btn-small history-delete" type="button" data-delete="${esc(d.slug)}" aria-label="Delete ${esc(d.decision)}" ${historyBusy || !deletable ? 'disabled' : ''} title="${deletable ? 'Delete this saved session' : d.state === 'running' ? 'Stop this session before deleting it' : 'Repair this record before deleting it to preserve usage statistics'}">Delete</button></div>`;
   };
   const shown = S.showAllDebates ? list : list.slice(0, 5);
   $('recent-list').innerHTML = shown.map(row).join('') + (list.length > 5 ? `<button class="btn btn-small debates-more" id="debates-more" type="button">${S.showAllDebates ? 'Show the latest 5' : `Show all ${list.length}`}</button>` : '');
 }
+
+function confirmHistoryDeletion(id = null) {
+  if (historyBusy) return;
+  const selected = id ? historyEntries.filter((d) => d.slug === id && ['finished', 'interrupted'].includes(d.state))
+    : historyEntries.filter((d) => d.state === 'finished').slice(0, 1000);
+  if (!selected.length) return;
+  historySelection = { ids: selected.map((d) => d.slug), bulk: !id };
+  $('delete-history-title').textContent = id ? 'Delete session?' : `Clear ${selected.length} finished session${selected.length === 1 ? '' : 's'}?`;
+  $('delete-history-detail').textContent = id ? selected[0].decision : 'Only these finished sessions will be removed. Running and interrupted sessions are kept.';
+  $('delete-history-error').hidden = true;
+  $('delete-history-confirm').textContent = id ? 'Delete session' : 'Clear finished';
+  $('delete-history').showModal();
+}
+$('clear-finished').addEventListener('click', () => confirmHistoryDeletion());
+$('delete-history').addEventListener('cancel', (event) => { if (historyBusy) event.preventDefault(); });
+$('delete-history-confirm').addEventListener('click', async () => {
+  if (!historySelection || historyBusy) return;
+  const { ids, bulk } = historySelection;
+  historyBusy = true; $('delete-history-confirm').disabled = $('delete-history-cancel').disabled = true;
+  $('delete-history-error').hidden = true;
+  try {
+    const result = await requestJson(bulk ? '/api/debates/clear-finished' : `/api/debates/${ids[0]}/delete`, bulk ? { ids } : {});
+    historyNotice(`Deleted ${result.deleted.length} session${result.deleted.length === 1 ? '' : 's'}. Exported files and usage statistics were kept.`);
+    $('delete-history').close(); historySelection = null;
+  } catch (error) {
+    $('delete-history-error').textContent = error.message; $('delete-history-error').hidden = false;
+  } finally {
+    historyBusy = false; $('delete-history-confirm').disabled = $('delete-history-cancel').disabled = false;
+    await loadRecent();
+  }
+});
 
 function openBoard(slug) {
   resetBoard({ clearDrafts: true });
@@ -831,7 +873,11 @@ function openBoard(slug) {
   // nothing. After a server restart the stream begins again with `started`, which resets the
   // board; a slug with no transcript keeps retrying and says so.
   const es = new EventSource(`/api/debates/${slug}/events`);
-  es.onmessage = (m) => { S.connected = true; handle(JSON.parse(m.data)); };
+  es.onmessage = (m) => {
+    const event = JSON.parse(m.data);
+    if (event.type === 'deleted') { closeBoard(); historyNotice('This session was deleted in another tab. Exported files and usage statistics were kept.'); location.hash = ''; return; }
+    S.connected = true; handle(event);
+  };
   es.onerror = () => { if (S.connected !== false) clientDiagnostics.report('browser-stream', 'events'); S.connected = false; renderGate(); renderBanners(); };
   es.onopen = () => { S.connected = true; void clientDiagnostics.flush(); renderGate(); renderBanners(); };
   live = { es, timer: setInterval(tick, 1000) };
@@ -842,7 +888,7 @@ function openBoard(slug) {
 
 function resetBoard({ clearDrafts = false } = {}) {
   replyReveals.clear();
-  Object.assign(S, { seats: [], fieldNotes: null, rows: [], rounds: [], humanNotes: [], initialNotes: [], gate: null, deadline: null, held: false, verdict: null, status: 'idle', startedAt: null, stopReason: null, pending: new Set(), chairman: null, configuredChairman: null, interrupted: null, stopQueued: false, error: null, conn: {}, positions: [], accepted: null, synthesis: null, down: {},
+  Object.assign(S, { seats: [], fieldNotes: null, rows: [], rounds: [], humanNotes: [], initialNotes: [], gate: null, deadline: null, held: false, verdict: null, status: 'idle', startedAt: null, stopReason: null, pending: new Set(), chairman: null, configuredChairman: null, interrupted: null, stopQueued: false, finishQueued: false, error: null, conn: {}, positions: [], accepted: null, synthesis: null, down: {},
     budgetStop: null, exported: null, exportError: null, replayed: false, connected: null, chairmanFallback: null, transcriptWarning: null,
     actionPending: null, actionError: null, holdPending: false, synthChoice: null, stopContext: null, reviewDeadline: null }); // hash routing reuses S: nothing from the last board
   if (clearDrafts || !S.questionDrafts) S.questionDrafts = {};
@@ -871,20 +917,21 @@ function handle(e) {
     case 'countdown': S.deadline = e.deadline; break;
     case 'held': S.held = true; S.deadline = null; break;
     case 'gate-closed': S.gate = null; S.deadline = null; S.status = 'running'; break;
-    case 'stop-queued': S.stopQueued = true; break;
-    case 'human': (e.round === -1 ? S.initialNotes : (S.humanNotes[e.round] ??= [])).push(e.text); break;
+    case 'stop-queued': S.stopQueued = true; S.finishQueued = false; break;
+    case 'finish-queued': S.finishQueued = true; break;
+    case 'human': (e.round === -1 ? S.initialNotes : (S.humanNotes[e.round] ??= [])).push(noteRecord(e)); break;
     case 'quota': S.quota[e.vendor] = e.quota; break;
     case 'calibration': S.calib[e.key || e.vendor] = e.windows; break;
     case 'pool': S.pools[e.vendor] = e.pool; break;
     case 'pool-down': S.down[e.key] = e; break;
     case 'budget': S.budgetStop = e; break;
     case 'stopped': S.stopReason = e.reason; S.stopContext = e.context || S.stopContext; S.gate = null; S.deadline = null; S.pending.clear(); S.status = 'verdict'; break;
-    case 'chairman-start': S.chairman = e.seat; break;
+    case 'chairman-start': S.chairman = e.seat; S.finishQueued = false; break;
     case 'chairman-fallback': S.chairmanFallback = e; break;
     case 'attempt': S.rows.push(e); break;
     case 'verdict': S.rows.push(e); S.verdict = e; break;
-    case 'done': S.status = 'done'; S.gate = null; S.deadline = null; S.pending.clear(); S.stopReason = e.reason || S.stopReason; S.replayed = !!e.replayed; S.synthesis = e.synthesis || (S.verdict ? (S.verdict.skipped ? 'skipped' : S.verdict.failed ? 'failed' : 'done') : 'missing'); if (!e.replayed) ceremony.play('close', { verdictReady: S.synthesis === 'done' }); break;
-    case 'synthesize': S.status = 'verdict'; S.verdict = null; break;
+    case 'done': S.status = 'done'; S.gate = null; S.deadline = null; S.pending.clear(); S.stopReason = e.reason || S.stopReason; S.replayed = !!e.replayed; S.synthesis = e.synthesis || (S.verdict ? (S.verdict.skipped ? 'skipped' : S.verdict.failed ? 'failed' : 'done') : 'missing'); break;
+    case 'synthesize': S.status = 'verdict'; S.verdict = null; S.stopQueued = false; S.finishQueued = false; break;
     case 'accepted': S.accepted = e; break;
     case 'exported': S.exported = e; S.exportError = null; break;
     case 'export-failed': S.exportError = e.error + errorReference(e.diagnostic); break;
@@ -894,6 +941,8 @@ function handle(e) {
       if (e.fatal) { closeBoard(); $('board-title').textContent = 'Transcript needs repair'; document.title = 'Transcript needs repair · Roundtable'; }
       break;
   }
+  const cue = ceremonyOutcome(e);
+  if (cue) ceremony.play(cue);
   render();
 }
 
@@ -913,6 +962,7 @@ function card(r) {
   let body;
   if (r.failed) {
     const line = cancelled === 'human' ? 'Cancelled when you pressed Stop. Earlier replies are kept; this seat did not finish this round.'
+      : cancelled === 'finish' ? 'Discussion ended for the verdict. Earlier replies are kept; this seat did not finish this round.'
       : cancelled === 'wall-clock' ? 'Cancelled because the review time limit expired. Earlier replies are kept.'
       : (r.skipped ? `Skipped: ${VENDOR_LABEL[seat.vendor] || seat.vendor} is out for this debate.` : (ERROR_LINE[r.errorKind] || 'The provider call failed. Check the details and save the error log.')) + errorReference(r.diagnostic);
     body = `<p class="fail-line ${cancelled ? 'muted' : 'danger'}">${esc(line)}${r.resetsAt ? ` Resets ${esc(new Date(r.resetsAt).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}.` : ''}</p><details class="fail-detail"><summary>Details</summary><pre>${esc((r.errors || []).join('\n') + (cancelled ? errorReference(r.diagnostic) : ''))}</pre></details>`;
@@ -952,7 +1002,7 @@ function renderRound(i, replies, isCurrent) {
       <div class="group-title"><span>${esc(k)}</span><span class="count">${v.length} seat${v.length > 1 ? 's' : ''}</span></div>
       <div class="cards">${v.map(card).join('')}</div></section>`).join('');
   const pendingHtml = pendingSeats.map((s) => `<section class="group"><div class="group-title"><span class="muted">thinking</span></div><div class="cards">${pendingCard(s)}</div></section>`).join('');
-  const note = (S.humanNotes[i] || []).map((n) => `<div class="human-note"><b>You said</b>${esc(n)}</div>`).join('');
+  const note = (S.humanNotes[i] || []).map((n) => `<div class="human-note"><b>${noteLabel(n)}</b>${esc(noteRecord(n).text)}</div>`).join('');
   return `<details class="round" ${isCurrent ? 'open' : ''} data-round="${i}">
     <summary><span>${i === 0 ? 'Round 0 · blind' : `Round ${i}`}</span><span class="tally">${esc(tally)}</span></summary>
     <div class="groups">${groupHtml}${pendingHtml}${note}</div>
@@ -1076,10 +1126,15 @@ function renderGate() {
   const interrupted = S.status === 'interrupted';
   renderQuestions();
   renderReviewState();
-  $('continue').disabled = !!S.actionPending || !g && !interrupted; $('stop').disabled = !!S.actionPending || ['done', 'error'].includes(S.status) || interrupted;
-  $('human-form').hidden = ['done', 'error', 'verdict', 'idle'].includes(S.status);
+  $('continue').disabled = !!S.actionPending || !g && !interrupted; $('stop').disabled = !!S.actionPending || S.stopQueued || ['done', 'error'].includes(S.status) || interrupted;
+  $('human-form').hidden = ['done', 'error', 'idle'].includes(S.status);
+  $('human-msg').hidden = $('continue').hidden = S.status === 'verdict';
+  const canFinish = hasUsableRound(S.rounds, S.seats.length);
+  $('finish').hidden = !canFinish || S.stopQueued || S.finishQueued || ['verdict', 'done', 'error', 'idle', 'interrupted'].includes(S.status);
+  $('finish').disabled = !!S.actionPending;
+  if (S.finishQueued) { $('human-msg').hidden = $('continue').hidden = true; }
   $('continue').textContent = ['continue', 'resume'].includes(S.actionPending) ? 'Sending…' : interrupted ? 'Resume' : 'Continue';
-  $('stop').textContent = S.actionPending === 'stop' ? 'Stopping…' : 'Stop';
+  $('stop').textContent = S.actionPending === 'stop' || S.stopQueued ? 'Stopping…' : 'Stop';
   const actionError = S.actionError && !['accept', 'export'].includes(S.actionError.action) ? S.actionError.message : '';
   $('human-error').textContent = actionError; $('human-error').hidden = !actionError;
   const link = (S.connected === false ? '<span class="status danger">reconnecting</span> ' : '') + budgetLine();
@@ -1093,15 +1148,16 @@ function renderGate() {
     const apiSeats = S.seats.filter((s) => s.endpoint && !S.down[`${s.vendor}@${s.account || ''}`]).map((s) => ({ value: `seat:${s.id}`, label: `${s.label} (${s.model})` }));
     const savedChair = S.configuredChairman || S.chairman;
     const first = chairDown || ['quota', 'auth', 'missing'].includes(S.verdict?.errorKind) ? pickable.find((v) => v !== S.verdict?.seat?.vendor) || pickable[0] : (savedChair?.vendor || pickable[0]);
-    const synth = S.status === 'done' && S.synthesis && S.synthesis !== 'done' && S.rounds.length
+    const synth = S.status === 'done' && S.synthesis && S.synthesis !== 'done' && canFinish
       ? ` <span class="synth">Write the verdict with <select id="synth-chair" aria-label="Chairman for the verdict">${pickable.map((v) => `<option value="${v}" ${v === first ? 'selected' : ''}>${esc(VENDOR_LABEL[v])}${v === savedChair?.vendor ? esc([savedChair.model, savedChair.effort, savedChair.account].filter(Boolean).map((s) => ` · ${s}`).join('')) : ''}</option>`).join('')}${apiSeats.map((o) => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join('')}</select> <button class="btn btn-small" id="synthesize" type="button" ${S.actionPending ? 'disabled' : ''}>${S.actionPending === 'synthesize' ? 'Starting…' : 'Write'}</button></span>` : '';
     const focused = st.contains(document.activeElement) ? document.activeElement.id : null;
-    st.innerHTML = link + (S.status === 'done' ? `<span class="status ${S.synthesis === 'done' ? 'ok' : 'warn'}">${S.synthesis === 'done' ? 'Review finished' : 'Review ended without a verdict'}</span> ${esc(stopExplanation(S.stopReason, S.stopContext))}${synth} Record saved locally.${S.exported ? ' Decision record exported.' : ''}${S.exportError ? ` <span class="danger">Export failed: ${esc(S.exportError)}</span>` : ''}${S.replayed ? ' <span class="muted">saved review</span>' : ''}`
+    st.innerHTML = link + (S.status === 'done' ? `<span class="status ${S.synthesis === 'done' ? 'ok' : 'warn'}">${S.synthesis === 'done' ? 'Review finished' : S.stopReason === 'human' ? 'Review stopped' : 'Review ended without a verdict'}</span> ${esc(stopExplanation(S.stopReason, S.stopContext))}${synth} Record saved locally.${S.exported ? ' Decision record exported.' : ''}${S.exportError ? ` <span class="danger">Export failed: ${esc(S.exportError)}</span>` : ''}${S.replayed ? ' <span class="muted">saved review</span>' : ''}`
       : interrupted ? `<span class="status warn">interrupted</span> ${S.interrupted?.round ? `after round ${S.interrupted.round - 1}` : 'before round 0 finished'}${S.interrupted?.partialRound != null ? `, round ${S.interrupted.partialRound} will be re-run` : ''}. Add a note or resume.`
       : S.status === 'idle' ? '<span class="status warn">loading</span> waiting for the transcript'
-      : S.status === 'verdict' ? '<span class="status warn">Discussion finished</span> The chairman is writing the verdict. No further comments are being requested.'
+      : S.stopQueued ? '<span class="status warn">Stopping review</span> Cancelling calls and saving their status. No further calls will start.'
+      : S.status === 'verdict' ? '<span class="status warn">Discussion finished</span> The chairman is writing the verdict. Stop cancels this call too.'
+      : S.finishQueued ? '<span class="status warn">Finishing discussion</span> Cancelling unfinished seat calls, then writing the verdict from collected replies.'
       : S.status === 'error' ? `<span class="status danger">error</span> ${esc(S.error)}`
-      : S.stopQueued ? '<span class="status warn">stop queued</span> waiting for calls already in flight to settle; the round closes, then the chairman writes the verdict'
       : `<span class="status warn">round ${S.rounds.length - 1} in flight</span> ${S.pending.size} seat${S.pending.size === 1 ? '' : 's'} still thinking`);
     const select = $('synth-chair');
     if (select && S.synthChoice && [...select.options].some((o) => o.value === S.synthChoice)) select.value = S.synthChoice;
@@ -1128,8 +1184,8 @@ function updateReviewTime() {
 
 function renderReviewState() {
   const terminal = ['done', 'error'].includes(S.status);
-  const title = S.status === 'done' ? S.synthesis === 'done' ? 'Review finished' : 'Review ended · no verdict' : S.status === 'verdict' ? 'Discussion finished · writing verdict' : S.status === 'waiting' ? 'Waiting for your input' : S.status === 'interrupted' ? 'Review interrupted' : S.status === 'error' ? 'Review stopped unexpectedly' : 'Discussion in progress';
-  const text = S.status === 'done' ? `${stopExplanation(S.stopReason, S.stopContext)} ${S.synthesis === 'done' ? 'Read the verdict below, then record your decision if ready.' : 'You can request a verdict from the saved replies.'}` : S.status === 'verdict' ? 'Your notes are saved. The chairman is preparing the recommendation.' : S.status === 'waiting' ? 'Questions are collected below. Your answers are sent together.' : terminal ? 'Review the saved replies and error log before retrying.' : '';
+  const title = S.status === 'done' ? S.synthesis === 'done' ? 'Review finished' : S.stopReason === 'human' ? 'Review stopped' : 'Review ended · no verdict' : S.stopQueued ? 'Stopping review' : S.status === 'verdict' ? 'Discussion finished · writing verdict' : S.finishQueued ? 'Finishing discussion' : S.status === 'waiting' ? 'Waiting for your input' : S.status === 'interrupted' ? 'Review interrupted' : S.status === 'error' ? 'Review stopped unexpectedly' : 'Discussion in progress';
+  const text = S.status === 'done' ? `${stopExplanation(S.stopReason, S.stopContext)} ${S.synthesis === 'done' ? 'Read the verdict below, then record your decision if ready.' : hasUsableRound(S.rounds, S.seats.length) ? 'You can request a verdict from the saved replies.' : 'No usable replies were collected. Start a new review to get a verdict.'}` : S.stopQueued ? 'Cancelling calls. No further calls will start.' : S.status === 'verdict' ? 'Your notes are saved. The chairman is preparing the recommendation.' : S.finishQueued ? 'Cancelling unfinished seat calls, then writing the verdict from collected replies.' : S.status === 'waiting' ? 'Questions are collected below. Your answers are sent together.' : terminal ? 'Review the saved replies and error log before retrying.' : '';
   $('review-state').innerHTML = `<strong>${esc(title)}</strong>${text ? `<p>${esc(text)}</p>` : ''}`;
   $('review-state').classList.toggle('finished', terminal);
 }
@@ -1171,7 +1227,7 @@ function budgetLine() {
 // connection to the server. Each says what happened and what happens next.
 function renderBanners() {
   const items = Object.values(S.down).map((x) => `<div class="banner danger"><span class="status danger">${esc(VENDOR_LABEL[x.vendor] || x.vendor)}${x.account ? ` (${esc(x.account)})` : ''} out</span> ${esc(x.message)} Its seats are skipped for the rest of this debate${S.verdict || S.status === 'done' ? '' : '; continue without them or stop'}.</div>`);
-  items.unshift(...S.initialNotes.map((note) => `<div class="human-note"><b>You said before round 0</b>${esc(note)}</div>`));
+  items.unshift(...S.initialNotes.map((note) => `<div class="human-note"><b>${noteLabel(note)} before round 0</b>${esc(noteRecord(note).text)}</div>`));
   const unknown = rollup(S.rows).unknownAttempts;
   if (unknown) items.push(`<div class="banner warn usage-warning"><span class="status warn">usage unknown</span> ${unknown} call${unknown === 1 ? ' did' : 's did'} not report usable token counts. Totals include reported figures only.</div>`);
   if (S.transcriptWarning) items.unshift(`<div class="banner warn transcript-warning"><span class="status warn">record recovery</span> ${esc(S.transcriptWarning.message)}</div>`);
@@ -1225,7 +1281,7 @@ async function boardAction(action, body, onSuccess) {
 }
 async function hold(ev) {
   if (!S.gate || !S.deadline || S.held || S.holdPending || S.actionPending) return;
-  if (ev.target.closest('#continue, #stop') || ev.key === 'Enter' && ev.target.closest('#human-form')) return;
+  if (ev.target.closest('#continue, #finish, #stop') || ev.key === 'Enter' && ev.target.closest('#human-form')) return;
   const gate = S.gate, revision = viewRevision;
   S.holdPending = true;
   try {
@@ -1250,6 +1306,11 @@ $('human-form').addEventListener('submit', (ev) => {
 });
 function sendHuman(action) {
   const value = $('human-msg').value;
+  // Stop must not wait for question validation or depend on a gate that may have closed.
+  // Keep answer drafts; the general note can still explain why the review was stopped.
+  if (action === 'stop') return boardAction('stop', { message: value }, () => {
+    if ($('human-msg').value === value) $('human-msg').value = '';
+  });
   const gate = S.gate, groups = groupQuestions(gate?.questions);
   const drafts = groups.map((q) => ({ key: questionKey(gate.round, q), id: q.id, text: S.questionDrafts[questionKey(gate.round, q)] || '' }));
   const answers = drafts.filter((a) => a.text.trim()).map(({ id, text }) => ({ id, text }));
@@ -1262,6 +1323,7 @@ function sendHuman(action) {
   });
 }
 $('stop').addEventListener('click', () => sendHuman('stop'));
+$('finish').addEventListener('click', () => sendHuman('finish'));
 $('question-inputs').addEventListener('input', (event) => {
   const q = groupQuestions(S.gate?.questions).find((q) => q.id === event.target.dataset.question);
   if (!q || !S.gate) return;
@@ -1337,11 +1399,20 @@ $('theme').addEventListener('click', () => {
 });
 try { if (localStorage.getItem('roundtable.theme') === 'night') { document.documentElement.dataset.theme = 'night'; $('theme').textContent = 'Paper'; } } catch {}
 
+// ---------- sound ----------
+// Browsers let a page make sound only after the person has interacted with it.
+for (const type of ['pointerdown', 'keydown']) document.addEventListener(type, () => { if (soundEnabled()) unlockSound(); }, { passive: true });
+function renderSound() { $('sound').setAttribute('aria-pressed', String(soundEnabled())); $('sound').textContent = soundEnabled() ? 'Sound: on' : 'Sound: off'; }
+$('sound').addEventListener('click', () => { setSound(!soundEnabled()); renderSound(); playCue('open'); }); // a preview at the real volume
+renderSound();
+
 // ---------- boot ----------
 $('start').disabled = true;
 try {
   await setup();
   $('recent-list').addEventListener('click', (ev) => {
+    const deletion = ev.target.closest('[data-delete]');
+    if (deletion) confirmHistoryDeletion(deletion.dataset.delete);
     if (ev.target.id === 'debates-more') { S.showAllDebates = !S.showAllDebates; loadRecent(); }
     if (ev.target.id === 'retry-recent') loadRecent();
   });

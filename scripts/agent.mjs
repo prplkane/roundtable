@@ -3,19 +3,27 @@ import { readFile } from 'node:fs/promises';
 import { BODY_LIMIT } from '../src/validate.js';
 
 const HELP = {
-  usage: 'roundtable agent <status|check|start|wait|answer|stop|resume|verdict> [--port 4747] [--id review-id] [--input file|-] [--seconds 25] [--refresh]',
+  usage: 'roundtable agent <status|check|start|wait|answer|finish|stop|resume|verdict> [--port 4747] [--id review-id] [--input file|-] [--seconds 25] [--refresh]',
   commands: {
     status: 'Without --id: cached provider setup. With --id: current step, questions, latest positions and verdict. --refresh refreshes free CLI status checks.',
     check: 'Validate --input and estimate calls/tokens without creating a review.',
     start: 'Start the review in --input. Uses the selected providers. Returns its id immediately.',
     wait: 'Wait up to --seconds (1–30) for a question or completion. Returns one state object, not an event log.',
-    answer: 'Send --input {round, answers:[{id:"q1",text:"..."}], message:"optional note"}. Read the current state first; never invent a missing answer.',
-    stop: 'Cancel in-flight discussion calls; keep completed replies. The chairman can still write a verdict.',
+    answer: 'Send --input {round, answers:[{id:"q1",text:"..."}], message:"optional note"}, labelled as an agent note. Read the current state first; never invent a missing answer.',
+    stop: 'Cancel all in-flight calls, including the chairman; keep completed replies. A verdict runs later only if explicitly requested.',
+    finish: 'End discussion and write the verdict from collected replies. Available after one complete round has a usable reply; may make a chairman call.',
     resume: 'Resume an interrupted review. May make provider calls.',
     verdict: 'Request a missing or failed verdict from saved replies. May make a provider call.',
   },
-  setup: 'Start a loopback server with roundtable --no-open (or roundtable fake --no-open for a free test). This client reads its launch token locally; it never prints or stores the token.',
-  input: 'check/start accept the same {fieldNotes,seats,chairman,options} JSON as the board. Prefer two seats, zero critique rounds, stateless memory and explicit budgets for a small review. Check available providers first.',
+  setup: 'Use the server already running on --port when status answers; start one only if none is up: roundtable --no-open (or roundtable fake --no-open for a free test). This client reads its launch token locally; it never prints or stores the token.',
+  input: 'check/start accept the same {fieldNotes,seats,chairman,options} JSON as the board. Check available providers first. Every result with an id carries board, a link where a person can watch the review in a browser; offer it, do not open it.',
+  recipe: {
+    size: 'Two seats, critiqueRounds 0, memory stateless, an explicit budget per vendor. That is three calls. Add a seat or a round only when the user asks for depth; each one is another full call per seat.',
+    lenses: 'Give every seat a different lens, taken from what the decision could get wrong: risk, cost, evidence, reversibility, long-term effects, user impact. Two seats with one lens mostly agree, which wastes a call.',
+    moods: 'Pair one sceptical seat (grill) with one practical seat (builder). Use steelman when the user already leans one way, contrarian when the seats would otherwise agree too early.',
+    effort: 'effort low and the lightest model in status for a small review. Raise effort for one seat, not all, when the decision is hard to reverse.',
+    context: 'constraints, known, assumed, reversibility and deadline go into every prompt. Fill them only with facts the user stated; put guesses under assumed, never under known. Leave a field empty rather than invent it.',
+  },
 };
 
 try {
@@ -64,6 +72,7 @@ try {
       try { return JSON.parse(text.replace(/^\uFEFF/, '')); } catch { throw new Error('Input must contain valid JSON.'); }
     }
     const route = flags.id ? `/api/debates/${flags.id}` : null;
+    const board = (id) => `${base}/#${id}`; // where a person can watch this review in a browser
     let result;
     if (command === 'status' && !route) {
       const setup = await request('/api/seats');
@@ -73,10 +82,10 @@ try {
         models: (v.catalogue?.models || []).map((m) => typeof m === 'string' ? m : m.id), efforts: v.catalogue?.efforts || [] })),
         readiness: readiness.pools, next: 'Check a JSON review with agent check --input file. No model call has been made.' };
     } else if (command === 'check') result = await request('/api/preview', await input());
-    else if (command === 'start') { const started = await request('/api/debates', await input()); result = { id: started.slug, next: `agent wait --port ${port} --id ${started.slug}` }; }
+    else if (command === 'start') { const started = await request('/api/debates', await input()); result = { id: started.slug, board: board(started.slug), next: `agent wait --port ${port} --id ${started.slug}` }; }
     else {
       if (!route) throw new Error('This command needs --id from agent start or the board URL.');
-      if (command === 'status') result = await request(`${route}/state`);
+      if (command === 'status') result = { ...(await request(`${route}/state`)), board: board(flags.id) };
       else if (command === 'wait') {
         const seconds = Number(flags.seconds || 25);
         if (!Number.isInteger(seconds) || seconds < 1 || seconds > 30) throw new Error('Wait seconds must be a whole number from 1 to 30.');
@@ -102,11 +111,14 @@ try {
           finally { clearTimeout(timer); if (reader) await reader.cancel().catch(() => {}); }
           result = await request(`${route}/state`);
         }
+        result = { ...result, board: board(flags.id) };
       } else {
         const body = await input(command === 'answer');
+        if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('Input must be a JSON object.');
+        if (['answer', 'finish', 'stop', 'resume'].includes(command)) body.source = 'agent';
         if (command === 'answer' && !Number.isInteger(body.round)) throw new Error('An answer needs the round number from the current state.');
         result = await request(`${route}/${command === 'answer' ? 'continue' : command === 'verdict' ? 'synthesize' : command}`, body);
-        result = { ...result, id: flags.id, next: `agent wait --port ${port} --id ${flags.id}` };
+        result = { ...result, id: flags.id, board: board(flags.id), next: `agent wait --port ${port} --id ${flags.id}` };
       }
     }
     console.log(JSON.stringify({ ok: true, ...result }));

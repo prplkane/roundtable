@@ -63,20 +63,31 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); font: v
 .seat-card .flat[aria-invalid="true"] { border-color: var(--color-danger); border-style: solid; }
 .seat-field-error { margin: 2px 0 5px; }
 .reply-text { display: contents; }
-.session-ceremony { position: fixed; z-index: 90; top: 68px; left: 50%; width: min(390px, calc(100vw - 32px)); display: flex; align-items: center; gap: 14px; padding: 12px 20px; background: var(--color-surface-raised); border: 1px solid var(--color-border-strong); border-top: 3px solid var(--color-accent); border-radius: var(--radius); box-shadow: 0 8px 28px #24152d24; pointer-events: none; transform: translateX(-50%); }
-.session-ceremony svg { width: 58px; height: 58px; flex: none; fill: var(--color-surface); stroke: var(--color-action); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
-.session-ceremony strong { display: block; font: var(--weight-strong) var(--text-md) var(--font-sans); }
-.session-ceremony span { display: block; margin-top: 3px; font-size: var(--text-sm); color: var(--color-text-muted); }
-.session-gavel { transform-origin: 42px 42px; }
-.session-tap { opacity: 0; }
-.session-ceremony.is-playing { animation: session-notice 1750ms ease both; }
-.session-ceremony.is-playing .session-gavel { animation: session-gavel 700ms ease-in-out both; }
-.session-ceremony.is-playing .session-tap { animation: session-tap 700ms ease-out both; }
-@keyframes session-notice { 0% { opacity: 0; transform: translate(-50%, -6px); } 12%, 78% { opacity: 1; transform: translate(-50%, 0); } 100% { opacity: 0; transform: translate(-50%, -3px); } }
-@keyframes session-gavel { 0%, 20% { transform: rotate(-23deg) translateY(-3px); } 48% { transform: rotate(8deg) translateY(3px); } 70% { transform: rotate(-4deg); } 100% { transform: none; } }
-@keyframes session-tap { 0%, 45% { opacity: 0; } 49%, 65% { opacity: 1; } 100% { opacity: 0; } }
+/* Session cue (brand layer): a pixel gavel strikes once at open and once at the end. */
+.session-ceremony { --cue: var(--color-accent); position: fixed; z-index: 90; top: 68px; left: 50%; width: min(360px, calc(100vw - 32px)); pointer-events: none; transform: translateX(-50%); }
+.session-ceremony[data-phase="verdict"] { --cue: var(--color-ok); }
+.session-ceremony[data-phase="ended"] { --cue: var(--color-border-strong); }
+.session-ceremony[data-phase="failed"] { --cue: var(--color-danger); }
+.ceremony-card { display: flex; align-items: center; gap: 14px; padding: 12px 16px; background: var(--color-surface-raised); border: 2px solid var(--color-border-strong); border-top: 4px solid var(--cue); border-radius: 2px; box-shadow: var(--shadow-overlay); }
+.ceremony-art { width: 60px; height: 67.5px; flex: none; overflow: visible; }
+.ceremony-block { fill: var(--color-text-muted); }
+.ceremony-gavel { fill: var(--color-action); }
+.session-ceremony[data-phase="failed"] .ceremony-gavel { fill: var(--color-text-muted); }
+.ceremony-chip { fill: var(--cue); opacity: 0; }
+.session-ceremony[data-phase="failed"] .ceremony-chip { fill: var(--color-text-muted); }
+.ceremony-text strong { display: block; font: var(--weight-strong) var(--text-xs) var(--font-mono); letter-spacing: var(--tracking-label); text-transform: uppercase; }
+.ceremony-text span { display: block; margin-top: 4px; font-size: var(--text-sm); color: var(--color-text-muted); }
+/* The gavel's frames are swapped by ceremony.js; steps() keeps the rest chunky. Delays match HIT_MS. */
+.session-ceremony.is-playing { animation: ceremony-notice 2000ms steps(2, jump-end) both; }
+.session-ceremony.is-playing .ceremony-chip { animation: ceremony-chip 460ms 505ms steps(5, jump-end) forwards; }
+.session-ceremony.is-playing:not([data-phase="open"]) .ceremony-card { animation: ceremony-shake 140ms 505ms steps(1, jump-end) forwards; }
+.session-ceremony.is-playing[data-phase="failed"] .ceremony-card { animation-name: ceremony-thud; }
+@keyframes ceremony-notice { 0% { opacity: 0; transform: translate(-50%, -4px); } 6%, 90% { opacity: 1; transform: translate(-50%, 0); } 100% { opacity: 0; transform: translate(-50%, -2px); } }
+@keyframes ceremony-chip { 0% { opacity: 1; transform: none; } 55% { opacity: 1; transform: translate(var(--dx), var(--dy)); } 100% { opacity: 0; transform: translate(calc(var(--dx) * 1.3), calc(var(--dy) + 3px)); } }
+@keyframes ceremony-shake { 0% { transform: translateX(1px); } 30% { transform: translateX(-1px); } 60% { transform: translateX(1px); } 100% { transform: none; } }
+@keyframes ceremony-thud { 0% { transform: translateY(1px); } 100% { transform: none; } }
 @media (prefers-reduced-motion: reduce) {
-  .session-ceremony { display: none !important; }
+  .session-ceremony.is-playing, .session-ceremony.is-playing * { animation: none !important; } /* a still card; sound follows its own toggle */
   .help-popover, .help-label { transition: none; transform: none; }
   .text-reveal-word { animation: none !important; opacity: 1; text-shadow: none; }
   .cursor, .led-thinking { animation: none; }
@@ -395,6 +406,15 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 /* The list of debates on the setup screen */
 .debates { display: flex; flex-direction: column; }
 .debates .empty { margin: var(--space-3); }
+.history-row { display: flex; align-items: stretch; border-top: var(--border-width) solid var(--color-border); }
+.history-row:first-child { border-top: 0; }
+.history-row .debate-row { flex: 1; min-width: 0; border-top: 0; }
+.history-delete { align-self: center; margin: var(--space-2); }
+.history-notice { margin: var(--space-2) var(--space-3); font-size: var(--text-sm); color: var(--color-text-muted); }
+#delete-history { width: min(480px, calc(100% - 32px)); color: var(--color-text); background: var(--color-surface); border: var(--border-width) solid var(--color-border-strong); border-radius: var(--radius); padding: var(--space-4); box-shadow: var(--shadow-overlay); }
+#delete-history::backdrop { background: rgb(0 0 0 / 45%); }
+#delete-history h2 { margin-top: 0; }
+#delete-history p { overflow-wrap: anywhere; }
 .debate-row { display: grid; grid-template-columns: 88px minmax(0, 1fr) 120px minmax(0, 160px) auto; gap: var(--space-3); align-items: center; padding: var(--space-2) var(--space-3); border-top: var(--border-width) solid var(--color-border); color: inherit; text-decoration: none; }
 .debate-row:first-child { border-top: 0; }
 .debate-row:hover, .debate-row:focus-visible { background: var(--color-selection); }

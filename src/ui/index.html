@@ -28,6 +28,7 @@
     <span class="meta">
       <a class="btn btn-small" id="nav-debates" href="#" hidden>Debates</a>
       <button class="btn btn-small" id="save-diagnostics" type="button">Save error log</button>
+      <button class="btn btn-small" id="sound" type="button" aria-pressed="true">Sound: on</button>
       <button class="btn btn-small" id="theme" type="button">Night</button>
     </span>
   </header>
@@ -39,12 +40,15 @@
     <!-- Setup screen -->
     <section id="setup" class="screen">
       <section class="panel" id="recent" aria-label="Debates">
-        <div class="panel-title"><span>Debates</span><span class="hint" id="recent-count"></span></div>
+        <div class="panel-title"><span>Debates</span><span class="hint" id="recent-count"></span><button class="btn btn-small" id="clear-finished" type="button" disabled>Clear finished</button></div>
+        <p class="history-notice" id="history-notice" role="status" hidden></p>
         <div id="recent-list" class="debates"></div>
       </section>
       <details class="local-data" id="local-data">
         <summary>Local data and backups</summary>
         <p>Records for this server are saved in <code id="data-dir"></code>.</p>
+        <p id="legacy-data" hidden></p>
+        <p>Delete removes a session's local transcript and working files. Exported decision records, numeric usage statistics and quota calibration are kept. Running sessions cannot be deleted.</p>
         <p>Stop the server before copying this folder. Keep the complete copy, including transcripts and recovery backups. Browser preferences and provider logins are stored separately.</p>
         <p>Error logs stay in <code>_diagnostics/</code> inside this folder (up to 512 KiB). They contain error categories, reference IDs and code locations, not review text, credentials or personal paths. <b>Save error log</b> downloads a copy for review; nothing is uploaded automatically.</p>
         <a href="/docs/workflow.md" target="_blank" rel="noopener">Full user guide, including startup and backups (text)</a>
@@ -183,9 +187,10 @@
     <div class="humanbar-status" id="gate-status"></div>
     <div class="error" id="human-error" role="alert" hidden></div>
     <form id="human-form" class="humanbar-form">
-      <input id="human-msg" aria-label="Note to every seat" placeholder="Say something to every seat, or /stop" autocomplete="off">
+      <input id="human-msg" aria-label="Note to every seat" placeholder="Say something to every seat, or /stop" autocomplete="off" maxlength="4000">
       <button class="btn" id="answer-questions" type="button" hidden>Answer questions</button>
       <button class="btn btn-primary" id="continue" type="submit">Continue</button>
+      <button class="btn" id="finish" type="button" hidden>Finish with verdict</button>
       <button class="btn btn-danger" id="stop" type="button">Stop</button>
     </form>
   </div>
@@ -198,6 +203,15 @@
     <span class="end">v0.3.0</span>
   </footer>
 </div>
+<dialog id="delete-history" aria-labelledby="delete-history-title" aria-describedby="delete-history-detail">
+  <form method="dialog">
+    <h2 id="delete-history-title">Delete session?</h2>
+    <p id="delete-history-detail"></p>
+    <p>Local transcripts and working files will be removed permanently. Exported files and usage statistics are kept.</p>
+    <p class="error" id="delete-history-error" role="alert" hidden></p>
+    <div class="row"><button class="btn" id="delete-history-cancel" value="cancel" autofocus>Cancel</button><button class="btn btn-danger" id="delete-history-confirm" type="button">Delete</button></div>
+  </form>
+</dialog>
 <script type="module" src="/ui/app.js"></script>
 </body>
 </html>

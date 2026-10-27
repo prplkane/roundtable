@@ -7,13 +7,13 @@ const CODES = new Set(['request-failed', 'provider-failed', 'call-cancelled', 'r
   'transcript-warning', 'status-failed', 'storage-failed', 'server-crash', 'server-start',
   'browser-network', 'browser-timeout', 'browser-response', 'browser-error', 'browser-rejection', 'browser-stream', 'browser-validation']);
 export const BROWSER_CODES = new Set([...CODES].filter((c) => c.startsWith('browser-')));
-const ACTIONS = new Set(['setup', 'history', 'preflight', 'preview', 'create', 'events', 'state', 'continue', 'stop', 'hold',
+const ACTIONS = new Set(['setup', 'history', 'delete', 'clear-finished', 'preflight', 'preview', 'create', 'events', 'state', 'continue', 'finish', 'stop', 'hold',
   'resume', 'export', 'synthesize', 'accept', 'pools', 'diagnostics', 'catalogue', 'quota', 'calibration', 'startup', 'unknown']);
 const KINDS = new Set(['quota', 'auth', 'missing', 'network', 'timeout', 'killed', 'format', 'budget', 'other']);
 const SYSTEM_CODES = new Set(['ENOENT', 'EACCES', 'EPERM', 'ENOSPC', 'EIO', 'EISDIR', 'EROFS', 'EMFILE', 'ENFILE',
   'EADDRINUSE', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'TIMEOUT', 'KILLED', 'TRANSCRIPT_CORRUPT', 'TRANSCRIPT_TAIL',
   'SEAT_LENS_REQUIRED', 'SEAT_LENS_DUPLICATE', 'SEAT_MOOD_REQUIRED']);
-const FILES = new Set(['server.js', 'store.js', 'engine.js', 'export.js', 'validate.js', 'estimate.js',
+const FILES = new Set(['server.js', 'store.js', 'history.js', 'engine.js', 'export.js', 'validate.js', 'estimate.js',
   'seats.js', 'preflight.js', 'diagnostics.js', 'snapshot.js', 'review-view.js', 'ui/app.js', 'ui/help.js', 'adapters/common.js', 'adapters/spawn.js',
   'adapters/endpoint.js', 'adapters/claude.js', 'adapters/codex.js', 'adapters/agy.js']);
 const ID = /^RT-[a-f0-9]{16}$/;

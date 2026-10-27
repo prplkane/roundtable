@@ -1,4 +1,4 @@
-import { rollup } from './engine.js';
+import { rollup, hasUsableRound } from './engine.js';
 import { groupQuestions, stopExplanation, cancellationReason } from './review-view.js';
 import { optionLabel, verdictSections } from './contract.js';
 
@@ -18,8 +18,8 @@ export function reviewSnapshot(d) {
     decision: state.fieldNotes?.decision, options: state.fieldNotes?.options, round: state.round ?? lastRound,
     deadlineAt: state.deadlineAt, stopReason: state.stopReason || null,
     ...(state.stopReason ? { explanation: stopExplanation(state.stopReason, state.stopContext) } : {}),
-    actions: d.finished ? !verdict || verdict.failed || verdict.skipped ? ['verdict'] : []
-      : d.interrupted ? ['resume'] : gate ? ['answer', 'stop'] : status === 'error' ? [] : ['wait', 'stop'],
+    actions: d.finished ? (!verdict || verdict.failed || verdict.skipped) && hasUsableRound(rounds, state.seats.length) ? ['verdict'] : []
+      : d.interrupted ? ['resume'] : status === 'error' ? [] : [gate ? 'answer' : 'wait', ...(d.debate?.canFinish() ? ['finish'] : []), 'stop'],
     gate: gate ? { round: gate.round, mode: gate.mode, stop: gate.stop, questions: groupQuestions(gate.questions) } : null,
     replies: (rounds[lastRound] || []).map((r) => ({ lens: r.seat.lens, vendor: r.seat.vendor,
       status: cancellationReason(r, state.stopReason, lastRound) ? 'cancelled' : r.failed ? 'failed' : r.valid ? 'replied' : 'invalid',

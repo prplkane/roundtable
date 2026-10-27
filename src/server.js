@@ -13,16 +13,18 @@ import { retired } from './adapters/models.js';
 import { vendorCatalogue } from './adapters/catalogue.js';
 import { createDebate, DEFAULTS } from './engine.js';
 import { normaliseSeats, normaliseChairman, MOODS, COLOURS, poolKey, poolVendor, poolAccount } from './seats.js';
-import { slugFor, openDebateDir, readAllTranscripts, rebuildDebate, normaliseRows } from './store.js';
+import { slugFor, openDebateDir, rebuildDebate, normaliseRows } from './store.js';
 import { exportDebate, validateTarget, decisionRecord } from './export.js';
-import { rollup } from './engine.js';
-import { baselinesFrom, windowDeltas, updateCalibration, migrateCalibration, CALIBRATION_VERSION, project } from './estimate.js';
-import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { rollup, hasUsableRound } from './engine.js';
+import { windowDeltas, updateCalibration, migrateCalibration, CALIBRATION_VERSION, project } from './estimate.js';
+import { readFileSync, writeFileSync, statSync, existsSync } from 'node:fs';
 import { fakeRunner, fakeQuota } from './fake.js';
 import { validateDebateRequest, validateMessage, validateAccept, BODY_LIMIT } from './validate.js';
 import { createDiagnostics, diagnosticAction, validateBrowserDiagnostics } from './diagnostics.js';
 import { answerMessage } from './review-view.js';
+import { noteRecord, storedNote } from './notes.js';
 import { reviewSnapshot } from './snapshot.js';
+import { dataDirectory, acquireDataLock, historyIds, checkedHistoryPath, removeHistory, createUsageStore } from './history.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const UI = path.join(ROOT, 'src', 'ui');
@@ -31,7 +33,12 @@ const FAKE = process.argv.includes('--fake') || FAKE_CONSENSUS;
 // ROUNDTABLE_DEBATES_DIR: where transcripts, calibration and pools live (tests point it at a
 // temporary folder so nothing they run teaches the real projection). Scripted seats default to
 // their own folder, so a fake debate never sits next to real ones.
-const DEBATES_DIR = process.env.ROUNDTABLE_DEBATES_DIR ? path.resolve(process.env.ROUNDTABLE_DEBATES_DIR) : path.join(ROOT, FAKE ? 'debates-fake' : 'debates');
+const DEBATES_DIR = dataDirectory({ fake: FAKE });
+const releaseDataLock = acquireDataLock(DEBATES_DIR);
+process.once('exit', releaseDataLock);
+const legacyDir = path.join(ROOT, FAKE ? 'debates-fake' : 'debates');
+const legacyDataDir = !process.env.ROUNDTABLE_DEBATES_DIR && historyIds(legacyDir).length ? legacyDir : null;
+if (legacyDataDir) console.warn(`Older history remains in ${legacyDataDir}. Stop its server and move that folder to ${DEBATES_DIR}; see Local data and backups.`);
 const diagnostics = createDiagnostics(DEBATES_DIR, { mode: FAKE ? 'demo' : 'live', version: JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version });
 diagnostics.write({ code: 'server-start', action: 'startup' });
 const PORT = Number(process.env.PORT) || (FAKE ? 4748 : 4747);
@@ -55,10 +62,12 @@ const effortsByVendor = () => Object.fromEntries(Object.entries(catalogue || {})
 // The quota picture. Baselines: tokens per call per vendor from every transcript on disk.
 // Calibration: how much of each vendor window one round took, measured between the quota
 // snapshot at one round's start and the next; persisted so the next debate projects from it.
-const baselines = baselinesFrom(readAllTranscripts(DEBATES_DIR, { excludeSynthetic: true, onWarning: (e) => {
+const usageStore = createUsageStore(DEBATES_DIR);
+usageStore.sync((e) => {
   diagnostics.write({ code: 'transcript-warning', action: 'startup', line: e.line }, e);
   console.warn(`[transcript] ${e.message}`);
-} }));
+});
+const baselines = usageStore.baselines();
 // The fake board must never teach the real projection: it measures into its own file.
 const CALIB_FILE = path.join(DEBATES_DIR, FAKE ? '_calibration.fake.json' : '_calibration.json');
 let calibration = {};
@@ -192,9 +201,9 @@ function resumeDebate(d, body = {}) {
   const message = String(body.message || '').trim();
   if (message) {
     const round = rb.nextRound - 1;
-    const row = { type: 'human', round, text: message };
+    const row = { type: 'human', round, ...noteRecord({ text: message, source: body.source }) };
     d.store.append(row);
-    (round < 0 ? rb.initialNotes : (rb.humanNotes[round] ??= [])).push(message);
+    (round < 0 ? rb.initialNotes : (rb.humanNotes[round] ??= [])).push(storedNote(row));
     push(d, row);
   }
   d.interrupted = false;
@@ -256,13 +265,15 @@ async function preflight(keys, { refresh = false, fresh = false, endpoints = {} 
 
 // The debates on disk, newest first, summarised for the setup screen's list: the same status and
 // pick the decision record would carry, plus whether this server is running it now.
-function listDebates(limit = 50) {
-  let dirs = [];
-  try { dirs = readdirSync(DEBATES_DIR, { withFileTypes: true }).filter((e) => e.isDirectory() && /^[a-z0-9-]+$/.test(e.name)).map((e) => e.name); } catch { return []; }
+function activeDebate(d) {
+  return !!d && (d.synthesizing || !d.finished && !d.interrupted && d.debate?.state.status !== 'error' || liveChildren(d.slug).length > 0);
+}
+function listDebates() {
+  const dirs = historyIds(DEBATES_DIR);
   const withTime = dirs.map((slug) => { const f = path.join(DEBATES_DIR, slug, 'transcript.jsonl'); return existsSync(f) ? { slug, f, t: statSync(f).mtimeMs } : null; }).filter(Boolean);
   withTime.sort((a, b) => b.t - a.t);
   const out = [];
-  for (const { slug, t } of withTime.slice(0, limit)) {
+  for (const { slug, t } of withTime) {
     try {
       const warnings = [];
       const rows = openDebateDir(DEBATES_DIR, slug, { create: false }).readTranscript({ onWarning: (w) => warnings.push(w) });
@@ -270,7 +281,7 @@ function listDebates(limit = 50) {
       if (!rb) continue;
       const { meta } = decisionRecord(rows, slug);
       const live = debates.get(slug);
-      const state = live && !live.finished && !live.interrupted ? 'running' : rb.finished ? 'finished' : 'interrupted';
+      const state = activeDebate(live) ? 'running' : rb.finished ? 'finished' : 'interrupted';
       const u = rollup(normaliseRows(rows)).total;
       out.push({ slug, decision: rb.fieldNotes.decision, date: slug.slice(0, 10), updated: t, state, status: state === 'finished' ? meta.status : state,
         warning: (warnings.at(-1) || rb.recoveryWarnings.at(-1))?.message || null,
@@ -287,6 +298,32 @@ function listDebates(limit = 50) {
   return out;
 }
 
+function deleteSessions(ids, finishedOnly = false) {
+  if (!Array.isArray(ids) || !ids.length || ids.length > 1000 || new Set(ids).size !== ids.length)
+    throw Object.assign(new Error('Choose between 1 and 1,000 distinct saved sessions.'), { status: 400 });
+  // Validate the entire selection before changing anything. No await between these checks
+  // and removal: a queued Resume or Write request cannot become active halfway through.
+  const records = ids.map((id) => {
+    checkedHistoryPath(DEBATES_DIR, id);
+    const d = debates.get(id) || loadDebate(id);
+    if (!d) throw Object.assign(new Error('This saved session was not found. Refresh history.'), { status: 404 });
+    if (activeDebate(d)) throw Object.assign(new Error('This session is still running or waiting for input. Stop it before deleting it.'), { status: 409 });
+    if (finishedOnly && !d.finished) throw Object.assign(new Error('The selection includes an unfinished session. Refresh history and try again.'), { status: 409 });
+    const rows = d.store.readTranscript();
+    return { d, rows };
+  });
+  for (const { d, rows } of records) usageStore.record(d.slug, rows);
+  usageStore.save(true); // a failed statistics write must prevent deletion
+  Object.assign(baselines, usageStore.baselines());
+  for (const { d } of records) {
+    removeHistory(DEBATES_DIR, d.slug);
+    push(d, { type: 'deleted' });
+    for (const client of d.clients) client.end();
+    d.clients.clear(); clearTimeout(d.timer); debates.delete(d.slug);
+  }
+  return { deleted: ids, usage: usageStore.summary(FAKE) };
+}
+
 // A finished debate whose verdict was skipped, failed or never written: run the chairman alone,
 // from the transcript (so it works after a restart), under the budget. The new verdict row
 // supersedes the old one.
@@ -297,7 +334,7 @@ function synthesizeDebate(d, body = {}) {
   if (d.synthesizing) throw new Error('The verdict is being written.');
   const rb = rebuildDebate(d.store.readTranscript());
   if (rb.synthesis === 'done') throw new Error('This debate already has its verdict.');
-  if (!rb.rounds.length) throw new Error('No round ran, so there is nothing to give a verdict on.');
+  if (!hasUsableRound(rb.rounds, rb.seats.length)) throw new Error('No usable replies were collected. Start a new review before requesting a verdict.');
   let chairman = rb.chairman;
   if (body.chairman) {
     for (const k of ['vendor', 'model', 'effort', 'account', 'keyEnv', 'endpoint']) if (body.chairman[k] != null && (typeof body.chairman[k] !== 'string' || body.chairman[k].length > (k === 'endpoint' ? 500 : 200))) throw new Error(`chairman ${k}: text of at most ${k === 'endpoint' ? 500 : 200} characters`);
@@ -306,6 +343,7 @@ function synthesizeDebate(d, body = {}) {
   }
   prepareTranscript(d);
   d.synthesizing = true;
+  d.finished = false;
   attachEngine(d, { fieldNotes: rb.fieldNotes, seats: rb.seats, chairman, options: { ...DEFAULTS, ...(rb.options || {}) }, synthesisOnly: true,
     resume: { rounds: rb.rounds, humanNotes: rb.humanNotes, initialNotes: rb.initialNotes, ledger: rb.ledger, stopReason: rb.stopReason } });
   console.log(`[${d.slug}] writing the verdict`);
@@ -437,7 +475,7 @@ function attachEngine(d, { fieldNotes, seats, chairman, options, resume = null, 
 
   d.debate = createDebate({
     fieldNotes, seats, chairman, options, runner, gate, store, resume, baselines, provenance: FAKE ? { fake: true } : {}, synthesisOnly,
-    cancel: () => { const n = killAll(d.slug); if (n) console.log(`[${d.slug}] wall clock: stopped ${n} CLI process${n === 1 ? '' : 'es'}`); },
+    cancel: (reason) => { const n = killAll(d.slug); if (n) console.log(`[${d.slug}] ${reason === 'human' ? 'stop' : reason === 'finish' ? 'finish discussion' : 'wall clock'}: cancelled ${n} call${n === 1 ? '' : 's'}`); },
     emit: (type, payload) => {
       // run() rejects with the original Error after emitting this. Its catch below logs a
       // sanitized source location and sends one useful failure instead of exposing internals.
@@ -445,7 +483,12 @@ function attachEngine(d, { fieldNotes, seats, chairman, options, resume = null, 
       // the engine ended an unanswered gate at the deadline: close this side of it too
       if (type === 'gate-expired' && d.pending) { clearTimeout(d.timer); d.timer = null; d.pending = null; push(d, { type: 'gate-closed', action: 'stop' }); }
       push(d, payload); watchRounds(d, payload);
-      if (type === 'done') { d.finished = true; d.synthesizing = false; autoExport(d, fieldNotes.exportTo); }
+      if (type === 'done') {
+        d.finished = true; d.synthesizing = false;
+        try { usageStore.record(d.slug, d.store.readTranscript()); usageStore.save(); Object.assign(baselines, usageStore.baselines()); }
+        catch (error) { diagnostics.write({ code: 'storage-failed', action: 'history' }, error); }
+        autoExport(d, fieldNotes.exportTo);
+      }
     },
   });
   d.debate.run().catch((e) => {
@@ -508,9 +551,20 @@ async function serveFile(res, file) {
   }
 }
 
+// The page holds the launch token in a meta tag, so a script that is not this server's own must
+// never run in it: every response says so, so an escaping miss in the board cannot become a
+// write. Inline styles stay allowed (seat colours are CSS variables set per card); fetch, SSE
+// and downloads are same-origin, nothing may frame the page, and no type is sniffed.
+const HEADERS = {
+  'content-security-policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+  'x-content-type-options': 'nosniff',
+  'referrer-policy': 'no-referrer',
+};
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const p = url.pathname;
+  for (const [k, v] of Object.entries(HEADERS)) res.setHeader(k, v);
   try {
     const isRead = req.method === 'GET' && (!p.startsWith('/api/') || p === '/api/seats' || p === '/api/debates' || p === '/api/preflight' || /\/(events|state)$/.test(p));
     const no = refuse(req, isRead);
@@ -527,7 +581,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && p === '/api/seats') {
       const cat = catalogue || await catalogueReady;
       return json(res, 200, {
-        runtime: { mode: FAKE ? 'demo' : 'live', dataDir: DEBATES_DIR, diagnostics: diagnostics.status() },
+        runtime: { mode: FAKE ? 'demo' : 'live', dataDir: DEBATES_DIR, ...(legacyDataDir ? { legacyDataDir } : {}), diagnostics: diagnostics.status() },
         vendors: Object.entries(ADAPTERS).map(([vendor, a]) => ({
           vendor, kind: a.kind, label: a.label, colour: a.colour, usageUrl: a.usageUrl || null, quota: quota[vendor] || null, profiles: poolsByAccount(a),
           pool: a.pool, catalogue: cat[vendor],
@@ -551,7 +605,13 @@ const server = http.createServer(async (req, res) => {
     }
     const pm = p.match(/^\/api\/pools\/([a-z]+)$/);
     if (pm && req.method === 'POST') return json(res, 200, { pool: setPool(pm[1], await readBody(req)) });
-    if (req.method === 'GET' && p === '/api/debates') return json(res, 200, { debates: listDebates() });
+    if (req.method === 'GET' && p === '/api/debates') return json(res, 200, { debates: listDebates(), usage: usageStore.summary(FAKE) });
+    if (req.method === 'POST' && p === '/api/debates/clear-finished') {
+      const body = await readBody(req);
+      return json(res, 200, deleteSessions(body?.ids, true));
+    }
+    const deletion = p.match(/^\/api\/debates\/([^/]+)\/delete$/);
+    if (req.method === 'POST' && deletion) { await readBody(req); return json(res, 200, deleteSessions([deletion[1]])); }
     if (req.method === 'POST' && p === '/api/preview') {
       const plan = prepareDebate(await readBody(req));
       return json(res, 200, { valid: true, mode: FAKE ? 'demo' : 'live',
@@ -574,7 +634,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       return json(res, 200, { slug: startDebate(body) });
     }
-    const m = p.match(/^\/api\/debates\/([^/]+)\/(events|state|continue|stop|hold|resume|export|synthesize|accept)$/);
+    const m = p.match(/^\/api\/debates\/([^/]+)\/(events|state|continue|finish|stop|hold|resume|export|synthesize|accept)$/);
     if (m) {
       let d;
       try { d = debates.get(m[1]) || loadDebate(m[1]); } catch (e) {
@@ -588,13 +648,27 @@ const server = http.createServer(async (req, res) => {
       if (m[2] === 'state' && req.method === 'GET') return json(res, 200, reviewSnapshot(d));
       if (m[2] === 'events') {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
-        for (let i = replayFrom(d, req.headers['last-event-id']); i < d.events.length; i++) res.write(sseLine(d, i, true));
+        const from = replayFrom(d, req.headers['last-event-id']);
+        // A known id means the board was watching and lost the connection: what follows it is
+        // new to that board, so endings can still show and sound. With no id, or one from an
+        // earlier server run, the board starts over and everything is history.
+        const asHistory = from === 0;
+        for (let i = from; i < d.events.length; i++) res.write(sseLine(d, i, asHistory));
         d.clients.add(res);
         req.on('close', () => d.clients.delete(res));
         return;
       }
       const body = validateMessage(await readBody(req));
-      if (['continue', 'stop'].includes(m[2]) && body.round != null && d.pending?.info.round !== body.round)
+      if (m[2] === 'stop') {
+        if (d.finished || d.interrupted) return requestError(res, 400, d.finished ? 'This debate is finished; it replays read-only.' : 'This debate was interrupted; resume it first.', 'stop');
+        // Cancellation is independent of the question the client last saw. Question drafts
+        // are not answers to a later gate; only an explicit general note is saved by Stop.
+        if (!answerGate(d, { action: 'stop', message: body.message || '', source: body.source })) {
+          d.debate.requestStop(body.message || '', body.source);
+        }
+        return json(res, 200, { ok: true, ...(body.answers?.length ? { warning: 'The review was stopped. Question answers were not submitted.' } : {}) });
+      }
+      if (['continue', 'finish'].includes(m[2]) && body.round != null && d.pending?.info.round !== body.round)
         return requestError(res, 409, 'The review has moved to another step. Your answers were not sent. Read the current questions before retrying.', m[2]);
       if (body.answers?.length) {
         if (!d.pending) return requestError(res, 409, 'The review is not waiting for answers. Your draft was not sent.', m[2]);
@@ -609,19 +683,13 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, { path: out.path, indexPath: out.indexPath, status: out.meta.status, chosen: out.meta.chosen });
       }
       if (d.finished || d.interrupted) return requestError(res, 400, d.finished ? 'This debate is finished; it replays read-only.' : 'This debate was interrupted; resume it first.', m[2]);
-      if (m[2] === 'continue') return answerGate(d, { action: 'continue', message: body.message || '' }) ? json(res, 200, { ok: true })
-        : requestError(res, 409, 'The review is no longer waiting for input. Your note was not sent. Check the current round before retrying.', 'continue');
-      if (m[2] === 'stop') {
-        // At a gate the answer is the stop. Mid-call, save its note immediately and stop at
-        // the round boundary even if that round ends without a gate. Kill owned CLI children.
-        if (!answerGate(d, { action: 'stop', message: body.message || '' })) {
-          d.debate.requestStop(body.message || '');
-          const killed = killAll(d.slug);
-          push(d, { type: 'stop-queued', killed });
-          if (killed) console.log(`[${d.slug}] stop: killed ${killed} CLI process${killed === 1 ? '' : 'es'}`);
-        }
+      if (m[2] === 'finish') {
+        if (!d.debate.canFinish()) return requestError(res, 409, 'Finish with verdict needs a completed discussion round with a usable reply. Use Stop to cancel everything.', 'finish');
+        if (!answerGate(d, { action: 'finish', message: body.message || '', source: body.source })) d.debate.requestFinish(body.message || '', body.source);
         return json(res, 200, { ok: true });
       }
+      if (m[2] === 'continue') return answerGate(d, { action: 'continue', message: body.message || '', source: body.source }) ? json(res, 200, { ok: true })
+        : requestError(res, 409, 'The review is no longer waiting for input. Your note was not sent. Check the current round before retrying.', 'continue');
       if (m[2] === 'hold') {
         if (d.timer) { clearTimeout(d.timer); d.timer = null; push(d, { type: 'held' }); }
         return json(res, 200, { ok: true });

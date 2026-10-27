@@ -18,6 +18,7 @@ import { rebuildDebate, normaliseRows } from './store.js';
 import { rollup } from './engine.js';
 import { optionIds, optionId, optionLabel, recommendationPick, verdictSections, VERDICT_HEADERS } from './contract.js';
 import { normLabel } from './validate.js';
+import { noteRecord, noteAuthor } from './notes.js';
 
 // The chairman's sections, same tolerance as the board (markdown emphasis around the header).
 export function parseVerdict(text) {
@@ -144,8 +145,9 @@ export function decisionRecord(rows, slug, { warnings = [] } = {}) {
   const tally = rb.rounds.length
     ? [`| seat | ${rb.rounds.map((_, i) => `round ${i}`).join(' | ')} | final |`, `|---|${rb.rounds.map(() => '---').join('|')}|---|`, ...tallyRows].join('\n')
     : '';
-  const humanNotes = [rb.initialNotes?.length ? `### Before round 0\n\n${rb.initialNotes.join('\n\n')}` : null,
-    ...rb.humanNotes.map((ns, i) => (ns?.length ? `### After round ${i}\n\n${ns.join('\n\n')}` : null))].filter(Boolean).join('\n\n');
+  const formatNotes = (notes) => notes.map((note) => `**${noteAuthor(note)}:** ${noteRecord(note).text}`).join('\n\n');
+  const humanNotes = [rb.initialNotes?.length ? `### Before round 0\n\n${formatNotes(rb.initialNotes)}` : null,
+    ...rb.humanNotes.map((ns, i) => (ns?.length ? `### After round ${i}\n\n${formatNotes(ns)}` : null))].filter(Boolean).join('\n\n');
   const costCell = (u) => (u.cost == null ? 'not reported' : `$${u.cost.toFixed(2)}${u.costCoverage && u.costCoverage.reported < u.costCoverage.of ? ` (partial: ${u.costCoverage.reported} of ${u.costCoverage.of} calls report a cost)` : ''}`);
   const tokens = (n, u) => u.tokenCoverage?.reported === 0 ? 'unknown'
     : `${k(n)}${u.tokenCoverage && u.tokenCoverage.reported < u.tokenCoverage.of ? ' (partial)' : ''}`;
@@ -182,7 +184,7 @@ export function decisionRecord(rows, slug, { warnings = [] } = {}) {
     ...section('Dissent', list(v.DISSENT)),
     ...section('Kill criteria', list(v.KILL_CRITERIA)),
     ...section('Open questions', list(v.OPEN_QUESTIONS)),
-    ...section('Human notes', humanNotes),
+    ...section('Discussion notes', humanNotes),
     ...section('Usage', [usageTable, usage.unknownAttempts ? `${usage.unknownAttempts} call(s) did not report usable token counts. Totals include reported figures only; unknown usage is not zero.` : ''].filter(Boolean).join('\n\n')),
     `_Exported by roundtable from debates/${slug}/transcript.jsonl._`,
     '',

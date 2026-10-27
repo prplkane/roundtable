@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The `roundtable` command (npx @prplkane/roundtable). One entry point, the same scripts as
+// The `roundtable` command (package.json "bin"). One entry point, the same scripts as
 // `npm run`: it starts the right one with the arguments passed through.
 //
 //   roundtable                 the board on http://localhost:4747, opened in your browser

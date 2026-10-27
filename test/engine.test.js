@@ -118,8 +118,10 @@ test('a mid-round stop is journaled immediately, beats consensus or failure, and
     assert.equal(state.stopReason, 'human'); assert.equal(state.rounds.length, 2);
     assert.equal(arrivals, 2, 'no network retries or re-prompts dispatch after Stop');
     assert.equal(events.filter((e) => e.type === 'gate').length, 1, 'Stop does not depend on another gate');
-    assert.match(fr.calls.at(-1).prompt, /Stop with this explanation preserved\./);
-    assert.ok(state.verdict && !state.verdict.failed);
+    assert.ok(!fr.calls.some((c) => c.round === 'verdict'), 'Stop never starts the chairman');
+    assert.equal(state.verdict.skipped, true);
+    assert.equal(state.verdict.reason, 'human');
+    assert.equal(events.at(-1).cancelled, true);
   }
 });
 
@@ -137,7 +139,8 @@ test('Stop during manual synthesis keeps its note with the completed round and p
   const running = d.run(); await inFlight; d.requestStop('Stop this synthesis.');
   assert.ok(rows.some((r) => r.type === 'human' && r.round === 0 && r.text === 'Stop this synthesis.'));
   release(); const state = await running;
-  assert.equal(calls, 1); assert.equal(state.verdict.failed, true);
+  assert.equal(calls, 1); assert.equal(state.verdict.skipped, true);
+  assert.equal(state.stopReason, 'human');
 });
 
 test('round cap: stops after round 0 plus critiqueRounds', async () => {
@@ -413,7 +416,7 @@ test('stateless rounds (the default): fresh calls, own last reply first, then th
   const r2 = fr.calls.find((c) => c.round === 2 && c.vendor === 'codex');
   assert.match(r2.prompt, /cost says round 1/);
   assert.doesNotMatch(r2.prompt, /says round 0/);
-  assert.match(r2.prompt, /- After round 0 \(latest\): Mind the deadline/);
+  assert.match(r2.prompt, /- Human — After round 0 \(latest\): Mind the deadline/);
   // transcript rows say every call was fresh and carry the session the CLI reported
   const replies = rows.filter((r) => r.type === 'reply');
   assert.equal(replies.length, 9);
@@ -716,10 +719,10 @@ test('every human note carries forward, labelled: rounds 1 to 3 and a stateless 
   await d.run();
   for (const r of [1, 2, 3]) {
     const p = fr.calls.find((c) => c.round === r && c.vendor === 'claude').prompt;
-    assert.match(p, /- After round 0[^\n]*: Traffic doubled last month/, `round ${r} keeps the round-0 note`);
+    assert.match(p, /- Human — After round 0[^\n]*: Traffic doubled last month/, `round ${r} keeps the round-0 note`);
   }
   const r3 = fr.calls.find((c) => c.round === 3 && c.vendor === 'claude').prompt;
-  assert.match(r3, /- After round 0: Traffic doubled last month\n- After round 1 \(latest\): Budget is fixed/);
+  assert.match(r3, /- Human — After round 0: Traffic doubled last month\n- Human — After round 1 \(latest\): Budget is fixed/);
   const reprompt = fr.calls.find((c) => c.round === 'reprompt' && c.vendor === 'codex').prompt;
   assert.match(reprompt, /Traffic doubled last month/);
   assert.match(reprompt, /Budget is fixed/);
@@ -965,15 +968,18 @@ test('chairman network retries obey the cap in normal and synthesis-only runs', 
   const baselines = { codex: { fresh: { input: 10, output: 0, n: 1 } } };
   for (const synthesisOnly of [false, true]) {
     const fr = fakeRunner(disagreeForever), rows = [];
+    const reviewSeats = SEATS.filter((s) => s.vendor !== 'codex');
+    const collected = synthesisOnly ? await createDebate({ fieldNotes: FIELD_NOTES, seats: reviewSeats,
+      runner: fr.runner, gate: async () => ({ action: 'stop' }), options: { critiqueRounds: 0 } }).run() : null;
     let calls = 0;
     const runner = async (vendor, prompt, sid, opts) => {
       if (vendor !== 'codex') return fr.runner(vendor, prompt, sid, opts);
       if (++calls === 1) throw Object.assign(new Error('connection lost'), { kind: 'network', usage: { input: 20, output: 0 } });
       return { text: GOOD_VERDICT, usage: { input: 20, output: 0 } };
     };
-    const d = createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS.filter((s) => s.vendor !== 'codex'), chairman: { vendor: 'codex' }, runner,
+    const d = createDebate({ fieldNotes: FIELD_NOTES, seats: reviewSeats, chairman: { vendor: 'codex' }, runner,
       gate: autoGate, store: { append: (r) => rows.push(r) }, baselines, synthesisOnly,
-      resume: synthesisOnly ? { rounds: [], humanNotes: [], ledger: [] } : null,
+      resume: synthesisOnly ? { rounds: collected.rounds, humanNotes: [], ledger: [] } : null,
       options: { critiqueRounds: 0, networkRetryMs: 0, budget: { codex: { tokens: 25 } } } });
     const s = await d.run();
     assert.equal(calls, 1);

@@ -30,9 +30,10 @@ Open [localhost:4747](http://localhost:4747/). The header distinguishes **Demo**
 First use starts with two seats and one critique round; both seats can use the same vendor.
 See the [user guide](docs/workflow.md) for provider setup and a complete walkthrough.
 
-Without a checkout, use `npx @prplkane/roundtable fake` or `npx @prplkane/roundtable`.
-These commands use the published npm version, which may lag the repository. They accept
-`--port <n>` and `--no-open`; checkout commands use the `PORT` environment variable.
+The package is not on npm yet. Once it is published, `npx @prplkane/roundtable fake` and
+`npx @prplkane/roundtable` will start the same boards without a checkout; that version may lag
+the repository. They accept `--port <n>` and `--no-open`; checkout commands use the `PORT`
+environment variable.
 
 ## The review workflow
 
@@ -54,10 +55,11 @@ The server listens on loopback. The page loads locally; live reviews send your n
 relevant replies to the selected providers. Stateless requests do not control provider
 retention. CLI tool restrictions depend on the installed CLI and are not an OS sandbox.
 
-Live records default to `debates/` in the installation folder; demo records use
-`debates-fake/`. Set `ROUNDTABLE_DEBATES_DIR` to keep a stable data location. **Local data
-and backups** on the setup screen shows the active folder. Stop the server before copying
-that entire folder for backup. Records and browser preferences may contain private context.
+History is saved outside the checkout, in your OS user-data folder, with separate `live` and
+`demo` directories. **Local data and backups** shows the active path; `ROUNDTABLE_DEBATES_DIR`
+overrides it. **Delete** removes one inactive session; **Clear finished** removes the finished
+sessions you confirm. Exported files and usage statistics are kept. Stop the server before
+backing up or moving its data folder. Records and browser preferences may contain private context.
 
 Read [SECURITY.md](SECURITY.md) for credentials, billing, endpoint restrictions and the local
 HTTP boundary. Budget checks use estimates and reported usage; they are not guaranteed

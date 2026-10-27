@@ -3,7 +3,7 @@
 //
 //   runner(vendor, prompt, sessionId, opts) -> {text, usage, sessionId, raw}
 //     opts carries {seat, model, effort, timeoutMs}; seat.id is the instance, never shared
-//   gate({mode, reason, round, ...})         -> {action: 'continue'|'stop', message?}
+//   gate({mode, reason, round, ...})         -> {action: 'continue'|'finish'|'stop', message?, source?}
 //   store                                    -> openDebateDir() handle (or a stub)
 //   emit(type, payload)                      -> UI events
 //
@@ -14,6 +14,7 @@
 import { validateReply, validateVerdict } from './contract.js';
 import { round0Prompt, roundPrompt, repromptText, chairmanPrompt, statelessPrefix, statelessRoundPrompt, statelessRepromptText, verdictRepromptText } from './prompts.js';
 import { projectRound, projectChairman, budgetCheck } from './estimate.js';
+import { noteRecord, storedNote } from './notes.js';
 
 // Failure kinds after which calling the same login again in this debate only fails again
 // (adapters/errors.js classifies them; kept here so the engine stays free of adapter imports).
@@ -44,11 +45,11 @@ const NO_TOOLS_LINE = 'Tools are not allowed at this table: no file reads, no co
 const EMPTY_USAGE = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, thinking: 0, cost: null, ms: 0 };
 
 // resume: { rounds, humanNotes, ledger } from store.rebuildDebate (humanNotes[r]: every note
-// given after round r); the seats then carry the session ids
+// given after round r, as a legacy human string or {text, source}); the seats carry the session ids
 // recorded in the transcript, and run() continues from the first incomplete round.
 // baselines: per-vendor tokens per call (estimate.js baselinesFrom), for the budget gate.
 // provenance: extra fields for the head row ({ fake: true } from a server with scripted seats).
-// cancel: called once when the wall clock runs out, to stop the CLI calls in flight.
+// cancel(reason): stop this review's calls on Stop or when its wall clock runs out.
 // synthesisOnly: with resume, skip the rounds and write the verdict (POST .../synthesize).
 export function createDebate({ fieldNotes, seats, chairman, options = {}, runner, gate, store, emit = () => {}, now = Date.now, resume = null, baselines = {}, provenance = {}, cancel = () => {}, synthesisOnly = false }) {
   const opts = { ...DEFAULTS, ...options };
@@ -62,19 +63,45 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
   };
   const fire = (type, payload = {}) => emit(type, { ...payload, type });
   const record = (row) => { store?.append?.(row); };
-  let stopRequested = false, writingVerdict = false, stopVerdict = false;
-  function saveHumanNote(round, text) {
+  let stopRequested = false, finishRequested = false, writingVerdict = false;
+  let controller = new AbortController();
+  function saveHumanNote(round, text, source = 'human') {
     const message = String(text || '').trim();
     if (!message || /^\/stop\b/i.test(message)) return;
-    record({ type: 'human', round, text: message });
-    (round < 0 ? state.initialNotes : (state.humanNotes[round] ??= [])).push(message);
-    fire('human', { round, text: message });
+    const note = noteRecord({ text: message, source });
+    record({ type: 'human', round, ...note });
+    (round < 0 ? state.initialNotes : (state.humanNotes[round] ??= [])).push(storedNote(note));
+    fire('human', { round, ...note });
   }
-  function requestStop(message = '') {
+  function requestStop(message = '', source = 'human') {
+    if (stopRequested || ['done', 'error'].includes(state.status)) return;
     // Save before acknowledging the request, even if the round ends without another gate.
-    saveHumanNote(writingVerdict ? state.rounds.length - 1 : state.round, message);
+    saveHumanNote(writingVerdict ? state.rounds.length - 1 : state.round, message, source);
     stopRequested = true;
-    if (writingVerdict) stopVerdict = true;
+    state.stopReason = 'human';
+    // Persist the intent before cancelling, including during a manually requested verdict.
+    // A restart must not turn a cancelled call into a review waiting to resume.
+    record({ type: 'stop', reason: 'human', rounds: state.rounds.length });
+    fire('stop-queued');
+    controller.abort();
+    cancel('human');
+  }
+
+  function canFinish() {
+    return !stopRequested && !finishRequested && !writingVerdict && !['done', 'error'].includes(state.status)
+      && hasUsableRound(state.rounds, state.seats.length);
+  }
+
+  function requestFinish(message = '', source = 'human') {
+    if (!canFinish()) return false;
+    saveHumanNote(state.round, message, source);
+    finishRequested = true;
+    state.stopReason = 'finish';
+    record({ type: 'stop', reason: 'finish', rounds: state.rounds.length });
+    fire('finish-queued');
+    controller.abort();
+    cancel('finish');
+    return true;
   }
 
   // The spend ledger: every attempt so far (on resume, the transcript's, legacy rows included),
@@ -109,8 +136,8 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     const down = state.down[downKey(seat)];
     if (down) return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false, error: `skipped: ${down.message}`, kind: down.kind, resetsAt: down.resetsAt, skipped: true, fresh: true, attemptId: null };
     for (let attemptNo = 1; ; attemptNo++) {
-      if (stopRequested && (!isChairman || stopVerdict)) return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false,
-        error: 'stopped by the human', kind: 'killed', cancelReason: 'human', fresh: !resumes || seat.sessionId == null, attemptId: null };
+      if (stopRequested || finishRequested && !isChairman) return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false,
+        error: stopRequested ? 'stopped by the user' : 'discussion ended for the verdict', kind: 'killed', cancelReason: stopRequested ? 'human' : 'finish', fresh: !resumes || seat.sessionId == null, attemptId: null };
       const action = attemptNo > 1 ? 'network retry' : kind === 'reprompt' ? 're-prompt' : kind;
       const what = action === 'verdict' ? 'verdict' : `${action} of ${isChairman ? 'the chairman' : seat.lens}`;
       // Check and reserve synchronously at the dispatch boundary. A retry sees the failed
@@ -132,13 +159,15 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       record(attempt);
       fire('attempt', attempt);
       if (!res.ok && POOL_FATAL.has(res.kind)) markDown(seat, res);
-      if (!res.ok && res.kind === 'network' && attemptNo === 1 && !expired() && !(stopRequested && (!isChairman || stopVerdict))) { await new Promise((r) => setTimeout(r, opts.networkRetryMs)); continue; }
+      if (!res.ok && res.kind === 'network' && attemptNo === 1 && !expired() && !stopRequested && !(finishRequested && !isChairman)) { await new Promise((r) => setTimeout(r, opts.networkRetryMs)); continue; }
       return { ...res, attemptId };
     }
   }
 
   async function callOnce(seat, prompt) {
     const t0 = now();
+    const cancellation = () => stopRequested ? 'human' : deadlineHit ? 'wall-clock' : finishRequested && seat.id !== 'chairman' ? 'finish' : null;
+    const cancellationText = (reason) => reason === 'human' ? 'stopped by the user' : reason === 'finish' ? 'discussion ended for the verdict' : 'stopped: the wall clock ran out during the call';
     // Stateless: never hand the CLI a session to resume; the prompt is self-contained.
     const sessionId = resumes ? seat.sessionId : null;
     const accounting = (res) => {
@@ -151,15 +180,17 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     try {
       // prevCost: the session's last cumulative cost reading, so a resumed call is charged only
       // its own part even after a server restart (adapters/common.js).
-      const res = await runner(seat.vendor, prompt, sessionId, { timeoutMs: opts.callTimeoutMs, seat, model: seat.model, effort: seat.effort, prevCost: sessionId ? seat.lastRawCost : undefined });
+      const res = await runner(seat.vendor, prompt, sessionId, { timeoutMs: opts.callTimeoutMs, signal: controller.signal, seat, model: seat.model, effort: seat.effort, prevCost: sessionId ? seat.lastRawCost : undefined });
       const usage = accounting(res);
+      const cancelReason = cancellation();
+      if (cancelReason) return { ok: false, text: '', usage, reported: !!res.usage, error: cancellationText(cancelReason), kind: 'killed', cancelReason, fresh: sessionId == null };
       return { ok: true, text: res.text || '', usage, reported: !!res.usage, raw: res.raw, fresh: sessionId == null, usedTools: !!res.usedTools };
     } catch (e) {
-      const error = deadlineHit ? 'stopped: the wall clock ran out during the call' : e.message;
-      const kind = deadlineHit ? 'killed' : e.kind || (e.code === 'TIMEOUT' ? 'timeout' : e.code === 'KILLED' ? 'killed' : 'other');
+      const cancelReason = cancellation();
+      const error = cancelReason ? cancellationText(cancelReason) : e.message;
+      const kind = cancelReason ? 'killed' : e.kind || (e.code === 'TIMEOUT' ? 'timeout' : e.code === 'KILLED' ? 'killed' : 'other');
       // a failed call can still report what it cost (an error result); keep it in the ledger
       const usage = accounting(e);
-      const cancelReason = deadlineHit ? 'wall-clock' : stopRequested && kind === 'killed' ? 'human' : null;
       return { ok: false, text: '', usage, reported: !!e.usage, error, kind, cancelReason, resetsAt: e.resetsAt || null, timedOut: !cancelReason && e.code === 'TIMEOUT', fresh: sessionId == null };
     }
   }
@@ -171,9 +202,9 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
   // failed, timed-out. Emitted here so the UI only renders.
   const seatState = (seat, round, state) => fire('seat-state', { round, seat: pub(seat), state });
 
-  // every note given before `round`, as { round, text }
-  const initialNotes = () => state.initialNotes.map((text) => ({ round: -1, text }));
-  const allNotes = (round) => [...initialNotes(), ...state.humanNotes.slice(0, round).flatMap((ns, r) => (ns || []).map((text) => ({ round: r, text })))];
+  // every note given before `round`, as { round, text, source }
+  const initialNotes = () => state.initialNotes.map((note) => ({ round: -1, ...noteRecord(note) }));
+  const allNotes = (round) => [...initialNotes(), ...state.humanNotes.slice(0, round).flatMap((ns, r) => (ns || []).map((note) => ({ round: r, ...noteRecord(note) })))];
 
   const prefixFor = (seat) => statelessPrefix({ fieldNotes, lens: seat.lens, mood: seat.mood, seatCount: state.seats.length });
 
@@ -242,7 +273,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     fire('round-start', { round });
     // every note so far for a stateless call; only the notes since the last round for a resumed
     // thread, which already holds the older ones
-    const notesSince = (from) => state.humanNotes.slice(from, round).flatMap((ns, r) => (ns || []).map((text) => ({ round: from + r, text })));
+    const notesSince = (from) => state.humanNotes.slice(from, round).flatMap((ns, r) => (ns || []).map((note) => ({ round: from + r, ...noteRecord(note) })));
     const notes = resumes ? notesSince(Math.max(0, round - 1)) : [...initialNotes(), ...notesSince(0)];
     const prev = state.rounds[round - 1] || [];
     const replies = await Promise.all(state.seats.map((seat) => {
@@ -327,8 +358,12 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     }
     state.status = 'running';
     const message = (answer.message || '').trim();
-    saveHumanNote(round, message);
-    if (answer.action === 'stop' || /^\/stop\b/i.test(message)) return 'human';
+    if (answer.action === 'stop' || /^\/stop\b/i.test(message)) { requestStop(message, answer.source); return 'human'; }
+    if (answer.action === 'finish') {
+      if (requestFinish(message, answer.source)) return 'finish';
+      requestStop(message, answer.source); return 'human';
+    }
+    saveHumanNote(round, message, answer.source);
     return null;
   }
 
@@ -342,6 +377,9 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
   }
 
   async function verdict(chair = state.chairman, { fallenFrom = null } = {}) {
+    if (stopRequested) { skipVerdict('you stopped the review', 'human'); return; }
+    if (!hasUsableRound(state.rounds, state.seats.length)) { skipVerdict('no usable replies were collected', 'no-round'); return; }
+    if (finishRequested && controller.signal.aborted && !expired()) controller = new AbortController();
     writingVerdict = true;
     const seat = { id: 'chairman', vendor: chair.vendor, lens: 'chairman', colour: chair.colour || 'ink', index: -1, sessionId: null, model: chair.model, effort: chair.effort, account: chair.account, ...(chair.endpoint ? { endpoint: chair.endpoint, keyEnv: chair.keyEnv } : {}) };
     if (state.down[downKey(seat)] && !fallenFrom) {
@@ -362,6 +400,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       return tools ? { ok: false, errors: ['used tools or ran commands, which are not allowed at this table', ...v.errors], tools: true } : { ...v, tools: false };
     };
     let res = await callSeat(seat, prompt, R, 'verdict', chairmanCall(seat), { isChairman: true });
+    if (stopRequested) { skipVerdict('you stopped the review', 'human'); return; }
     let v = res.ok ? checkVerdict(res) : { ok: false, errors: [res.error] };
     if (res.ok && !v.ok) {
       record({ type: 'reprompt', round: R, seat: pub(seat), errors: v.errors, text: res.text, attemptId: res.attemptId, usedTools: res.usedTools });
@@ -377,6 +416,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       }
       if (!v.ok && !res.ok) res = { ...first, ok: true }; // keep the chairman's own text as the diagnostic
     }
+    if (stopRequested) { skipVerdict('you stopped the review', 'human'); return; }
     // its login went out on this very call: hand the verdict to another vendor, once
     if (!res.ok && POOL_FATAL.has(res.kind) && !fallenFrom) {
       const next = fallbackChairman(seat);
@@ -451,7 +491,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     deadlineAt = resume?.deadlineAt ?? state.startedAt + opts.wallClockMs;
     state.deadlineAt = deadlineAt;
     // At the deadline the calls in flight are stopped; each fails for its round.
-    const deadlineTimer = setTimeout(() => { deadlineHit = true; if (state.status !== 'done') cancel(); }, Math.max(0, deadlineAt - now()));
+    const deadlineTimer = setTimeout(() => { deadlineHit = true; if (state.status !== 'done') { controller.abort(); cancel('wall-clock'); } }, Math.max(0, deadlineAt - now()));
     try { return await runInner(); } finally { clearTimeout(deadlineTimer); }
   }
 
@@ -468,7 +508,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       const crossing = budgetGate('verdict', chairmanCall());
       if (!crossing) await verdict(); else skipVerdict(budgetRefusal(crossing, 'verdict'), 'budget');
       state.status = 'done';
-      fire('done', { reason: state.stopReason, synthesis: synthesisOf(state.verdict) });
+      fire('done', { reason: state.stopReason, synthesis: synthesisOf(state.verdict), cancelled: stopRequested });
       return state;
     }
     if (resume) {
@@ -494,6 +534,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
         if (over) { state.stopReason = 'budget'; break; }
         await runRound(round);
         if (stopRequested) { state.stopReason = 'human'; break; }
+        if (finishRequested) { state.stopReason = 'finish'; break; }
         let stop = stopCheck(round);
         // Round 0 always shows the blind positions and waits, even when a stop condition is met.
         if (!expired() && (round === 0 || !stop || state.rounds[round].some((r) => r.question))) {
@@ -513,7 +554,8 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       fire('stopped', { reason: state.stopReason, rounds: state.rounds.length, context: state.stopContext });
       // The verdict is under the cap and the wall clock too. A verdict skipped for either can be
       // written later, on request, through POST .../synthesize.
-      if (!state.rounds.length) skipVerdict('no round ran', 'no-round');
+      if (stopRequested || state.stopReason === 'human') skipVerdict('you stopped the review', 'human');
+      else if (!state.rounds.length) skipVerdict('no round ran', 'no-round');
       else if (expired()) skipVerdict('the wall clock ran out', 'wall-clock');
       else {
         const crossing = budgetGate('verdict', chairmanCall());
@@ -521,7 +563,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
         else await verdict();
       }
       state.status = 'done';
-      fire('done', { reason: state.stopReason, synthesis: synthesisOf(state.verdict) });
+      fire('done', { reason: state.stopReason, synthesis: synthesisOf(state.verdict), cancelled: stopRequested });
     } catch (e) {
       state.status = 'error';
       record({ type: 'error', message: e.message });
@@ -531,7 +573,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     return state;
   }
 
-  return { state, run, requestStop };
+  return { state, run, requestStop, requestFinish, canFinish };
 }
 
 // What leaves the engine about a seat (events, transcript). Vendor and label are for the human
@@ -552,6 +594,10 @@ function pub(seat) {
 export function synthesisOf(verdict) {
   if (!verdict) return 'missing';
   return verdict.skipped ? 'skipped' : verdict.failed ? 'failed' : 'done';
+}
+
+export function hasUsableRound(rounds, seatCount) {
+  return rounds.some((round) => round?.length === seatCount && round.some((r) => r.valid && !r.failed && !r.parsed?.pass));
 }
 
 export function positions(replies) {

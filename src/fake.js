@@ -1,7 +1,11 @@
 // A scripted runner for trying the board without spending tokens: `node src/server.js --fake`.
 // With `--fake-consensus` every seat takes the first option in rounds 0 and 1, so the board shows
 // the unanimous round-0 gate and, after a note, the reopened round 1 stopping on consensus.
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+import { setTimeout as delay } from 'node:timers/promises';
+const sleep = (ms, signal) => delay(ms, undefined, { signal }).catch((error) => {
+  if (signal?.aborted) throw Object.assign(new Error('scripted call cancelled'), { code: 'KILLED', kind: 'killed' });
+  throw error;
+});
 const pick = (arr, i) => arr[i % arr.length];
 
 // A plausible quota snapshot so the strip can be seen without real seats.
@@ -27,7 +31,7 @@ export function fakeRunner({ consensus = false } = {}) {
     // Behaviour follows the seat's position at the table, so two seats of one vendor still differ.
     const idx = opts.seat?.index ?? (/chairman/i.test(prompt) ? -1 : n % 3);
     const who = idx === 0 ? 'claude' : idx === 1 ? 'codex' : 'agy'; // the v1 script's three roles
-    await sleep(800 + Math.random() * 1500);
+    await sleep(800 + Math.random() * 1500, opts.signal);
     const round = Number((prompt.match(/^Round (\d+) of/m) || [])[1] ?? (/chairman/i.test(prompt) ? -1 : 0));
     // OPTIONS: opt-1 = Ship now | opt-2 = Wait a sprint (the chairman sees the same line)
     const options = (prompt.match(/^OPTIONS: (.+)$/m)?.[1] || '').split(' | ').map((o) => o.replace(/^opt-\d+ = /, '')).slice(0, 4);

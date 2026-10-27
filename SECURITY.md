@@ -38,20 +38,33 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   call without a network retry. Preflight sends no probe to the endpoint, even on an authenticated
   refresh; the first real call checks the connection. Such a seat bills the endpoint's account,
   and its card says `API · pay-per-token`.
+- **Cancellation:** Stop cancels this review's owned CLI processes and local endpoint requests,
+  including an active chairman. It prevents new rounds, retries, fallback calls and automatic
+  synthesis. Saved replies and reported usage remain. A provider may already have processed a
+  dispatched request; cancelling locally does not guarantee a billing reversal upstream.
+  Finish with verdict is a separate action: it cancels unfinished discussion calls, then permits
+  the chairman under the existing budget and time limits. It requires a completed, usable round.
 - **Network:** the browser loads the board, styles and fonts locally; it does not fetch a remote
   font stylesheet. Live provider traffic is the CLIs' own traffic and the endpoint traffic
   above. The server listens on `127.0.0.1`. A debate sends its notes and relevant replies to the
   selected providers. Stateless mode limits the context Roundtable resends; it does not control
   provider logging or retention.
-- **On disk:** live data defaults to `debates/` under the installation folder; demo data uses
-  `debates-fake/`. `ROUNDTABLE_DEBATES_DIR` overrides that location. Each holds one folder per debate with the transcript (field notes, replies,
+- **On disk:** history defaults to the OS user-data folder, outside the checkout, with separate
+  `live` and `demo` directories. `ROUNDTABLE_DEBATES_DIR` overrides that location. Each holds one folder per debate with the transcript (field notes, replies,
   your notes, usage figures), `field-notes.md` and `verdict.md`; plus the calibration and pool
-  figures. The default folders are gitignored. A CLI's full raw output is kept in memory during
+  figures. Legacy checkout data folders remain gitignored. A CLI's full raw output is kept in memory during
   a call; selected replies, errors and usage are recorded. Copy the entire data folder while
   the server is stopped to back it up. Exported records and CLI login profiles live separately.
   The browser also retains field notes, seat choices, limits, chairman settings and budgets in
   local storage for that address. Clearing browser data removes those preferences, not server
   records. They can contain private context; use a browser profile you trust.
+- **History cleanup:** authenticated Delete and Clear finished requests recheck that sessions
+  are inactive. A data-folder lock prevents two servers from sharing the same writable history.
+  Cleanup refuses linked directories and nested links. It saves `_usage.json` before removing
+  transcripts, recovery backups and seat working files. This file keeps usage counters and model
+  identifiers under hashed session IDs, without titles, prompts, replies, notes or account paths.
+  Exports, quota calibration and provider records are not deleted. This is ordinary file deletion,
+  not secure erasure; backups, browser preferences and provider histories are separate.
 - **Transcript recovery:** reads never change the transcript. Before appending after an
   incomplete final line, Roundtable saves the exact original as `transcript.recovery-<id>.jsonl`
   beside it and atomically replaces the transcript with its complete prefix and a recovery
@@ -73,6 +86,9 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   resume and verdict requests can make calls under the same budgets and limits as the board.
   Writes are never automatically retried. JSON output contains private review content; treat
   request files, answer files and saved command output like transcripts.
+  Notes sent by the client carry `source: agent`; board notes default to `source: human`.
+  This is declared attribution, not an authenticated identity or proof of human approval.
+  It grants no extra permissions. Legacy notes without a source retain their original label.
 - **Tool restrictions depend on the installed CLI.** Claude seats are configured with no tool
   and no MCP server; Codex seats with
   the sandbox read-only, no MCP server, no web search and no tool feature; Antigravity seats in
@@ -88,6 +104,9 @@ is `POST`, `application/json`, at most 256 KB, and must carry the launch token p
 server's startup line (the served page gets it in a meta tag). Every field is typed and bounded
 (`src/validate.js`). Exports write only into files Roundtable wrote (a signature in the record's
 front matter, a marked region in the index) and refuse the home directory and filesystem roots.
+Every response carries a Content-Security-Policy that lets only this server's own scripts run in
+the page, keeps fetches and the event stream same-origin, forbids framing, and disables content
+sniffing, so a reply that slipped past the board's escaping could not read the launch token.
 
 Preflight `GET` reads cached status only, including when `fresh` is present in the query. Missing
 snapshots say not checked; expired snapshots are labelled stale. CLI status and quota refreshes

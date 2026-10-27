@@ -3,7 +3,8 @@ import path from 'node:path';
 import { fieldNotesText } from './prompts.js';
 import { positions, ledgerEntries, synthesisOf } from './engine.js';
 import { ADAPTERS } from './adapters/config.js';
-import { optionId } from './contract.js';
+import { optionId, humanQuestion } from './contract.js';
+import { noteRecord, storedNote } from './notes.js';
 
 // Usage rows written before usageVersion 3 carry the vendor's own input figure. Bring them to
 // the one meaning (input = uncached) by the vendor's cache semantics. Idempotent: a row already
@@ -85,8 +86,8 @@ export function readAllTranscripts(root, { excludeSynthetic = false, onWarning =
 export function slugFor(decision, root) {
   const base = (decision || 'debate').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'debate';
   const day = new Date().toISOString().slice(0, 10);
-  let slug = `${day}-${base}`;
-  for (let i = 2; existsSync(path.join(root, slug)); i++) slug = `${day}-${base}-${i}`;
+  let slug;
+  do { slug = `${day}-${base}-${globalThis.crypto.randomUUID().replaceAll('-', '')}`; } while (existsSync(path.join(root, slug)));
   return slug;
 }
 
@@ -171,7 +172,7 @@ export function rebuildDebate(rows) {
   let stop = null, verdict = null, error = null, resumedRows = 0, accepted = null;
   const downs = [];
   let fallback = null;
-  const originalOf = new Map(); // a reply with its stance key rewritten -> the row as written
+  const originalOf = new Map(); // a normalized reply -> the row as written (for usage identity)
   for (const r of rows) {
     if (r.type === 'reply') {
       if (!byRound.has(r.round)) byRound.set(r.round, new Map());
@@ -179,10 +180,13 @@ export function rebuildDebate(rows) {
       // compares both, so old keys are read as ids (PASS and "other: …" are left as they are);
       // otherwise a stance that never moved could not count as stable.
       const old = !(head.schemaVersion >= 3) && r.stanceKey && r.stanceKey !== 'PASS' && !r.stanceKey.startsWith('other: ');
-      const row = old ? { ...r, stanceKey: optionId(r.stanceKey, head.fieldNotes?.options) ?? r.stanceKey } : r;
+      let row = old ? { ...r, stanceKey: optionId(r.stanceKey, head.fieldNotes?.options) ?? r.stanceKey } : r;
+      const question = humanQuestion(r.question);
+      if (question !== (r.question ?? null) || (r.parsed?.question && humanQuestion(r.parsed.question) !== r.parsed.question))
+        row = { ...row, question, ...(row.parsed ? { parsed: { ...row.parsed, question: humanQuestion(row.parsed.question) } } : {}) };
       if (row !== r) originalOf.set(row, r);
       byRound.get(r.round).set(sid(r.seat), row);
-    } else if (r.type === 'human') (r.round === -1 ? initialNotes : (humanNotes[r.round] ??= [])).push(r.text);
+    } else if (r.type === 'human') (r.round === -1 ? initialNotes : (humanNotes[r.round] ??= [])).push(storedNote(r));
     else if (r.type === 'reopen') reopens.push(r);
     else if (r.type === 'stop') stop = r;
     else if (r.type === 'verdict') verdict = r;
@@ -234,7 +238,7 @@ export function rebuildDebate(rows) {
   const events = [{ type: 'started', seats, fieldNotes: head.fieldNotes, options: head.options, chairman: head.chairman, deadlineAt, replayed: true }];
   const recoveryWarnings = rows.filter((r) => r.type === 'transcript-recovered').map((r) => ({ ...r, type: 'transcript-warning' }));
   events.push(...recoveryWarnings);
-  events.push(...initialNotes.map((text) => ({ type: 'human', round: -1, text })));
+  events.push(...initialNotes.map((note) => ({ type: 'human', round: -1, ...noteRecord(note) })));
   rounds.forEach((replies, i) => {
     events.push({ type: 'round-start', round: i });
     events.push(...attemptsFor((e) => e.round === i && e.kind !== 'verdict'));
@@ -243,7 +247,7 @@ export function rebuildDebate(rows) {
       events.push({ type: 'seat-state', round: i, seat: r.seat, state: r.state || (r.failed ? (r.timedOut ? 'timed-out' : 'failed') : (r.reprompted ? 'reprompted' : 'replied')) });
     }
     events.push({ type: 'round-done', round: i, replies, positions: positions(replies) });
-    for (const text of humanNotes[i] || []) events.push({ type: 'human', round: i, text });
+    for (const note of humanNotes[i] || []) events.push({ type: 'human', round: i, ...noteRecord(note) });
     for (const ro of reopens.filter((x) => x.round === i)) events.push({ type: 'reopen', round: ro.round, stop: ro.stop });
   });
   events.push(...attemptsFor(() => true)); // a partial round's calls and the chairman's

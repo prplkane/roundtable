@@ -33,8 +33,8 @@ test('notes before round zero survive replay and export separately from later ga
     [[-1, rb.initialNotes[0]], [-1, rb.initialNotes[1]], [0, rb.humanNotes[0][0]]]);
   const { decisionRecord } = await import('../src/export.js');
   const record = decisionRecord(rows, 'initial-note').markdown;
-  assert.match(record, /### Before round 0\n\nFirst correction before starting\.\n\nSecond correction after another interruption\./);
-  assert.match(record, /### After round 0\n\nAfter seeing the blind replies\./);
+  assert.match(record, /### Before round 0\n\n\*\*Human:\*\* First correction before starting\.\n\n\*\*Human:\*\* Second correction after another interruption\./);
+  assert.match(record, /### After round 0\n\n\*\*Human:\*\* After seeing the blind replies\./);
 });
 
 test('rebuildDebate: a finished transcript replays read-only with the same event shapes as the live engine', () => {

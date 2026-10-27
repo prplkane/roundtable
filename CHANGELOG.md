@@ -12,10 +12,22 @@
   including after restart. Show unknown or partial totals while retaining reported costs.
 - Make preflight reads cached-only. Authenticate refreshes, share overlapping checks, and
   bound concurrent work, queue size and cache size.
+- Send a Content-Security-Policy, `nosniff` and a no-referrer policy with every response, so
+  only the server's own scripts can run in the page that holds the launch token.
 - Pin CI actions to commit IDs and make the dependency-update cooldown explicit.
 
 ### Records and recovery
 
+- Add Delete and Clear finished with confirmation and protection for active sessions. Keep
+  exported files and usage statistics after cleanup. Default history to the OS user-data folder,
+  outside the checkout, and allow one server per data folder.
+- Make Stop cancel the whole review, including automatic and manually requested verdicts.
+  Keep Stop visible during synthesis and distinguish cancellation from successful completion.
+- Add Finish with verdict after the first usable round, so ending discussion and aborting the
+  whole review are separate choices in the board and agent client.
+- Keep agent-submitted notes distinct from human notes in the board, prompts, replay and exports.
+- Ignore explicit no-question placeholders when deciding whether to pause. Preserve the blind
+  round pause and questions that still need an answer, without another model call.
 - Recover an incomplete final transcript line with an exact backup before appending.
   Show recovery notices; keep corrupt completed records visible and block further writes.
 - Preserve Resume notes before the first round and Stop notes entered during a round.
@@ -25,8 +37,14 @@
 
 ### Local operation and interface
 
-- Mark session opening and completion with a brief, silent browser animation. Keep it out of
-  saved-review replay and the JSON agent client; honor reduced-motion settings.
+- Mark session opening and completion with the chairman seat's pixel gavel and a quiet generated sound, with
+  separate endings for a verdict, no verdict and a failure. Add a sound toggle. Keep the gavel out
+  of saved-review replay and the JSON agent client, and keep the card still under reduced motion.
+  Events a board missed while its connection was down now arrive as new, so a review that ends
+  during the drop still shows its ending.
+- Give the JSON agent client a `board` link in every result with a review id, so an agent can
+  hand a person the page to watch. Add a small-review recipe for lenses, moods, effort, model
+  and context fields to `agent --help` and the workflow guide.
 - Put delayed hover explanations on text labels. Separate positions from arguments, emphasize
   rejection words, and collapse usage into quota bars with expandable details.
 - Collect questions and answers in one area, combine identical questions without a model call,
@@ -74,5 +92,6 @@ First public release.
   record says whether a seat is a CLI on a subscription or an API.
 - **Decision records.** Export a debate as a markdown record and an index into any codebase, so
   your coding agents can read what was decided.
-- **`npx @prplkane/roundtable`** starts the board and opens it in your browser; `doctor` shows
-  what your machine can seat.
+- **The `roundtable` command** starts the board and opens it in your browser (as
+  `npx @prplkane/roundtable` once the package is published); `doctor` shows what your machine
+  can seat.

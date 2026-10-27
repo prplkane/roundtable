@@ -1,6 +1,7 @@
 // Every string an agent sees. Seats never see vendor names, only lens labels.
 import { moodLine } from './seats.js';
 import { optionIds } from './contract.js';
+import { noteRecord, noteAuthor } from './notes.js';
 
 const NO_TOOLS = 'Answer from this prompt only. Do not use any tools, do not read files, do not run commands, do not ask for permissions.';
 
@@ -17,7 +18,7 @@ export function contractText(options) {
     '- up to 2 short bullets of new evidence or angles, or "none"',
     'ASSUMPTIONS:',
     '- up to 3 short bullets: what must be true for your stance',
-    'QUESTION_FOR_HUMAN: <optional; one unanswered question that would change your stance; do not repeat a question already answered in the human notes>',
+    'QUESTION_FOR_HUMAN: <optional; one unanswered question that would change your stance; omit this entire line if none, never write a placeholder or commentary; do not repeat an answered question>',
     '',
     'If you have nothing new to add and no change of stance, reply with the single word PASS instead.',
   ].join('\n');
@@ -69,13 +70,13 @@ export function statelessPrefix({ fieldNotes, lens, mood, seatCount }) {
   ].join('\n');
 }
 
-// The human's notes as one block: every note given so far, oldest first, each with the round it
-// followed, the newest marked. notes: [{ round, text }]. A correction made after round 0 still
+// Notes as one block: every note given so far, oldest first, each with its source and the round it
+// followed, the newest marked. notes: [{ round, text, source? }]. A correction made after round 0 still
 // reaches round 3, so no seat argues from an assumption the human already overturned.
 export function notesBlock(notes) {
   const list = (notes || []).filter((n) => n?.text && n.text.trim());
   if (!list.length) return [];
-  return ['### The human at the table says', ...list.map((n, i) => `- ${n.round < 0 ? 'Before round 0' : `After round ${n.round}`}${i === list.length - 1 ? ' (latest)' : ''}: ${n.text.trim()}`), ''];
+  return ['### Discussion notes (agent notes are not human answers)', ...list.map((n, i) => `- ${noteAuthor(n)} — ${n.round < 0 ? 'Before round 0' : `After round ${n.round}`}${i === list.length - 1 ? ' (latest)' : ''}: ${n.text.trim()}`), ''];
 }
 
 // A critique round as one fresh call: the seat has no thread, so its own last reply, the other
@@ -173,11 +174,11 @@ export function chairmanPrompt({ fieldNotes, rounds, humanNotes, initialNotes = 
     '',
     '--- TRANSCRIPT (seats identified by lens) ---',
   ];
-  parts.push(...notesBlock(initialNotes.map((text) => ({ round: -1, text }))));
+  parts.push(...notesBlock(initialNotes.map((note) => ({ round: -1, ...noteRecord(note) }))));
   rounds.forEach((r, i) => {
     parts.push(`## Round ${i}`);
     for (const reply of r) parts.push(`### ${reply.lens}`, reply.text.trim(), '');
-    for (const note of humanNotes[i] || []) if (note?.trim()) parts.push('### Human', note.trim(), '');
+    parts.push(...notesBlock((humanNotes[i] || []).map((note) => ({ round: i, ...noteRecord(note) }))));
   });
   parts.push(
     '--- END ---',

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { groupQuestions, answerMessage, argumentHtml, remainingWindow, cancellationReason, stopExplanation } from '../src/review-view.js';
+import { groupQuestions, answerMessage, argumentHtml, remainingWindow, cancellationReason, stopExplanation, ceremonyOutcome } from '../src/review-view.js';
 
 test('questions share an answer only when their wording matches; distinct questions and sources survive', () => {
   const questions = [{ lens: 'risk', question: 'What is the budget?' }, { lens: 'cost', question: '  What is the budget? ' }, { lens: 'evidence', question: 'Is the budget approved?' }];
@@ -39,4 +39,23 @@ test('known cancellation differs from provider timeout, including old final-roun
   assert.equal(cancellationReason(reply, 'human', 2), null);
   assert.equal(cancellationReason({ ...reply, errorKind: 'timeout' }, 'human', 1), null);
   assert.match(stopExplanation('wall-clock', 'waiting'), /waiting for your input.*No answer was assumed/);
+});
+
+test('session cue: live endings play once by outcome; replayed history and unreadable transcripts stay still', () => {
+  assert.equal(ceremonyOutcome({ type: 'done', synthesis: 'done', reason: 'round-cap' }), 'verdict');
+  assert.equal(ceremonyOutcome({ type: 'done', synthesis: 'done', reason: 'all-failed' }), 'verdict', 'a verdict written from earlier rounds still counts');
+  assert.equal(ceremonyOutcome({ type: 'done', synthesis: 'failed', reason: 'human' }), 'cancelled');
+  assert.equal(ceremonyOutcome({ type: 'done', synthesis: 'missing', reason: 'seats-down' }), 'failed');
+  assert.equal(ceremonyOutcome({ type: 'done', synthesis: 'skipped', reason: 'budget' }), 'ended');
+  assert.equal(ceremonyOutcome({ type: 'done', synthesis: 'missing', reason: 'human' }), 'cancelled');
+  assert.equal(ceremonyOutcome({ type: 'done', synthesis: 'done', reason: 'human' }), 'cancelled', 'old servers must not celebrate a verdict after Stop');
+  assert.equal(ceremonyOutcome({ type: 'done', synthesis: 'done', cancelled: true }), 'cancelled');
+  assert.equal(ceremonyOutcome({ type: 'done', synthesis: 'done', reason: 'human', cancelled: false }), 'verdict', 'a later, explicitly requested verdict may succeed');
+  assert.equal(ceremonyOutcome({ type: 'done', synthesis: 'skipped', cancelled: true, replayed: true }), null);
+  assert.equal(ceremonyOutcome({ type: 'error', message: 'The review stopped unexpectedly.' }), 'failed');
+  assert.equal(ceremonyOutcome({ type: 'error', message: 'corrupt', fatal: true }), null);
+  assert.equal(ceremonyOutcome({ type: 'done', synthesis: 'done', replayed: true }), null);
+  assert.equal(ceremonyOutcome({ type: 'error', message: 'old', replayed: true }), null);
+  assert.equal(ceremonyOutcome({ type: 'verdict' }), null);
+  assert.equal(ceremonyOutcome(null), null);
 });

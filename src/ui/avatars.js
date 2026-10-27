@@ -89,18 +89,27 @@ const ART = {
   ],
 };
 
-// One <svg> per avatar; each run of filled cells in a row is one rect, so it stays small.
-export function avatar(name) {
-  const rows = ART[name] || ART.grill;
+// Each run of filled cells in a row is one rect, so a pixel drawing stays small. The session
+// ceremony draws its larger gavel with the same helper, so both read as one family.
+export function pixelRects(rows, mark = 'X') {
   const rects = [];
   rows.forEach((row, y) => {
     for (let x = 0; x < row.length; x++) {
-      if (row[x] !== 'X') continue;
+      if (row[x] !== mark) continue;
       let w = 1;
-      while (row[x + w] === 'X') w++;
+      while (row[x + w] === mark) w++;
       rects.push(`<rect x="${x}" y="${y}" width="${w}" height="1"/>`);
       x += w - 1;
     }
   });
-  return `<svg viewBox="0 0 12 12" shape-rendering="crispEdges" fill="currentColor" aria-hidden="true">${rects.join('')}</svg>`;
+  return rects.join('');
+}
+
+// The raw rows, for a drawing built from the same art elsewhere (the session gavel).
+export const sprite = (name) => ART[name] || ART.grill;
+
+// One <svg> per avatar.
+export function avatar(name) {
+  const rects = pixelRects(ART[name] || ART.grill);
+  return `<svg viewBox="0 0 12 12" shape-rendering="crispEdges" fill="currentColor" aria-hidden="true">${rects}</svg>`;
 }

@@ -27,7 +27,8 @@ export function answerMessage(questions, answers = [], note = '') {
 
 export function stopExplanation(reason, context) {
   const labels = {
-    human: 'You stopped the discussion. Replies already received are kept.',
+    human: 'You stopped the review. Replies already received are kept.',
+    finish: 'You ended discussion and requested a verdict from the collected replies.',
     'wall-clock': context === 'waiting' ? 'The review time limit expired while waiting for your input. No answer was assumed.' : 'The review time limit expired. Calls still running were cancelled.',
     'round-cap': 'The planned rounds are complete.', consensus: 'The seats reached the same position.',
     stable: 'The positions stopped changing and the seats had nothing new to add.',
@@ -67,4 +68,20 @@ export function argumentHtml(text, section) {
     at = match.index + match[0].length;
   }
   return out + escapeHtml(text.slice(at));
+}
+
+// Which session cue a board event earns: 'verdict', 'cancelled', 'ended' or 'failed'. Replayed
+// history never plays, and neither does a fatal error, which only comes from opening a saved
+// transcript that cannot be read. The engine sends no 'done' after an error, so cues never stack.
+const SEATS_LOST = new Set(['all-failed', 'seats-down']);
+export function ceremonyOutcome(event) {
+  if (!event || event.replayed) return null;
+  if (event.type === 'error') return event.fatal ? null : 'failed';
+  if (event.type !== 'done') return null;
+  // Explicit cancellation wins even if an older server finished a verdict after Stop.
+  // A separately requested, completed verdict can still succeed after a stopped discussion.
+  if (event.cancelled === true || event.cancelled == null && event.reason === 'human') return 'cancelled';
+  if (event.synthesis === 'done') return 'verdict';
+  if (event.synthesis === 'failed' || SEATS_LOST.has(event.reason)) return 'failed';
+  return 'ended';
 }

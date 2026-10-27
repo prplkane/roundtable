@@ -91,8 +91,8 @@ npm start -- --no-open
 
 Open http://localhost:4747. This is the normal launch command for a local checkout. Omit
 `-- --no-open` to open the browser automatically from an interactive terminal. Stop the
-server with Ctrl+C in that terminal; any CLI it started is stopped with it. Without a clone,
-`npx @prplkane/roundtable` starts the installed package instead.
+server with Ctrl+C in that terminal; any CLI it started is stopped with it. Once the package
+is published to npm, `npx @prplkane/roundtable` will start it without a clone.
 
 **Try it first without spending anything.** The fake board runs the same screens with scripted
 seats:
@@ -252,9 +252,16 @@ Open **Usage details** for per-seat tokens, partial totals, costs, timing and ot
 
 Press **Open the table**.
 
-A brief, silent gavel animation marks a new session and its completion. It does not delay
-requests or block controls. Saved reviews stay still, and reduced-motion settings disable it.
-The JSON agent client does not load the animation or other browser assets.
+A small pixel gavel strikes once when a new session opens and once when it ends. The card and
+a quiet sound say which ending it was: a verdict is ready, you stopped the review, the session
+closed without a verdict, or it failed. Stop uses a short descending cue, never the success cue.
+The gavel does not delay requests or block controls. Saved reviews and replayed
+history stay still and silent. Reduced-motion settings show the card without movement.
+**Sound: on** in the header turns the sounds off or back on, and this browser remembers the
+choice. Sounds are generated in the page; no audio files are loaded. When the board is in a
+background tab, only the sound plays, so you hear when a long review finishes. The browser plays
+nothing until you have clicked or typed on the page once. The JSON agent client loads neither the
+animation nor the sounds.
 
 1. **Round 0 is blind.** Every seat answers at once without seeing the others. The board then
    always waits for you. This is the best moment to step in: correct a wrong assumption, add a
@@ -265,8 +272,14 @@ The JSON agent client does not load the animation or other browser assets.
 3. **Questions for you.** Answer in one area above the replies. Identical questions share a field
    and list all asking lenses; distinct questions stay separate. Send all answers together, add
    a general note, or continue with unknowns left blank. Final-round questions also wait before
-   the verdict. No extra model call is used to collect questions.
-4. **Stop** ends the debate at any time. So does typing `/stop`.
+   the verdict. Explicit no-question placeholders such as `None.` or `none, treat available
+   hours as an explicit unknown` do not create a pause. Ambiguous wording still waits for you.
+   No extra model call is used to collect or filter questions.
+4. **Finish with verdict** ends discussion and sends the collected replies to the chairman.
+   It becomes available after a complete round has a usable reply. Unfinished seat calls are
+   cancelled; their reported usage is kept. With **0 critique rounds**, round 0 still runs, so
+   the chairman has the blind replies to assess. Before any round finishes, only Stop is available.
+5. **Stop** aborts all work, including the chairman. So does typing `/stop`.
 
 Cards with the same position share an outer box, so agreement is visible at a glance. Each
 card has a small dot for what the seat is doing (grey idle, blinking amber thinking, green
@@ -280,9 +293,13 @@ The labels and text carry the meaning too. These colors are reading aids, not se
 The debate also stops by itself when all seats agree, all pass, a round changes nothing, the
 round limit or wall clock is reached, or a budget cap would be crossed.
 
-**Stop** during a round saves your note immediately, cancels owned CLI processes, and prevents
-further seat retries or rounds. Calls already in flight settle before the chairman runs under
-the existing limits. A natural stop such as consensus does not discard your stop request.
+**Stop** saves your note, cancels this review's CLI processes and endpoint requests, and prevents
+all further calls, including the chairman, retries and fallbacks. The button stays available
+while a verdict is being written, including one started later with **Write**. Completed replies
+and reported usage are kept. The board says **Review stopped**. To get a verdict afterward,
+request it explicitly with **Write**. A natural stop such as consensus still writes its verdict.
+Stop saves the general note without submitting question drafts, and works even if the table
+has moved past the questions you were viewing. No verdict is requested without usable replies.
 Cancelled calls say why they stopped. A provider timeout is shown separately from the review's
 overall time limit. Waiting for your input counts toward that limit; the answer area shows the
 remaining time. If it expires, the board says that no answer was assumed.
@@ -457,12 +474,27 @@ node src/cli.js agent wait --id <review-id>
 node src/cli.js agent status --id <review-id>
 ```
 
+Every result with a review id also carries `board`, a link to that review on the local server.
+A person can open it in a browser to watch the review, answer questions or read the verdict
+while the agent keeps working. An agent should offer the link, not open it. Use the server that
+is already running; start one only when `status` cannot reach it.
+
 `wait` returns at a question or completion, or after 25 seconds (configurable from 1 to 30 with
 `--seconds`). It does not continue a round. Read `status`, answer only from supplied facts, and
 ask the user for missing facts. Empty answers leave questions open. Stale-round answers fail
-without being sent. Writes are never retried automatically. Use `stop` to end discussion,
+without being sent. Writes are never retried automatically. Use `stop` to abort all calls,
 `resume` for an interrupted review, or `verdict` to request a missing verdict. Acceptance and
 export stay explicit user decisions.
+
+Use `agent finish` when the user wants to end discussion and get a verdict. It requires a
+completed round with a usable reply and can start a chairman call. Use `agent stop` to abort
+everything. The current state's `actions` list tells you when `finish` is available.
+
+Notes sent through `agent answer`, `agent finish`, `agent stop` and `agent resume` are labelled **Agent note**
+on the board. Notes you enter there keep **You said**. Prompts and exported records name the
+source as **Agent coordinator** or **Human**, including after reload. Direct API clients should
+send `"source":"agent"` with automated notes; an omitted source defaults to `human`.
+Older notes without a source keep their original human label; their author cannot be recovered.
 
 The client reads the launch token from the loopback page and holds it in memory, or uses
 `ROUNDTABLE_TOKEN` when supplied. It never prints or stores the token. `--input -` accepts JSON
@@ -485,6 +517,27 @@ on stdin. Keep real request and answer files outside a public repository.
   "options": { "critiqueRounds": 0, "memory": "stateless", "budget": { "claude": { "tokens": 120000 } } }
 }
 ```
+
+### A small review, and how to choose its settings
+
+The cost of a review is the number of calls, not the length of the request. Each seat call
+carries the provider's own overhead before the field notes arrive, so one more seat or round
+costs far more than one more sentence of context. `agent --help` repeats this recipe:
+
+- **Size.** Two seats, `critiqueRounds` 0, `memory` stateless and a budget per vendor. That is
+  three calls: two seats and the verdict. Add a seat or a round only when the user asks for
+  depth.
+- **Lenses.** Give every seat a different lens, taken from what the decision could get wrong:
+  risk, cost, evidence, reversibility, long-term effects, user impact. Two seats with the same
+  lens mostly agree, which wastes a call.
+- **Moods.** Pair one sceptical seat (`grill`) with one practical seat (`builder`). Use
+  `steelman` when the user already leans one way, and `contrarian` when the seats would
+  otherwise agree too early.
+- **Effort and model.** `effort` low and the lightest model that `status` lists. Raise effort
+  for one seat, not all, when the decision is hard to reverse.
+- **Context.** `constraints`, `known`, `assumed`, `reversibility` and `deadline` go into every
+  prompt. Fill them only with facts the user stated. A guess belongs under `assumed`, never
+  under `known`, and an empty field is better than an invented one.
 
 The older `npm run debate -- --token <hex> < review.json` runner is still available for
 unattended scripts. It automatically continues through questions; use `agent` for interactive
@@ -562,17 +615,43 @@ there is no current snapshot. Refresh with an authenticated JSON `POST /api/pref
 
 | what | where |
 |---|---|
-| Live debates (transcript, field notes, verdict) | `debates/` under this installation, unless `ROUNDTABLE_DEBATES_DIR` is set |
-| Demo debates | `debates-fake/` under this installation, unless the same override is set |
+| Live debates (transcript, field notes, verdict) | `live/` in the Roundtable user-data folder, unless `ROUNDTABLE_DEBATES_DIR` is set |
+| Demo debates | `demo/` in the same user-data folder, unless the override is set |
+| Retained usage statistics | `_usage.json` in the data folder; counters and model IDs, without review text |
 | Measured quota rates and entered pool figures | `_calibration.json` and `_pools.json` in the live data folder; demo names include `.fake` |
 | Saved setup preferences | browser local storage, separate for each host and port |
 | Account profiles | `%LOCALAPPDATA%\roundtable\homes` on Windows, `~/Library/Application Support/roundtable/homes` on macOS, `~/.local/share/roundtable/homes` on Linux |
 | Decision records you exported | the folder you chose |
 
-The default data path belongs to the installation, not the directory from which you happen to
-launch it. Keep the same checkout for this local version. When changing installations, set an
-absolute `ROUNDTABLE_DEBATES_DIR` to retain your data location. Use separate paths for demo and
-live data; an explicit override replaces the usual separation.
+The user-data folder is `%LOCALAPPDATA%\Roundtable` on Windows,
+`~/Library/Application Support/Roundtable` on macOS, and `$XDG_DATA_HOME/roundtable` on Linux
+(or `~/.local/share/roundtable` when XDG_DATA_HOME is unset). It stays the same across checkout
+changes. An absolute `ROUNDTABLE_DEBATES_DIR` selects another location; use distinct paths for
+demo and live data. Only one server can use a data folder at a time, even on different ports.
+
+### Delete and clear history
+
+Use **Delete** beside a saved session, then confirm its title. Interrupted sessions can be
+deleted individually. **Clear finished** confirms the number of finished or stopped sessions
+selected (up to 1,000 per batch); it leaves running and interrupted sessions alone. The server
+rechecks the selection, including a session that started writing a new verdict after the list
+loaded. A stale selection is refused before any selected session is removed.
+
+Deleting removes the local transcript, recovery copies and seat working files. It does not
+remove files you exported, quota calibration or usage statistics. Token estimates retain the
+recorded calls after cleanup and restart. A statistics-write failure prevents deletion. Open
+tabs showing a deleted session return to the list. Corrupt records must be repaired first so
+their reported usage can be retained. Browser preferences and provider histories are separate.
+
+### Move older history out of a checkout
+
+Stop every server using the old data folder. Before starting this version, move the entire
+old `debates/` folder to the user-data folder's `live/` directory, and `debates-fake/` to `demo/`
+if needed. Preserve all contents, including calibration, pools, diagnostics and recovery files.
+Verify that the destination is unused and outside the checkout; do not overwrite an existing
+history folder. You can instead move to a new folder and select it with `ROUNDTABLE_DEBATES_DIR`.
+Start the server and check **Local data and backups** and the saved-session count. Existing
+checkout history is reported when detected; it is never silently merged or deleted at startup.
 
 ### Back up and restore
 

@@ -84,6 +84,8 @@ export function validateDebateRequest(body, { adapters }) {
 export function validateMessage(body) {
   if (!body || typeof body !== 'object') return { message: '' };
   const out = { ...body, message: str(body.message, 'message', LIMITS.message) };
+  if (body.source != null && !['human', 'agent'].includes(body.source)) fail('source', 'human or agent');
+  out.source = body.source ?? 'human';
   if (body.round != null) out.round = int(body.round, 'round', [0, 8]);
   if (body.answers != null) {
     if (!Array.isArray(body.answers) || body.answers.length > 8) fail('answers', 'a list of at most 8 answers');
