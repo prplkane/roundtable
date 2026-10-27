@@ -247,7 +247,10 @@ export function projectChairman({ chairman, baselines = {} }) {
 export function budgetCheck(budget, spent, next) {
   for (const [vendor, cap] of Object.entries(budget || {})) {
     if (!cap) continue;
-    const s = spent?.[vendor] || { tokens: 0, cost: 0 }, n = next?.[vendor] || { tokens: 0, cost: null };
+    // No new call to this vendor adds zero cost. An actual call whose projection is unknown
+    // still carries cost: null and must be refused under a dollar cap.
+    const s = spent?.[vendor] || { tokens: 0, cost: 0 }, n = next?.[vendor] || { tokens: 0, cost: 0 };
+    if (cap.tokens > 0 && s.tokensUnknown && next?.[vendor]) return { vendor, kind: 'tokens-unknown', spent: s.tokens, projected: n.tokens, cap: cap.tokens };
     if (cap.tokens > 0 && s.tokens + n.tokens > cap.tokens) return { vendor, kind: 'tokens', spent: s.tokens, projected: n.tokens, cap: cap.tokens };
     // A dollar cap cannot be checked against a cost nobody reported: that is a crossing of its
     // own kind, not a zero.

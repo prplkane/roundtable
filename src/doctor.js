@@ -71,7 +71,8 @@ async function main() {
         const r = await adapters[vendor]('Reply with exactly the word pong.', null, { timeoutMs: 180_000, cwd: path.join(ROOT, 'debates', '_doctor', vendor) });
         console.log(`  logged in  yes (${Date.now() - t0} ms)  reply: ${JSON.stringify(r.text.slice(0, 40))}  session: ${r.sessionId}`);
         console.log(`  usedTools  ${r.usedTools}${r.usedTools ? '  <- a plain reply reached for tools; the guard would re-prompt it' : ''}`);
-        console.log(`  usage      in ${r.usage.input} cache ${r.usage.cacheRead + r.usage.cacheWrite} out ${r.usage.output} think ${r.usage.thinking}${r.usage.cost != null ? ` $${r.usage.cost.toFixed(2)}` : ''}`);
+        const cost = r.usage?.cost ?? r.cost;
+        console.log(`  usage      ${r.usage ? `in ${r.usage.input} cache ${r.usage.cacheRead + r.usage.cacheWrite} out ${r.usage.output} think ${r.usage.thinking}` : 'tokens unknown'}${cost != null ? ` $${cost.toFixed(2)}` : ''}`);
         if (r.quota) console.log(`  windows    ${r.quota.windows.map((w) => `${w.label} ${(w.used * 100).toFixed(0)}% used`).join(', ')}`);
       } catch (e) { console.log(`  logged in  NO or failed (${Date.now() - t0} ms): ${e.message.slice(0, 200)}`); }
     }

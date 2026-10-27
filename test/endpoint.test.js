@@ -3,11 +3,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { run, pickUsage, httpErrorKind } from '../src/adapters/endpoint.js';
+import { gzipSync } from 'node:zlib';
+import { run, pickUsage, httpErrorKind, MAX_RESPONSE_BYTES } from '../src/adapters/endpoint.js';
 import { killAll, liveChildren } from '../src/adapters/spawn.js';
 
 // A scripted endpoint. `script(req, body)` returns { status, body (object or text), headers,
-// delayMs }; every request is recorded with its headers and parsed body.
+// delayMs, writeBody(res) }; every request is recorded with its headers and parsed body.
 async function endpoint(script) {
   const seen = [];
   const srv = http.createServer((req, res) => {
@@ -19,7 +20,8 @@ async function endpoint(script) {
       const r = await script(req, body);
       if (r.delayMs) await new Promise((t) => setTimeout(t, r.delayMs));
       res.writeHead(r.status || 200, { 'content-type': 'application/json', ...(r.headers || {}) });
-      res.end(typeof r.body === 'string' ? r.body : JSON.stringify(r.body));
+      if (r.writeBody) r.writeBody(res);
+      else res.end(typeof r.body === 'string' || Buffer.isBuffer(r.body) ? r.body : JSON.stringify(r.body));
     });
   });
   await new Promise((r) => srv.listen(0, '127.0.0.1', r));
@@ -65,7 +67,7 @@ test('the key is read by NAME from the environment and sent as a bearer only to 
 
 test('DeepSeek-style usage names the cache hit its own way; content parts are joined; tool_calls count as tool use', async () => {
   assert.deepEqual(pickUsage({ prompt_tokens: 50, completion_tokens: 5, prompt_cache_hit_tokens: 30, prompt_cache_miss_tokens: 20 }), { input: 50, cacheRead: 30, cacheWrite: 0, output: 5, thinking: 0 });
-  assert.deepEqual(pickUsage(undefined), { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, thinking: 0 });
+  assert.equal(pickUsage(undefined), null, 'omitted usage is unknown, not a measured zero');
   const ep = await endpoint((req, body) => (body.messages[0].content === 'parts'
     ? reply([{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }])
     : reply('', undefined, { tool_calls: [{ id: 'c1', type: 'function', function: { name: 'shell', arguments: '{}' } }] })));
@@ -73,6 +75,20 @@ test('DeepSeek-style usage names the cache hit its own way; content parts are jo
     assert.equal((await run('parts', null, { endpoint: { url: ep.url }, model: 'm', timeoutMs: 5000 })).text, 'ab');
     const t = await run('tools', null, { endpoint: { url: ep.url }, model: 'm', timeoutMs: 5000 });
     assert.equal(t.usedTools, true, 'no tools were offered, so a tool call is a contract violation for the guard');
+  } finally { await ep.close(); }
+});
+
+test('missing or unusable endpoint usage stays unknown; explicit zero counters are reported', async () => {
+  const unknown = [null, {}, { prompt_tokens: 10 }, { completion_tokens: 2 },
+    { prompt_tokens: '10', completion_tokens: 2 }, { prompt_tokens: -1, completion_tokens: 2 },
+    { prompt_tokens: 1.5, completion_tokens: 2 }, { prompt_tokens: 10, completion_tokens: 2, prompt_tokens_details: { cached_tokens: 'bad' } }];
+  for (const usage of unknown) assert.equal(pickUsage(usage), null, JSON.stringify(usage));
+  assert.equal(pickUsage({ prompt_tokens: Infinity, completion_tokens: 2 }), null);
+  const ep = await endpoint((req, body) => reply('ok', body.messages[0].content === 'zero' ? { prompt_tokens: 0, completion_tokens: 0 } : null));
+  try {
+    const opts = { endpoint: { url: ep.url }, model: 'm', timeoutMs: 5000 };
+    assert.equal((await run('missing', null, opts)).usage, null);
+    assert.equal((await run('zero', null, opts)).usage.input, 0);
   } finally { await ep.close(); }
 });
 
@@ -120,4 +136,85 @@ test('an HTTP error carries the status and the body\'s first words, through http
   assert.ok(!/sk-/.test(httpErrorKind(401, 'bad key').message), 'no key in a message');
   await assert.rejects(run('q', null, { endpoint: { url: 'http://api.example.com/v1' }, model: 'm' }), /plain http only/);
   await assert.rejects(run('q', null, { endpoint: { url: 'http://localhost:11434/v1' } }), /no model id/);
+});
+
+test('the adapter rejects private-looking public DNS before any request, including stored seat URLs', async (t) => {
+  let requests = 0;
+  t.mock.method(globalThis, 'fetch', async () => { requests++; throw new Error('unexpected request'); });
+  for (const host of ['10.api.example.com', '127.api.example.com', '192.168.api.example.com', '169.254.api.example.com', '172.16.api.example.com', '%31%30.api.example.com']) {
+    await assert.rejects(run('q', null, { endpoint: { url: `http://${host}/v1`, keyEnv: 'K' }, env: { K: 'synthetic-value' }, model: 'm' }), /plain http only/);
+  }
+  assert.equal(requests, 0);
+});
+
+const oversized = (e) => e.kind === 'other' && e.code === 'RESPONSE_TOO_LARGE' && /1 MiB/.test(e.message);
+
+test('the response limit rejects oversized success and error bodies and counts UTF-8 bytes', async () => {
+  const body = JSON.stringify(reply('界'.repeat(Math.floor(MAX_RESPONSE_BYTES / 3) + 1)).body);
+  assert.ok(body.length < MAX_RESPONSE_BYTES, 'a character limit would miss this body');
+  assert.ok(Buffer.byteLength(body) > MAX_RESPONSE_BYTES);
+  for (const status of [200, 500]) {
+    const ep = await endpoint(() => ({ status, body }));
+    try {
+      await assert.rejects(run('q', null, { endpoint: { url: ep.url }, model: 'm', timeoutMs: 5000, tag: 'size-test' }), oversized);
+      assert.equal(liveChildren('size-test').length, 0, 'failed reads release their call registration');
+    } finally { await ep.close(); }
+  }
+});
+
+test('a valid response at the byte limit and a small compressed response still work', async () => {
+  const count = MAX_RESPONSE_BYTES - Buffer.byteLength(JSON.stringify(reply('').body));
+  const body = JSON.stringify(reply('x'.repeat(count)).body);
+  assert.equal(Buffer.byteLength(body), MAX_RESPONSE_BYTES);
+  const ep = await endpoint((req, request) => request.messages[0].content === 'compressed'
+    ? { body: gzipSync(JSON.stringify(reply('small compressed reply').body)), headers: { 'content-encoding': 'gzip' } }
+    : { body, headers: { 'content-length': String(Buffer.byteLength(body)) } });
+  try {
+    assert.equal((await run('boundary', null, { endpoint: { url: ep.url }, model: 'm', timeoutMs: 5000 })).text.length, count);
+    assert.equal((await run('compressed', null, { endpoint: { url: ep.url }, model: 'm', timeoutMs: 5000 })).text, 'small compressed reply');
+  } finally { await ep.close(); }
+});
+
+test('compressed success and error bodies cannot evade the decoded-byte limit', async () => {
+  const body = gzipSync(JSON.stringify(reply('x'.repeat(MAX_RESPONSE_BYTES)).body));
+  assert.ok(body.length < MAX_RESPONSE_BYTES, 'the wire length alone is within the limit');
+  for (const status of [200, 500]) {
+    const ep = await endpoint(() => ({ status, body, headers: { 'content-encoding': 'gzip', 'content-length': String(body.length) } }));
+    try {
+      await assert.rejects(run('q', null, { endpoint: { url: ep.url }, model: 'm', timeoutMs: 5000 }), oversized);
+    } finally { await ep.close(); }
+  }
+});
+
+test('oversized declared and open chunked responses are cancelled without waiting for their end', async () => {
+  for (const declared of [true, false]) {
+    let onClose;
+    const closed = new Promise((resolve) => { onClose = resolve; });
+    const ep = await endpoint(() => ({
+      headers: declared ? { 'content-length': String(MAX_RESPONSE_BYTES + 1) } : {},
+      writeBody(res) {
+        res.once('close', onClose);
+        res.flushHeaders();
+        if (!declared) res.write(Buffer.alloc(MAX_RESPONSE_BYTES + 1, 'x'));
+        // Stay open: the client must cancel instead of waiting for EOF or its timeout.
+      },
+    }));
+    let timer;
+    try {
+      await assert.rejects(run('q', null, { endpoint: { url: ep.url }, model: 'm', timeoutMs: 5000, tag: 'open-body' }), oversized);
+      await Promise.race([closed, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('response was not cancelled')), 2000); })]);
+      assert.equal(liveChildren('open-body').length, 0);
+    } finally { clearTimeout(timer); await ep.close(); }
+  }
+});
+
+test('streamed UTF-8 characters and empty response bodies keep their existing parsing behavior', async (t) => {
+  const body = Buffer.from('\uFEFF' + JSON.stringify(reply('before 💡 after').body));
+  const split = body.indexOf(Buffer.from('💡')) + 2;
+  t.mock.method(globalThis, 'fetch', async () => new Response(new ReadableStream({
+    start(controller) { controller.enqueue(body.subarray(0, split)); controller.enqueue(body.subarray(split)); controller.close(); },
+  })));
+  assert.equal((await run('q', null, { endpoint: { url: 'http://localhost:11434/v1' }, model: 'm' })).text, 'before 💡 after');
+  t.mock.method(globalThis, 'fetch', async () => new Response(null, { status: 204 }));
+  await assert.rejects(run('q', null, { endpoint: { url: 'http://localhost:11434/v1' }, model: 'm' }), (e) => e.kind === 'other' && /other than JSON/.test(e.message));
 });

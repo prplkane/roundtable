@@ -1,9 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normaliseSeats, normaliseChairman, moodLine, MOODS, COLOURS } from '../src/seats.js';
+import { normaliseSeats, normaliseChairman, moodLine, MOODS, COLOURS, initialSeatVendors } from '../src/seats.js';
 import { ADAPTERS } from '../src/adapters/config.js';
 
 const V = ADAPTERS;
+
+test('first use chooses two CLI seats, preferring ready default logins and reusing a sole ready vendor', () => {
+  const vendors = Object.entries(V).map(([vendor, a]) => ({ vendor, kind: a.kind }));
+  const snapshot = structuredClone(vendors);
+  assert.deepEqual(initialSeatVendors(vendors), ['claude', 'codex']);
+  assert.deepEqual(initialSeatVendors(vendors, [
+    { key: 'claude', state: 'bad' }, { key: 'codex', state: 'ok' }, { key: 'agy', state: 'ok' },
+  ]), ['codex', 'agy']);
+  assert.deepEqual(initialSeatVendors(vendors, [{ key: 'codex', state: 'ok' }]), ['codex', 'codex']);
+  assert.deepEqual(initialSeatVendors(vendors, [
+    { key: 'claude', state: 'bad' }, { key: 'codex', state: 'warn' }, { key: 'agy@work', state: 'ok' }, { key: 'api', state: 'ok' },
+  ]), ['claude', 'codex'], 'unknown or named logins do not imply a ready default login');
+  assert.deepEqual(initialSeatVendors([{ vendor: 'agy', kind: 'cli' }]), ['agy', 'agy']);
+  assert.deepEqual(initialSeatVendors([{ vendor: 'api', kind: 'api' }]), []);
+  assert.deepEqual(vendors, snapshot);
+});
 
 test('two instances of one vendor get their own ids and numbered labels, and their vendor colour', () => {
   const seats = normaliseSeats([
@@ -110,4 +126,32 @@ test('privateHost and seatKind: plain http stays on this machine or a private ne
   assert.equal(seatKind(V.api, 'https://api.moonshot.ai/v1'), 'API · pay-per-token');
   assert.match(hostKey('http://[::1]:8080/v1'), /^[a-z0-9][a-z0-9_.-]{0,39}$/, 'an IPv6 host still yields a profile-shaped key');
   assert.equal(hostKey('nonsense'), '');
+});
+
+test('private IPv4 prefixes on DNS names never grant HTTP or keyless hosted access', async () => {
+  const { checkEndpointUrl, privateHost, seatKind } = await import('../src/seats.js');
+  for (const host of ['10.api.example.com', '127.api.example.com', '192.168.api.example.com', '169.254.api.example.com', '172.16.api.example.com', '172.31.api.example.com', '10.0.0.1.example.com', '10.api.example.com.']) {
+    assert.equal(privateHost(host), false, host);
+    const endpoint = `http://${host}/v1`;
+    assert.throws(() => checkEndpointUrl(endpoint), /plain http only/, host);
+    assert.throws(() => normaliseSeats([{ vendor: 'api', lens: 'risk', endpoint, model: 'm' }, { vendor: 'claude', lens: 'cost' }], { vendors: V }), /plain http only/);
+    assert.throws(() => normaliseChairman({ vendor: 'api', endpoint, model: 'm' }, { vendors: V }), /plain http only/);
+    const secure = `https://${host}/v1`;
+    assert.equal(checkEndpointUrl(secure), secure, 'HTTPS stays available');
+    assert.equal(seatKind(V.api, secure), 'API · pay-per-token');
+    assert.throws(() => normaliseChairman({ vendor: 'api', endpoint: secure, model: 'm' }, { vendors: V }), /needs the name of the environment variable/);
+  }
+  assert.throws(() => checkEndpointUrl('http://%31%30.api.example.com/v1'), /plain http only/, 'URL decoding cannot turn a DNS prefix into a private address');
+  for (const host of ['10.0.0.256', '127.999.0.1', '192.168.1.300', '172.16.0.999']) assert.equal(privateHost(host), false, host);
+});
+
+test('HTTP endpoint validation preserves canonical private IPs and intentional local names', async () => {
+  const { checkEndpointUrl } = await import('../src/seats.js');
+  for (const host of ['127.1', '2130706433', '0x7f000001', '0177.0.0.1', '10.1', '192.168.0.9', '172.16.0.1', '172.31.255.255', '169.254.1.1', '[0:0:0:0:0:0:0:1]', '[fd12::1]', '[fe80::1]', 'localhost', 'myserver', 'gpu-box.local', 'ollama.internal']) {
+    const endpoint = `http://${host}:8000/v1`;
+    assert.equal(checkEndpointUrl(endpoint), new URL(endpoint).href, host);
+  }
+  for (const host of ['172.15.255.255', '172.32.0.0', '8.8.8.8', '0x08080808', '[2001:db8::1]']) {
+    assert.throws(() => checkEndpointUrl(`http://${host}/v1`), /plain http only/, host);
+  }
 });

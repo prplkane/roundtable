@@ -7,6 +7,7 @@
 //   FAKE_SLEEP   milliseconds to stay alive before answering (child-process cleanup tests)
 //   FAKE_EXIT    exit code to use after printing (default 0)
 //   FAKE_IS_ERROR 1: claude's result line is an error (is_error: true), as for a usage limit
+//   FAKE_USAGE missing | empty | partial | zero (default: reported fixture usage)
 import { writeFileSync } from 'node:fs';
 
 const shape = process.env.FAKE_SHAPE || 'claude';
@@ -42,6 +43,16 @@ async function main() {
   } else {
     lines.push(JSON.stringify({ conversation_id: 'C1', status: 'SUCCESS', response: text, duration_seconds: 1, num_turns: tools ? 2 : 1, usage: { input_tokens: 40, output_tokens: 20, thinking_tokens: 3, cache_read_tokens: 0, total_tokens: 63 }, ...(tools ? { denied_actions: [{ action: 'run_command', display_name: 'ls' }] } : {}) }));
   }
-  process.stdout.write(lines.join('\n') + '\n');
+  const output = lines.map((line) => {
+    const row = JSON.parse(line);
+    if (row.usage) {
+      if (process.env.FAKE_USAGE === 'missing') delete row.usage;
+      if (process.env.FAKE_USAGE === 'empty') row.usage = {};
+      if (process.env.FAKE_USAGE === 'partial') row.usage = { input_tokens: 10 };
+      if (process.env.FAKE_USAGE === 'zero') row.usage = { input_tokens: 0, output_tokens: 0 };
+    }
+    return JSON.stringify(row);
+  });
+  process.stdout.write(output.join('\n') + '\n');
   process.exit(Number(process.env.FAKE_EXIT || 0));
 }

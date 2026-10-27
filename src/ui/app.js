@@ -1,14 +1,30 @@
 import { rollup } from '/src/engine.js';
 import { optionLabel } from '/src/contract.js';
-import { poolKey, poolVendor, poolAccount, hostKey, seatKind } from '/src/seats.js';
+import { poolKey, poolVendor, poolAccount, hostKey, seatKind, initialSeatVendors } from '/src/seats.js';
 import { avatar } from '/ui/avatars.js';
 import { modelsForPlan, retired } from '/src/adapters/models.js';
 import { project, projectedWindows } from '/src/estimate.js';
+import { PREFLIGHT_TTL_MS } from '/src/preflight.js';
 
 const $ = (id) => document.getElementById(id);
 // The launch token the server put in the page; every POST carries it (server.js refuse()).
 const SEND = { 'content-type': 'application/json', 'x-roundtable-token': document.querySelector('meta[name="roundtable-token"]')?.content || '' };
-const LENSES = { claude: 'risk and failure modes', codex: 'cost and effort', agy: 'customer and adoption' };
+// A failed or timed-out write can already have reached the server. Never retry it automatically.
+async function requestJson(url, body) {
+  let res;
+  try {
+    res = await fetch(url, { ...(body === undefined ? {} : { method: 'POST', headers: SEND, body: JSON.stringify(body) }), signal: AbortSignal.timeout(15_000) });
+  } catch {
+    throw new Error(body === undefined ? 'Could not reach the server. Check that it is running, then reload.' : 'Could not confirm the request. Check that the server is running and review the current state before retrying.');
+  }
+  if (res.status === 401) throw new Error('This page is out of date. Copy any unsent note, reload, then try again.');
+  let out;
+  try { out = await res.json(); } catch { throw new Error('The server returned an unreadable response. Check the current state before retrying.'); }
+  if (!out || typeof out !== 'object') throw new Error('The server returned an unreadable response. Check the current state before retrying.');
+  if (!res.ok || out.ok === false) throw new Error(out.error || 'This action is no longer available. Check the current state before retrying.');
+  return out;
+}
+const initialDraft = (vendors) => vendors.map((vendor, i) => ({ vendor, lens: ['risk and failure modes', 'cost and effort'][i], mood: 'grill', moodText: '', model: '', effort: '' }));
 const VENDOR_LABEL = {};
 const VENDOR_META = {}; // vendor -> { kind, usageUrl, pool, catalogue, colour, profiles } from /api/seats
 let MOODS = {}, COLOURS = ['rust', 'olive', 'teal', 'dusk', 'steel'], BASELINES = {};
@@ -32,8 +48,9 @@ const chairAccount = () => (isApi($('chairman').value) ? hostKey($('chairman-end
 const S = {
   down: {}, // board: logins out for this debate (pool-down events)
   preflight: {}, preflighting: false, startConfirm: null, // setup screen: the lamps' answers per pool key
-  slug: null, seats: [], fieldNotes: null, rows: [], rounds: [], humanNotes: [], gate: null, deadline: null, held: false,
-  verdict: null, status: 'idle', startedAt: null, stopReason: null, pending: new Set(), quota: {}, calib: {}, pools: {}, chairman: null,
+  preflightError: null, preflightCheckedAt: null,
+  slug: null, seats: [], fieldNotes: null, rows: [], rounds: [], humanNotes: [], initialNotes: [], gate: null, deadline: null, held: false,
+  verdict: null, status: 'idle', startedAt: null, stopReason: null, pending: new Set(), quota: {}, calib: {}, pools: {}, chairman: null, configuredChairman: null,
   conn: {}, // seat id -> connection state (idle, thinking, replied, reprompted, failed, timed-out), from seat-state events
   positions: [], // per round: seat id -> agreed | disagreed | neutral | passed | null, from round-done
   draft: [], // setup screen: the seat rows being edited
@@ -50,7 +67,12 @@ const led = (state) => `<span class="led led-${esc(state || 'idle')}" title="${e
 
 // ---------- setup screen ----------
 async function setup() {
-  const { vendors, moods, colours, defaults, baselines, calibration, pools } = await (await fetch('/api/seats')).json();
+  const { vendors, moods, colours, defaults, baselines, calibration, pools, runtime } = await requestJson('/api/seats');
+  const demo = runtime?.mode === 'demo';
+  $('run-mode').textContent = demo ? 'Demo' : 'Live';
+  $('run-mode').className = `run-mode ${demo ? 'demo' : 'live'}`;
+  $('mode-note').textContent = demo ? 'Demo: replies and usage are scripted. No model calls are made.' : 'Live: debates send your field notes to the providers you select and use their quota or billing.';
+  $('data-dir').textContent = runtime?.dataDir || 'unavailable — check the server terminal';
   MOODS = moods; COLOURS = colours; BASELINES = baselines || {}; S.calib = calibration || {}; S.pools = pools || {};
   const chair = $('chairman');
   for (const v of vendors) {
@@ -65,22 +87,41 @@ async function setup() {
   $('critique-rounds').value = defaults.critiqueRounds;
   $('auto').value = defaults.autoContinueMs / 1000;
   $('wall').value = defaults.wallClockMs / 60000;
+  $('memory').value = defaults.memory || 'stateless';
   try { const saved = JSON.parse(localStorage.getItem('roundtable.notes') || 'null'); if (saved) for (const [k, v] of Object.entries(saved)) if (k !== 'options' && $(k)) $(k).value = v; S.options = String(saved?.options || '').split('\n').map((o) => o.trim()).filter(Boolean); } catch {}
   if (!S.options || S.options.length < 2) S.options = [...(S.options || []), '', ''].slice(0, Math.max(2, S.options?.length || 0));
   renderOptions();
   setupMoreContext();
-  let saved = null;
+  let saved = null, settings = {};
   try { saved = JSON.parse(localStorage.getItem('roundtable.seats') || 'null'); } catch {}
-  S.draft = Array.isArray(saved) && saved.length >= 2 ? saved.filter((s) => VENDOR_META[s.vendor]) : vendors.filter((v) => v.kind !== 'api').map((v) => ({ vendor: v.vendor, lens: LENSES[v.vendor] || '', mood: 'grill', moodText: '', model: '', effort: '' }));
-  renderSeats();
+  try { settings = JSON.parse(localStorage.getItem('roundtable.settings') || '{}') || {}; } catch {}
+  const retained = Array.isArray(saved) ? saved.filter((s) => s && VENDOR_META[s.vendor]) : [];
+  S.draft = retained.length >= 2 ? retained : initialDraft(initialSeatVendors(vendors));
+  S.initialDraft = retained.length >= 2 ? null : JSON.stringify(S.draft);
+  S.initialChair = !settings.chairman;
+  for (const [key, id, scale, min, max] of [
+    ['critiqueRounds', 'critique-rounds', 1, 0, 8], ['autoContinueMs', 'auto', 1000, 100, 600_000], ['wallClockMs', 'wall', 60_000, 60_000, 10_800_000],
+  ]) {
+    const value = settings.options?.[key];
+    if (Number.isInteger(value) && value >= min && value <= max) $(id).value = value / scale;
+  }
+  if (['stateless', 'resume'].includes(settings.options?.memory)) $('memory').value = settings.options.memory;
+  const ch = settings.chairman;
+  if (ch && VENDOR_META[ch.vendor]) {
+    chair.value = ch.vendor;
+    for (const field of ['model', 'account', 'endpoint', 'keyEnv']) if (typeof ch[field] === 'string') $(`chairman-${field === 'keyEnv' ? 'keyenv' : field}`).value = ch[field];
+  }
   chairEffortOptions();
+  if (ch?.effort && [...$('chairman-effort').options].some((o) => o.value === ch.effort)) $('chairman-effort').value = ch.effort;
+  renderSeats();
 
-  $('add-seat').addEventListener('click', () => { S.draft.push({ vendor: vendors[0].vendor, lens: '', mood: 'grill', moodText: '', model: '', effort: '' }); renderSeats(); });
+  $('add-seat').addEventListener('click', () => { S.initialDraft = null; S.draft.push({ vendor: vendors[0].vendor, lens: '', mood: 'grill', moodText: '', model: '', effort: '' }); renderSeats(); });
   $('seats').addEventListener('input', onSeatEdit);
   $('seats').addEventListener('change', onSeatEdit);
   $('seats').addEventListener('click', (ev) => {
     const pip = ev.target.closest('.pip');
     if (pip) {
+      S.initialDraft = null;
       const s = S.draft[Number(pip.closest('.seat').dataset.i)];
       const fam = s.vendor === 'agy' && familyOf('agy', s.model);
       if (fam) Object.assign(s, pickedModel('agy', fam.id, pip.dataset.level)); // a variant is always one level
@@ -88,12 +129,16 @@ async function setup() {
       renderSeats(); return;
     }
     const btn = ev.target.closest('.remove'); if (!btn) return;
+    S.initialDraft = null;
     if (S.draft.length <= 2) { $('seats-error').textContent = 'A table needs at least two seats.'; return; }
     S.draft.splice(Number(btn.closest('.seat').dataset.i), 1); renderSeats();
   });
   chair.addEventListener('change', () => { $('chairman-model').value = ''; chairEffortOptions(); renderChair(); renderProjection(); });
+  $('chair-card').addEventListener('input', () => { S.initialChair = false; });
+  $('chair-card').addEventListener('change', () => { S.initialChair = false; });
   $('chair-pips').addEventListener('click', (ev) => {
     const pip = ev.target.closest('.pip'); if (!pip) return;
+    S.initialChair = false;
     const sel = $('chairman-effort');
     const fam = $('chairman').value === 'agy' && familyOf('agy', $('chairman-model').value.trim());
     if (fam) { const p = pickedModel('agy', fam.id, pip.dataset.level); $('chairman-model').value = p.model; sel.value = p.effort; }
@@ -110,27 +155,33 @@ async function setup() {
   });
   $('chairman-account').addEventListener('input', () => { renderChair(); requestPreflight(); });
   $('chairman').addEventListener('change', () => requestPreflight());
+  $('refresh-status').addEventListener('click', () => requestPreflight({ fresh: true }));
   // an endpoint chairman: a preset URL prefills the key variable's usual name (never a key)
   $('chairman-endpoint').addEventListener('change', () => { const pre = ENDPOINT_PRESETS.find((e) => e.url === $('chairman-endpoint').value.trim()); if (pre?.keyEnv && !$('chairman-keyenv').value.trim()) $('chairman-keyenv').value = pre.keyEnv; renderChair(); requestPreflight(); });
   for (const id of ['chairman-endpoint', 'chairman-keyenv']) $(id).addEventListener('input', () => { renderChair(); requestPreflight(); });
   renderChair();
   for (const id of ['chairman-model', 'chairman-effort', 'critique-rounds', 'memory']) $(id).addEventListener('input', renderProjection);
-  $('memory').value = defaults.memory || 'stateless';
   $('start').addEventListener('click', start);
   try { S.budget = JSON.parse(localStorage.getItem('roundtable.budget') || '{}') || {}; } catch {}
+  renderProjection();
   $('projection').addEventListener('input', (ev) => {
     const inp = ev.target.closest('.pool-cap input'); if (!inp) return;
     const v = inp.closest('.pool-cap').dataset.vendor;
     const b = (S.budget[v] ??= {});
     b[inp.name] = inp.value === '' ? undefined : Number(inp.value);
+    const warning = inp.closest('.pool').querySelector('[data-dollar-warning]');
+    if (warning) warning.hidden = !(b.usd > 0);
   });
   $('projection').addEventListener('submit', async (ev) => {
     const form = ev.target.closest('form.pool-entry'); if (!form) return;
     ev.preventDefault();
     const body = Object.fromEntries(new FormData(form).entries());
-    const res = await fetch(`/api/pools/${form.dataset.vendor}`, { method: 'POST', headers: SEND, body: JSON.stringify(body) });
-    const out = await res.json();
-    if (res.ok) { S.pools[form.dataset.vendor] = out.pool; renderProjection(); } else form.querySelector('.error').textContent = out.error;
+    const button = form.querySelector('button');
+    if (button.disabled) return;
+    button.disabled = true;
+    try { const out = await requestJson(`/api/pools/${form.dataset.vendor}`, body); S.pools[form.dataset.vendor] = out.pool; renderProjection(); }
+    catch (e) { form.querySelector('.error').textContent = e.message; }
+    finally { button.disabled = false; }
   });
 }
 
@@ -203,12 +254,16 @@ function pipsHtml(vendor, chosen, model = '') {
 }
 
 // The lamp: the pre-flight answer for the seat's pool when there is one (installed, logged in,
-// quota; GET /api/preflight), else what the quota alone says.
+// quota; authenticated POST /api/preflight), else what the quota alone says.
 function poolLamp(vendor, account) {
   const key = poolKey(vendor, account, !!VENDOR_META[vendor]?.profiles);
   const pf = S.preflight[key];
-  if (pf) return { cls: pf.state, note: pf.note, kind: pf.kind };
   if (S.preflighting) return { cls: 'idle', note: 'checking…' };
+  if (pf) {
+    const stale = pf.stale || pf.checkedAt != null && Date.now() - pf.checkedAt >= PREFLIGHT_TTL_MS;
+    return { cls: stale && pf.state === 'ok' ? 'warn' : pf.state,
+      note: pf.note + (stale && pf.checkedAt != null ? ' · last check is old; use Refresh status' : ''), kind: pf.kind };
+  }
   const q = S.quota[key];
   if (!q?.windows?.length) return { cls: 'idle', note: vendor === 'agy' ? 'quota not reported by this CLI' : 'not checked yet' };
   const worst = q.windows.reduce((a, w) => (w.used > a.used ? w : a));
@@ -254,30 +309,60 @@ function seatRow(s, i) {
 // Ask the server for every pool on the table (seats and chairman), then relight the lamps in
 // place, so a field being typed in keeps its focus. Debounced: one request per pause.
 let preflightTimer = null;
+let preflightRevision = 0;
 function requestPreflight({ fresh = false } = {}) {
+  const revision = ++preflightRevision;
   clearTimeout(preflightTimer);
   preflightTimer = setTimeout(async () => {
     const seats = [...S.draft, { vendor: $('chairman').value, account: $('chairman-account').value.trim(), endpoint: $('chairman-endpoint').value, keyEnv: $('chairman-keyenv').value }];
-    const keys = [...new Set(seats.map((s) => poolKey(s.vendor, seatAccount(s), !!VENDOR_META[s.vendor]?.profiles)))];
+    const keys = [...new Set([...seats.map((s) => poolKey(s.vendor, seatAccount(s), !!VENDOR_META[s.vendor]?.profiles)),
+      ...(S.initialDraft ? Object.keys(VENDOR_META).filter((v) => !isApi(v)) : [])])];
     // an API pool is checked from its URL and key-variable NAME (no request leaves the server);
     // those travel in the body, so its lamp follows every edit
     const endpoints = {};
     for (const s of seats) if (isApi(s.vendor)) endpoints[poolKey(s.vendor, seatAccount(s), true)] = { url: (s.endpoint || '').trim(), keyEnv: (s.keyEnv || '').trim() || null };
     const epSig = JSON.stringify(endpoints);
-    if (!keys.some((k2) => !S.preflight[k2]) && !fresh && epSig === S.preflightEndpoints) { updateLamps(); return; }
-    S.preflighting = true; updateLamps();
+    const needsCheck = keys.some((k2) => !S.preflight[k2] || S.preflight[k2].stale ||
+      S.preflight[k2].checkedAt != null && Date.now() - S.preflight[k2].checkedAt >= PREFLIGHT_TTL_MS);
+    if (!needsCheck && !fresh && epSig === S.preflightEndpoints) { S.preflighting = false; updateLamps(); return; }
+    S.preflighting = true; S.preflightError = null; updateLamps();
     try {
-      const { pools } = await (await fetch('/api/preflight', { method: 'POST', headers: SEND, body: JSON.stringify({ pools: keys, endpoints, fresh }) })).json();
+      const response = await fetch('/api/preflight', { method: 'POST', headers: SEND, body: JSON.stringify({ pools: keys, endpoints, fresh }) });
+      if (!response.ok) throw new Error(response.status === 401 ? 'Reload this page to reconnect to the server, then refresh status.' : 'Status refresh failed. Try Refresh status again.');
+      const { pools } = await response.json();
+      if (revision !== preflightRevision) return; // a slow answer cannot overwrite a later edit
+      S.preflightError = pools.some((p) => ['busy', 'check-failed'].includes(p.kind)) ? 'Some checks could not finish. Try Refresh status again.' : null;
+      const times = pools.map((p) => p.checkedAt).filter((t) => t != null);
+      S.preflightCheckedAt = times.length ? Math.min(...times) : Date.now();
       S.preflightEndpoints = epSig;
       const newPlan = pools.some((p) => p.plan && S.preflight[p.key]?.plan !== p.plan);
       for (const p of pools) { S.preflight[p.key] = p; if (p.quota) S.quota[p.key] = p.quota; }
+      if (S.initialDraft) {
+        const unchanged = JSON.stringify(S.draft) === S.initialDraft;
+        S.initialDraft = null; // choose once; a refresh never replaces an existing table
+        if (unchanged) {
+          const chosen = initialDraft(initialSeatVendors(Object.entries(VENDOR_META).map(([vendor, meta]) => ({ vendor, ...meta })), pools));
+          if (JSON.stringify(chosen) !== JSON.stringify(S.draft)) {
+            S.draft = chosen;
+            if (S.initialChair && chosen.length) { $('chairman').value = chosen[0].vendor; chairEffortOptions(); }
+            S.preflighting = false; renderSeats(); renderChair(); return;
+          }
+        }
+      }
       // the model pickers group by plan: redraw them once a plan is known (not while typing)
       if (newPlan && !$('seats').contains(document.activeElement)) { S.preflighting = false; renderSeats(); renderChair(); return; }
-    } catch { /* the lamps keep what they had */ }
-    S.preflighting = false; updateLamps();
+    } catch (e) {
+      if (revision === preflightRevision) S.preflightError = e.message || 'Could not refresh status. Try Refresh status again.';
+    } finally {
+      if (revision === preflightRevision) { S.preflighting = false; updateLamps(); }
+    }
   }, 400);
 }
 function updateLamps() {
+  $('refresh-status').disabled = S.preflighting;
+  $('refresh-status').textContent = S.preflighting ? 'Checking…' : 'Refresh status';
+  $('preflight-status').textContent = S.preflighting ? 'Checking provider status…' : S.preflightError ||
+    (S.preflightCheckedAt != null ? `Last check ${new Date(S.preflightCheckedAt).toLocaleTimeString()}` : '');
   $('seats').querySelectorAll('.seat').forEach((card) => {
     const s = S.draft[Number(card.dataset.i)]; if (!s) return;
     const l = poolLamp(s.vendor, seatAccount(s));
@@ -288,11 +373,12 @@ function updateLamps() {
   const c = poolLamp($('chairman').value, chairAccount());
   $('chair-lamp').className = `lamp ${c.cls}`; $('chair-lamp').title = c.note;
   $('chair-note').textContent = c.note; $('chair-note').className = `seat-note ${c.cls === 'danger' || c.cls === 'warn' ? c.cls : ''}`;
-  S.startConfirm = null; $('start').textContent = 'Open the table';
+  S.startConfirm = null; $('start').disabled = !!S.startPending; $('start').textContent = S.startPending ? 'Opening…' : 'Open the table';
 }
 
 // The chairman card: vendor colour, the gavel, effort pips; its controls keep their ids.
 function renderChair() {
+  const restoreFocus = rememberFocus($('chair-card'));
   const v = $('chairman').value;
   const card = $('chair-card');
   card.style.setProperty('--seat', `var(--seat-${vendorColour(v)})`);
@@ -307,6 +393,7 @@ function renderChair() {
   $('chairman-model').placeholder = api ? 'model id (required)' : 'model id';
   $('chair-pips').innerHTML = pipsHtml(v, $('chairman-effort').value, $('chairman-model').value.trim());
   updateLamps();
+  restoreFocus();
 }
 
 // Options as chips: opt-1, opt-2 ... as the seats will see them. Enter adds the next one,
@@ -351,14 +438,30 @@ function setupMoreContext() {
   wireOptions();
 }
 
+// Replacing a card must keep keyboard users on the same control, including effort pips.
+function rememberFocus(root) {
+  const active = document.activeElement;
+  if (!root.contains(active)) return () => {};
+  const index = active.closest('.seat')?.dataset.i;
+  const control = ['vendor', 'model-pick', 'lens', 'mood', 'mood-text', 'model', 'account', 'endpoint', 'keyenv', 'remove'].find((c) => active.classList.contains(c));
+  const selector = active.id ? `#${CSS.escape(active.id)}` : active.matches('.pip') ? `.pip[data-level="${CSS.escape(active.dataset.level)}"]` : control ? `.${control}` : null;
+  return () => {
+    if (!selector || active.isConnected) return;
+    const row = index === undefined ? root : root.querySelectorAll('.seat')[Math.min(Number(index), S.draft.length - 1)];
+    row?.querySelector(selector)?.focus({ preventScroll: true });
+  };
+}
 function renderSeats() {
+  const restoreFocus = rememberFocus($('seats'));
   $('seats').innerHTML = S.draft.map(seatRow).join('');
   requestPreflight();
   renderProjection();
+  restoreFocus();
 }
 
 function onSeatEdit(ev) {
   const row = ev.target.closest('.seat'); if (!row) return;
+  S.initialDraft = null;
   const s = S.draft[Number(row.dataset.i)];
   if (ev.target.classList.contains('model-pick')) {
     if (ev.type !== 'change') return;
@@ -490,7 +593,7 @@ function renderProjection() {
     const projected = q ? '' : pw.length ? pw.map((w) => (w.upperBound
       ? `No movement of the ${esc(w.label)} window seen over ${k(w.pending)} tokens yet.`
       : `About +${pct(w.pct)} of the ${esc(w.label)} window (${w.samples} measured move${w.samples === 1 ? '' : 's'}).`)).join(' ')
-      : (v.vendor === 'agy' ? 'The CLI reports no remaining credits; tokens per seat are exact.' : 'Window share is unmeasured until a debate runs.');
+      : (v.vendor === 'agy' ? 'The CLI reports no remaining credits. Usage is shown when the CLI reports it.' : 'Window share is unmeasured until a debate runs.');
     const cap = S.budget[v.vendor];
     return `<div class="pool">
       <div class="pool-top">${poolId(pool)}<div class="pool-total"><b>≈ ${k(v.total)}</b><span>tokens${v.cost != null ? ` · ≈ $${v.cost.toFixed(2)}` : ''}</span></div></div>
@@ -501,17 +604,19 @@ function renderProjection() {
       }).join('')}</div>
       ${v.weighted !== v.total ? `<p class="pool-note">≈ ${k(v.weighted)} pool units after model weight.</p>` : ''}
       ${windows.length ? `<div class="readouts">${readouts(pool, windows)}</div>` : `<p class="pool-note">${projected}</p>`}
-      <div class="pool-cap" data-vendor="${esc(v.vendor)}"><label for="cap-${esc(v.vendor)}" title="Projected before each call, with the calls in flight and the verdict reserved. The vendor does not enforce it.">Cap</label><input id="cap-${esc(v.vendor)}" name="tokens" type="number" min="0" step="1000" placeholder="tokens" value="${cap?.tokens ?? ''}" aria-label="Token cap for ${esc(VENDOR_LABEL[v.vendor] || v.vendor)}">${v.cost != null ? `<input name="usd" type="number" min="0" step="0.05" placeholder="$" value="${cap?.usd ?? ''}" aria-label="Dollar cap for ${esc(VENDOR_LABEL[v.vendor] || v.vendor)}">` : ''}${cap?.tokens > 0 && v.total > cap.tokens ? '<span class="warn">the projection is over this cap</span>' : ''}${usageLink(v.vendor)}</div>
+      <div class="pool-cap" data-vendor="${esc(v.vendor)}"><label for="cap-${esc(v.vendor)}" title="Projected before each call, with the calls in flight and the verdict reserved. The vendor does not enforce it.">Cap</label><input id="cap-${esc(v.vendor)}" name="tokens" type="number" min="0" step="1000" placeholder="tokens" value="${cap?.tokens ?? ''}" aria-label="Token cap for ${esc(VENDOR_LABEL[v.vendor] || v.vendor)}">${v.cost != null || cap?.usd > 0 ? `<input name="usd" type="number" min="0" step="0.05" placeholder="$" value="${cap?.usd ?? ''}" aria-label="Dollar cap for ${esc(VENDOR_LABEL[v.vendor] || v.vendor)}">` : ''}${cap?.tokens > 0 && v.total > cap.tokens ? '<span class="warn">the projection is over this cap</span>' : ''}${usageLink(v.vendor)}</div>
+      ${cap?.usd > 0 && v.cost == null ? '<p class="pool-note warn" data-dollar-warning>No dollar estimate is available. This dollar cap blocks calls; clear it to proceed with a token cap instead.</p>' : ''}
       ${q ? '' : poolEntry(v.vendor, v.weighted)}
     </div>`;
   }).join('') || '<span class="muted">Seat at least one instance.</span>';
   const vs = Object.values(p.byVendor);
   const rounds = Number($('critique-rounds').value) || 0;
   const priced = vs.filter((v) => v.cost != null);
-  $('start-summary').innerHTML = seats.length ? `<b>${seats.length} seats</b> · up to ${seats.length * (rounds + 1) + 1} calls · ≈ ${k(vs.reduce((n, v) => n + v.total, 0))} tokens${priced.length ? ` · ≈ $${priced.reduce((n, v) => n + v.cost, 0).toFixed(2)} for ${priced.map((v) => esc(VENDOR_LABEL[v.vendor] || v.vendor)).join(', ')}` : ''}` : '';
+  $('start-summary').innerHTML = seats.length ? `<b>${seats.length} seats</b> · ${seats.length * (rounds + 1) + 1} planned calls before retries · ≈ ${k(vs.reduce((n, v) => n + v.total, 0))} tokens${priced.length ? ` · ≈ $${priced.reduce((n, v) => n + v.cost, 0).toFixed(2)} for ${priced.map((v) => esc(VENDOR_LABEL[v.vendor] || v.vendor)).join(', ')}` : ''}` : '';
 }
 
 async function start() {
+  if (S.startPending) return;
   // a seat whose lamp is red would fail its first call: say which, and open only on a second click
   const red = [...S.draft.map((s) => ({ name: `${VENDOR_LABEL[s.vendor]} (${s.lens || 'no lens'})`, l: poolLamp(s.vendor, seatAccount(s)) })),
     { name: `the chairman (${VENDOR_LABEL[$('chairman').value]})`, l: poolLamp($('chairman').value, chairAccount()) }].filter((x) => x.l.cls === 'danger');
@@ -532,12 +637,25 @@ async function start() {
     chairman: draftChairman(),
     options: { critiqueRounds: Number($('critique-rounds').value), autoContinueMs: Number($('auto').value) * 1000, wallClockMs: Number($('wall').value) * 60000, memory: $('memory').value, budget: budgetBody() },
   };
-  try { localStorage.setItem('roundtable.notes', JSON.stringify(notes)); localStorage.setItem('roundtable.seats', JSON.stringify(S.draft)); localStorage.setItem('roundtable.budget', JSON.stringify(S.budget)); } catch {}
+  try {
+    localStorage.setItem('roundtable.notes', JSON.stringify(notes));
+    localStorage.setItem('roundtable.seats', JSON.stringify(S.draft));
+    localStorage.setItem('roundtable.budget', JSON.stringify(S.budget));
+    localStorage.setItem('roundtable.settings', JSON.stringify({ options: body.options, chairman: {
+      vendor: $('chairman').value, model: $('chairman-model').value, effort: $('chairman-effort').value,
+      account: $('chairman-account').value, endpoint: $('chairman-endpoint').value, keyEnv: $('chairman-keyenv').value,
+    } }));
+  } catch {}
   $('setup-error').textContent = ''; $('seats-error').textContent = '';
-  const res = await fetch('/api/debates', { method: 'POST', headers: SEND, body: JSON.stringify(body) });
-  const out = await res.json();
-  if (!res.ok) { (/lens|seat|effort|mood|Chairman/i.test(out.error) ? $('seats-error') : $('setup-error')).textContent = out.error; return; }
-  location.hash = out.slug; // route() opens the board
+  const revision = viewRevision;
+  S.startPending = true; updateLamps();
+  try {
+    const out = await requestJson('/api/debates', body);
+    if (revision === viewRevision) location.hash = out.slug; // route() opens the board
+  } catch (e) {
+    (/lens|seat|effort|mood|Chairman/i.test(e.message) ? $('seats-error') : $('setup-error')).textContent = `${e.message} Check recent debates before opening another table.`;
+    loadRecent();
+  } finally { S.startPending = false; updateLamps(); }
 }
 
 // Only vendors with a positive cap are sent; an empty field is no cap.
@@ -556,14 +674,16 @@ function budgetBody() {
 // The hash decides the screen: '#<slug>' is that debate's board, no hash is the setup screen with
 // the list of debates. Back and forward work, and a board link can be shared or bookmarked.
 let live = null; // the open board's { es, timer }
+let viewRevision = 0;
 function closeBoard() { if (live) { live.es.close(); clearInterval(live.timer); live = null; } }
 function route() {
+  viewRevision++;
   closeBoard();
   const slug = decodeURIComponent(location.hash.slice(1));
   if (/^[a-z0-9-]+$/.test(slug)) openBoard(slug); else showSetup();
 }
 function showSetup() {
-  S.slug = null; resetBoard();
+  S.slug = null; resetBoard({ clearDrafts: true });
   $('setup').hidden = false; $('board').hidden = true; $('humanbar').hidden = true; $('nav-debates').hidden = true;
   $('sys').className = 'status ok'; $('sys').textContent = 'idle';
   for (const id of ['st-round', 'st-seats', 'st-elapsed']) $(id).textContent = '';
@@ -572,11 +692,20 @@ function showSetup() {
 }
 
 // The debates on disk, newest first: status, the pick, size, and a link to each board.
-const STATE_CLASS = { running: 'warn', interrupted: 'warn', accepted: 'ok', recommended: 'info', 'no verdict': 'danger' };
-const STATE_LABEL = { running: 'live', interrupted: 'interrupted', accepted: 'accepted', recommended: 'recommended', split: 'split', stopped: 'stopped', 'no verdict': 'no verdict' };
+const STATE_CLASS = { running: 'warn', interrupted: 'warn', accepted: 'ok', recommended: 'info', 'no verdict': 'danger', corrupt: 'danger' };
+const STATE_LABEL = { running: 'live', interrupted: 'interrupted', accepted: 'accepted', recommended: 'recommended', split: 'split', stopped: 'stopped', 'no verdict': 'no verdict', corrupt: 'needs repair' };
+let recentRevision = 0;
 async function loadRecent() {
-  let list = [];
-  try { list = (await (await fetch('/api/debates')).json()).debates || []; } catch { /* the list is optional */ }
+  const revision = ++recentRevision;
+  let list;
+  try { list = (await requestJson('/api/debates')).debates || []; }
+  catch (e) {
+    if (revision !== recentRevision) return;
+    $('recent-count').textContent = 'unavailable';
+    $('recent-list').innerHTML = `<div class="empty"><span role="alert">Could not load history. ${esc(e.message)}</span><button class="btn btn-small" id="retry-recent" type="button">Retry history</button></div>`;
+    return;
+  }
+  if (revision !== recentRevision) return;
   $('recent-count').textContent = list.length ? `${list.length} on this machine` : '';
   if (!list.length) {
     $('recent-list').innerHTML = '<div class="empty"><span><span class="prompt">&gt;</span> no debates yet<br>&nbsp;&nbsp;write the field notes below and open the table_</span></div>';
@@ -586,20 +715,22 @@ async function loadRecent() {
     // the human's choice once accepted, otherwise the recommendation when there is a real one
     const pick = d.status === 'accepted' ? d.accepted : ['no consensus', 'no pick', 'no verdict'].includes(d.recommended) ? '' : d.recommended;
     const cost = d.cost != null ? ` · $${d.cost.toFixed(2)}${d.costPartial ? '+' : ''}` : '';
-    return `<a class="debate-row" href="#${esc(d.slug)}" title="${esc(d.decision)}">
+    const tag = d.state === 'corrupt' ? 'div' : 'a';
+    return `<${tag} class="debate-row" ${tag === 'a' ? `href="#${esc(d.slug)}"` : ''} title="${esc(d.decision)}">
       <span class="data">${esc(d.date)}</span>
       <span class="debate-title">${esc(d.decision)}</span>
       <span class="status ${STATE_CLASS[d.status] || 'muted'}">${esc(STATE_LABEL[d.status] || d.status)}</span>
       <span class="debate-pick">${esc(pick || '')}</span>
-      <span class="data">${d.rounds} rd · ${k(d.tokens)}${cost}</span>
-    </a>`;
+      <span class="data">${d.state === 'corrupt' ? 'unavailable' : `${d.rounds} rd · ${d.tokens == null ? 'tokens unknown' : `${k(d.tokens)}${d.tokensPartial ? ' (partial)' : ''}`}${cost}`}</span>
+      ${d.warning ? `<span class="debate-warning">${esc(d.warning)}</span>` : ''}
+    </${tag}>`;
   };
   const shown = S.showAllDebates ? list : list.slice(0, 5);
   $('recent-list').innerHTML = shown.map(row).join('') + (list.length > 5 ? `<button class="btn btn-small debates-more" id="debates-more" type="button">${S.showAllDebates ? 'Show the latest 5' : `Show all ${list.length}`}</button>` : '');
 }
 
 function openBoard(slug) {
-  resetBoard();
+  resetBoard({ clearDrafts: true });
   S.slug = slug;
   $('setup').hidden = true; $('board').hidden = false; $('humanbar').hidden = false; $('nav-debates').hidden = false;
   // EventSource reconnects by itself and sends Last-Event-ID, so a dropped connection costs
@@ -613,14 +744,20 @@ function openBoard(slug) {
   render(); // clear what the last board showed, before this one's first event (or a 404)
 }
 
-function resetBoard() {
-  Object.assign(S, { seats: [], fieldNotes: null, rows: [], rounds: [], humanNotes: [], gate: null, deadline: null, held: false, verdict: null, status: 'idle', startedAt: null, stopReason: null, pending: new Set(), chairman: null, interrupted: null, stopQueued: false, error: null, conn: {}, positions: [], accepted: null, synthesis: null, down: {},
-    budgetStop: null, exported: null, exportError: null, replayed: false, connected: null, chairmanFallback: null }); // hash routing reuses S: nothing from the last board
+function resetBoard({ clearDrafts = false } = {}) {
+  Object.assign(S, { seats: [], fieldNotes: null, rows: [], rounds: [], humanNotes: [], initialNotes: [], gate: null, deadline: null, held: false, verdict: null, status: 'idle', startedAt: null, stopReason: null, pending: new Set(), chairman: null, configuredChairman: null, interrupted: null, stopQueued: false, error: null, conn: {}, positions: [], accepted: null, synthesis: null, down: {},
+    budgetStop: null, exported: null, exportError: null, replayed: false, connected: null, chairmanFallback: null, transcriptWarning: null,
+    actionPending: null, actionError: null, holdPending: false, synthChoice: null }); // hash routing reuses S: nothing from the last board
+  if (clearDrafts) {
+    $('human-msg').value = ''; $('accept-note').value = ''; $('export-status').textContent = '';
+    delete $('accept-option').dataset.applied;
+    S.acceptEdited = false; S.acceptNoteEdited = false;
+  }
 }
 
 function handle(e) {
   switch (e.type) {
-    case 'started': resetBoard(); S.seats = e.seats; S.fieldNotes = e.fieldNotes; S.status = 'running'; S.startedAt = Date.now(); $('board-title').textContent = e.fieldNotes.decision; document.title = `${e.fieldNotes.decision} · Roundtable`; $('board-empty').hidden = false; break;
+    case 'started': resetBoard(); S.seats = e.seats; S.fieldNotes = e.fieldNotes; S.configuredChairman = e.chairman || null; S.status = 'running'; S.startedAt = Date.now(); $('board-title').textContent = e.fieldNotes.decision; document.title = `${e.fieldNotes.decision} · Roundtable`; $('board-empty').hidden = false; break;
     case 'resumed': S.status = 'running'; S.interrupted = null; S.startedAt = Date.now(); S.pending.clear(); break;
     case 'interrupted': S.status = 'interrupted'; S.interrupted = e; S.pending.clear(); break;
     case 'round-start': S.rounds[e.round] = []; S.pending = new Set(S.seats.map((s) => s.index)); $('board-empty').hidden = true; break;
@@ -634,7 +771,7 @@ function handle(e) {
     case 'held': S.held = true; S.deadline = null; break;
     case 'gate-closed': S.gate = null; S.deadline = null; S.status = 'running'; break;
     case 'stop-queued': S.stopQueued = true; break;
-    case 'human': (S.humanNotes[e.round] ??= []).push(e.text); break;
+    case 'human': (e.round === -1 ? S.initialNotes : (S.humanNotes[e.round] ??= [])).push(e.text); break;
     case 'quota': S.quota[e.vendor] = e.quota; break;
     case 'calibration': S.calib[e.key || e.vendor] = e.windows; break;
     case 'pool': S.pools[e.vendor] = e.pool; break;
@@ -650,7 +787,11 @@ function handle(e) {
     case 'accepted': S.accepted = e; break;
     case 'exported': S.exported = e; S.exportError = null; break;
     case 'export-failed': S.exportError = e.error; break;
-    case 'error': S.status = 'error'; S.error = e.message; break;
+    case 'transcript-warning': S.transcriptWarning = e; break;
+    case 'error':
+      S.status = 'error'; S.error = e.message;
+      if (e.fatal) { closeBoard(); $('board-title').textContent = 'Transcript needs repair'; document.title = 'Transcript needs repair · Roundtable'; }
+      break;
   }
   render();
 }
@@ -716,12 +857,14 @@ function renderRound(i, replies, isCurrent) {
 function renderUsage() {
   const u = rollup(S.rows);
   const fmt = (n) => (n || 0).toLocaleString();
+  const tokens = (n, x) => x.tokenCoverage?.reported === 0 ? '<span class="muted">unknown</span>'
+    : `${fmt(n)}${x.tokenCoverage && x.tokenCoverage.reported < x.tokenCoverage.of ? `<span class="seat-meta" title="${x.tokenCoverage.reported} of ${x.tokenCoverage.of} calls report token usage">partial</span>` : ''}`;
   // a sum of reported costs over calls of which some reported none is marked partial
   const cost = (c, x) => (c == null ? '<span class="muted">n/a</span>' : `$${c.toFixed(2)}${x?.costCoverage && x.costCoverage.reported < x.costCoverage.of ? `<span class="seat-meta" title="${x.costCoverage.reported} of ${x.costCoverage.of} calls report a cost">partial</span>` : ''}`);
   const secs = (ms) => `${Math.round((ms || 0) / 1000)}s`;
   // last: the seat's input in the latest round it took part in (cache included), the figure that
   // says whether rounds stay flat (stateless) or grow (resume)
-  const row = (name, x, cls = '', last = null, position = null) => `<tr class="${cls}" data-position="${esc(position || 'none')}"><td>${name}</td><td class="data">${fmt(x.input)}</td><td class="data">${fmt(x.cacheRead + x.cacheWrite)}</td><td class="data">${fmt(x.output)}</td><td class="data">${cost(x.cost, x)}</td><td class="data">${secs(x.ms)}</td><td class="data">${last ? `${fmt(last.usage.input + last.usage.cacheRead + last.usage.cacheWrite)}<span class="seat-meta">r${esc(last.round)}</span>` : ''}</td></tr>`;
+  const row = (name, x, cls = '', last = null, position = null) => `<tr class="${cls}" data-position="${esc(position || 'none')}"><td>${name}</td><td class="data">${tokens(x.input, x)}</td><td class="data">${tokens(x.cacheRead + x.cacheWrite, x)}</td><td class="data">${tokens(x.output, x)}</td><td class="data">${cost(x.cost, x)}</td><td class="data">${secs(x.ms)}</td><td class="data">${last ? `${tokens(last.usage.input + last.usage.cacheRead + last.usage.cacheWrite, last.usage)}<span class="seat-meta">r${esc(last.round)}</span>` : ''}</td></tr>`;
   const pools = [...new Set([...S.seats.map(seatPool), ...(S.chairman ? [seatPool(S.chairman)] : [])])];
   const rows = [];
   for (const pool of pools) {
@@ -815,9 +958,12 @@ function renderGate() {
   const g = S.gate;
   const st = $('gate-status');
   const interrupted = S.status === 'interrupted';
-  $('continue').disabled = !g && !interrupted; $('stop').disabled = S.status === 'done' || interrupted;
+  $('continue').disabled = !!S.actionPending || !g && !interrupted; $('stop').disabled = !!S.actionPending || ['done', 'error'].includes(S.status) || interrupted;
   $('human-form').hidden = S.status === 'done'; // a finished debate takes no note; its bar keeps the status
-  $('continue').textContent = interrupted ? 'Resume' : 'Continue';
+  $('continue').textContent = ['continue', 'resume'].includes(S.actionPending) ? 'Sending…' : interrupted ? 'Resume' : 'Continue';
+  $('stop').textContent = S.actionPending === 'stop' ? 'Stopping…' : 'Stop';
+  const actionError = S.actionError && !['accept', 'export'].includes(S.actionError.action) ? S.actionError.message : '';
+  $('human-error').textContent = actionError; $('human-error').hidden = !actionError;
   const link = (S.connected === false ? '<span class="status danger">reconnecting</span> ' : '') + budgetLine();
   if (!g) {
     // a verdict skipped, failed or never written: write it, with this chairman or another vendor
@@ -827,16 +973,21 @@ function renderGate() {
     // variable and model are the seat's), since the endpoint vendor alone names no server
     const pickable = Object.keys(VENDOR_LABEL).filter((v) => !isApi(v) && !Object.values(S.down).some((x) => x.vendor === v && !x.account));
     const apiSeats = S.seats.filter((s) => s.endpoint && !S.down[`${s.vendor}@${s.account || ''}`]).map((s) => ({ value: `seat:${s.id}`, label: `${s.label} (${s.model})` }));
-    const first = chairDown || ['quota', 'auth', 'missing'].includes(S.verdict?.errorKind) ? pickable.find((v) => v !== S.verdict?.seat?.vendor) || pickable[0] : (S.chairman?.vendor || pickable[0]);
+    const savedChair = S.configuredChairman || S.chairman;
+    const first = chairDown || ['quota', 'auth', 'missing'].includes(S.verdict?.errorKind) ? pickable.find((v) => v !== S.verdict?.seat?.vendor) || pickable[0] : (savedChair?.vendor || pickable[0]);
     const synth = S.status === 'done' && S.synthesis && S.synthesis !== 'done' && S.rounds.length
-      ? ` <span class="synth">Write the verdict with <select id="synth-chair" aria-label="Chairman for the verdict">${pickable.map((v) => `<option value="${v}" ${v === first ? 'selected' : ''}>${esc(VENDOR_LABEL[v])}</option>`).join('')}${apiSeats.map((o) => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join('')}</select> <button class="btn btn-small" id="synthesize" type="button">Write</button></span>` : '';
-    st.innerHTML = link + (S.status === 'done' ? `<span class="status ok">done</span>${synth} stopped: ${esc(S.stopReason)}. Field notes and verdict are in debates/${esc(S.slug)}/.${S.exported ? ` Decision record written to ${esc(S.exported.path)}.` : ''}${S.exportError ? ` <span class="danger">Export failed: ${esc(S.exportError)}</span>` : ''}${S.replayed ? ' <span class="muted">replayed from the transcript, read-only</span>' : ''}`
+      ? ` <span class="synth">Write the verdict with <select id="synth-chair" aria-label="Chairman for the verdict">${pickable.map((v) => `<option value="${v}" ${v === first ? 'selected' : ''}>${esc(VENDOR_LABEL[v])}${v === savedChair?.vendor ? esc([savedChair.model, savedChair.effort, savedChair.account].filter(Boolean).map((s) => ` · ${s}`).join('')) : ''}</option>`).join('')}${apiSeats.map((o) => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join('')}</select> <button class="btn btn-small" id="synthesize" type="button" ${S.actionPending ? 'disabled' : ''}>${S.actionPending === 'synthesize' ? 'Starting…' : 'Write'}</button></span>` : '';
+    const focused = st.contains(document.activeElement) ? document.activeElement.id : null;
+    st.innerHTML = link + (S.status === 'done' ? `<span class="status ok">done</span>${synth} stopped: ${esc(S.stopReason)}. Record saved locally.${S.exported ? ' Decision record exported.' : ''}${S.exportError ? ` <span class="danger">Export failed: ${esc(S.exportError)}</span>` : ''}${S.replayed ? ' <span class="muted">loaded from the transcript</span>' : ''}`
       : interrupted ? `<span class="status warn">interrupted</span> ${S.interrupted?.round ? `after round ${S.interrupted.round - 1}` : 'before round 0 finished'}${S.interrupted?.partialRound != null ? `, round ${S.interrupted.partialRound} will be re-run` : ''}. Add a note or resume.`
       : S.status === 'idle' ? '<span class="status warn">loading</span> waiting for the transcript'
       : S.status === 'verdict' ? '<span class="status warn">chairman writing the verdict</span>'
       : S.status === 'error' ? `<span class="status danger">error</span> ${esc(S.error)}`
-      : S.stopQueued ? '<span class="status warn">stop queued</span> the seats still thinking were cut off; the round closes, then the chairman writes the verdict'
+      : S.stopQueued ? '<span class="status warn">stop queued</span> waiting for calls already in flight to settle; the round closes, then the chairman writes the verdict'
       : `<span class="status warn">round ${S.rounds.length - 1} in flight</span> ${S.pending.size} seat${S.pending.size === 1 ? '' : 's'} still thinking`);
+    const select = $('synth-chair');
+    if (select && S.synthChoice && [...select.options].some((o) => o.value === S.synthChoice)) select.value = S.synthChoice;
+    if (focused) $(focused)?.focus({ preventScroll: true });
     return;
   }
   const parts = [];
@@ -855,6 +1006,7 @@ function budgetLine() {
   const b = S.budgetStop; if (!b) return '';
   const name = esc(VENDOR_LABEL[b.vendor] || b.vendor);
   if (b.kind === 'usd-unknown') return `<span class="status danger">budget</span> ${name} has a dollar cap, but its cost is not reported, so the ${esc(b.what)} was not run. `;
+  if (b.kind === 'tokens-unknown') return `<span class="status danger">budget</span> ${name} did not report token usage. Further calls to this vendor are blocked under its token cap; ${esc(b.what)} was not run. `;
   const unit = b.kind === 'usd' ? (n) => `$${(n || 0).toFixed(2)}` : (n) => `${k(n || 0)} tokens`;
   const figures = `${esc(unit(b.spent))} spent plus about ${esc(unit(b.projected))} projected, cap ${esc(unit(b.cap))}`;
   // a refused re-prompt fails one seat for one round; the debate goes on
@@ -866,6 +1018,10 @@ function budgetLine() {
 // connection to the server. Each says what happened and what happens next.
 function renderBanners() {
   const items = Object.values(S.down).map((x) => `<div class="banner danger"><span class="status danger">${esc(VENDOR_LABEL[x.vendor] || x.vendor)}${x.account ? ` (${esc(x.account)})` : ''} out</span> ${esc(x.message)} Its seats are skipped for the rest of this debate${S.verdict || S.status === 'done' ? '' : '; continue without them or stop'}.</div>`);
+  items.unshift(...S.initialNotes.map((note) => `<div class="human-note"><b>You said before round 0</b>${esc(note)}</div>`));
+  const unknown = rollup(S.rows).unknownAttempts;
+  if (unknown) items.push(`<div class="banner warn usage-warning"><span class="status warn">usage unknown</span> ${unknown} call${unknown === 1 ? ' did' : 's did'} not report usable token counts. Totals include reported figures only.</div>`);
+  if (S.transcriptWarning) items.unshift(`<div class="banner warn transcript-warning"><span class="status warn">record recovery</span> ${esc(S.transcriptWarning.message)}</div>`);
   if (S.chairmanFallback) items.push(`<div class="banner warn"><span class="status warn">chairman</span> ${esc(VENDOR_LABEL[S.chairmanFallback.from.vendor] || S.chairmanFallback.from.vendor)} could not write the verdict (${esc(S.chairmanFallback.reason)}), so ${esc(VENDOR_LABEL[S.chairmanFallback.to] || S.chairmanFallback.to)} wrote it at its default model.</div>`);
   if (S.connected === false && S.status !== 'done') items.unshift('<div class="banner warn"><span class="status warn">reconnecting</span> Lost the connection to the roundtable server. The debate keeps running there; this board catches up when it is back.</div>');
   $('banners').innerHTML = items.join('');
@@ -873,7 +1029,7 @@ function renderBanners() {
 
 function render() {
   $('rounds').innerHTML = S.rounds.map((r, i) => renderRound(i, r, i === S.rounds.length - 1)).join('');
-  renderUsage(); renderVerdict(); renderGate(); renderAccept(); renderBanners();
+  renderUsage(); renderVerdict(); renderGate(); renderAccept(); renderExportStatus(); renderBanners();
   $('sys').className = `status ${S.status === 'error' ? 'danger' : S.status === 'waiting' ? 'warn' : 'ok'}`;
   $('sys').textContent = S.status;
   $('st-round').textContent = S.rounds.length ? `round ${S.rounds.length - 1}` : '';
@@ -888,32 +1044,71 @@ function tick() {
 }
 
 // ---------- human bar ----------
-const post = (what, body = {}) => fetch(`/api/debates/${S.slug}/${what}`, { method: 'POST', headers: SEND, body: JSON.stringify(body) });
-function hold() { if (S.gate && S.deadline && !S.held) { S.held = true; S.deadline = null; post('hold'); render(); } }
+const post = (what, body = {}) => requestJson(`/api/debates/${S.slug}/${what}`, body);
+async function boardAction(action, body, onSuccess) {
+  if (S.actionPending) return;
+  const revision = viewRevision;
+  const focused = document.activeElement.id;
+  S.actionPending = action; S.actionError = null; render();
+  try {
+    const out = await post(action, body);
+    if (revision === viewRevision) onSuccess?.(out);
+  } catch (e) {
+    if (revision === viewRevision) S.actionError = { action, message: e.message };
+  } finally {
+    if (revision === viewRevision) {
+      S.actionPending = null; render();
+      const control = focused && $(focused);
+      if (document.activeElement === document.body && control && !control.disabled && control.getClientRects().length) control.focus({ preventScroll: true });
+    }
+  }
+}
+async function hold(ev) {
+  if (!S.gate || !S.deadline || S.held || S.holdPending || S.actionPending) return;
+  if (ev.target.closest('#continue, #stop') || ev.key === 'Enter' && ev.target.closest('#human-form')) return;
+  const gate = S.gate, revision = viewRevision;
+  S.holdPending = true;
+  try {
+    await post('hold');
+    if (revision === viewRevision && S.gate === gate) {
+      S.held = true; S.deadline = null;
+      if (S.actionError?.action === 'hold') S.actionError = null;
+    }
+  } catch (e) {
+    if (revision === viewRevision && S.gate === gate && !S.held) S.actionError = { action: 'hold', message: `Could not confirm that auto-continue paused. ${e.message}` };
+  } finally {
+    if (revision === viewRevision) { S.holdPending = false; renderGate(); }
+  }
+}
 document.addEventListener('click', hold, true);
 document.addEventListener('keydown', hold, true);
 
 $('human-form').addEventListener('submit', (ev) => {
   ev.preventDefault();
-  const message = $('human-msg').value.trim();
-  $('human-msg').value = '';
-  if (S.status === 'interrupted') post('resume', { message });
-  else if (/^\/stop\b/i.test(message)) post('stop', { message }); else post('continue', { message });
+  const action = S.status === 'interrupted' ? 'resume' : /^\/stop\b/i.test($('human-msg').value) ? 'stop' : 'continue';
+  sendHuman(action);
 });
-$('stop').addEventListener('click', () => { const message = $('human-msg').value.trim(); $('human-msg').value = ''; post('stop', { message }); });
+function sendHuman(action) {
+  const value = $('human-msg').value;
+  return boardAction(action, { message: value.trim() }, () => { if ($('human-msg').value === value) $('human-msg').value = ''; });
+}
+$('stop').addEventListener('click', () => sendHuman('stop'));
 
 // ---------- export ----------
 try { $('export-target').value = localStorage.getItem('roundtable.exportTarget') || ''; } catch {}
 // A verdict skipped (budget, wall clock), failed or never written: run the chairman alone.
 $('gate-status').addEventListener('click', async (ev) => {
   if (ev.target.id !== 'synthesize') return;
-  ev.target.disabled = true;
+  const revision = viewRevision;
   const pick = $('synth-chair').value;
   const seat = pick.startsWith('seat:') && S.seats.find((s) => s.id === pick.slice(5));
-  const chairman = seat ? { vendor: seat.vendor, endpoint: seat.endpoint, keyEnv: seat.keyEnv || undefined, model: seat.model } : { vendor: pick };
-  const res = await post('synthesize', { chairman });
-  if (!res.ok) { ev.target.disabled = false; ev.target.textContent = (await res.json()).error; }
+  const savedChair = S.configuredChairman || S.chairman;
+  const chosen = seat || (pick === savedChair?.vendor ? savedChair : { vendor: pick });
+  const chairman = Object.fromEntries(['vendor', 'endpoint', 'keyEnv', 'model', 'effort', 'account'].filter((key) => chosen[key] != null).map((key) => [key, chosen[key]]));
+  await boardAction('synthesize', { chairman });
+  if (revision === viewRevision) $('synthesize')?.focus({ preventScroll: true });
 });
+$('gate-status').addEventListener('change', (ev) => { if (ev.target.id === 'synth-chair') S.synthChoice = ev.target.value; });
 
 // The human's decision: the recommended option preselected, any option or none allowed.
 function renderAccept() {
@@ -925,26 +1120,33 @@ function renderAccept() {
   if (sel.dataset.html !== html) { sel.innerHTML = html; sel.dataset.html = html; delete sel.dataset.applied; }
   // follow the recommendation, then the acceptance, as they arrive (a replay sends them late);
   // never overwrite what the human is choosing
-  if (want && sel.dataset.applied !== want && document.activeElement !== sel) { sel.value = want; sel.dataset.applied = want; }
+  if (want && !S.acceptEdited && sel.dataset.applied !== want && document.activeElement !== sel) { sel.value = want; sel.dataset.applied = want; }
+  if (!S.acceptNoteEdited && S.accepted) $('accept-note').value = S.accepted.note || '';
   $('accept-form').hidden = S.status !== 'done'; // a finished debate, live or replayed, can be accepted
-  $('accept-status').textContent = S.accepted ? `accepted: ${S.accepted.option === 'none' ? 'none of these' : optionLabel(S.accepted.option, opts)}` : 'not yet accepted';
+  $('accept').disabled = !!S.actionPending;
+  $('accept-status').textContent = S.actionPending === 'accept' ? 'saving…' : S.actionError?.action === 'accept' ? S.actionError.message : S.accepted ? `accepted: ${S.accepted.option === 'none' ? 'none of these' : optionLabel(S.accepted.option, opts)}` : 'not yet accepted';
 }
+$('accept-option').addEventListener('change', () => { S.acceptEdited = true; });
+$('accept-note').addEventListener('input', () => { S.acceptNoteEdited = true; });
 $('accept-form').addEventListener('submit', async (ev) => {
   ev.preventDefault();
-  const res = await post('accept', { option: $('accept-option').value, note: $('accept-note').value.trim() });
-  if (!res.ok) $('accept-status').textContent = (await res.json()).error;
+  const body = { option: $('accept-option').value, note: $('accept-note').value.trim() };
+  await boardAction('accept', body, () => { S.accepted = body; });
 });
 
+function renderExportStatus() {
+  $('export').disabled = !!S.actionPending;
+  $('export-status').textContent = S.actionPending === 'export' ? 'writing…' : S.actionError?.action === 'export' ? `failed: ${S.actionError.message}` : S.exported ? `written: ${S.exported.path} (${S.exported.status}: ${S.exported.chosen})` : '';
+}
 $('export-form').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   const target = $('export-target').value.trim();
   try { localStorage.setItem('roundtable.exportTarget', target); } catch {}
-  $('export-status').textContent = 'writing…';
-  const res = await post('export', { target });
-  const out = await res.json();
-  $('export-status').textContent = res.ok ? `written: ${out.path} (${out.status}: ${out.chosen})` : `failed: ${out.error}`;
-  if (res.ok) { S.exported = out; S.exportError = null; renderGate(); }
+  await boardAction('export', { target }, (out) => { S.exported = out; S.exportError = null; });
 });
+
+// Reserve the actual bar height so the final cards remain scrollable above it at any width.
+new ResizeObserver(() => document.documentElement.style.setProperty('--board-bar-height', `${Math.ceil($('humanbar').getBoundingClientRect().height)}px`)).observe($('humanbar'));
 
 // ---------- theme ----------
 $('theme').addEventListener('click', () => {
@@ -956,7 +1158,18 @@ $('theme').addEventListener('click', () => {
 try { if (localStorage.getItem('roundtable.theme') === 'night') { document.documentElement.dataset.theme = 'night'; $('theme').textContent = 'Paper'; } } catch {}
 
 // ---------- boot ----------
-await setup();
-$('recent-list').addEventListener('click', (ev) => { if (ev.target.id === 'debates-more') { S.showAllDebates = !S.showAllDebates; loadRecent(); } });
-window.addEventListener('hashchange', route);
-route();
+$('start').disabled = true;
+try {
+  await setup();
+  $('recent-list').addEventListener('click', (ev) => {
+    if (ev.target.id === 'debates-more') { S.showAllDebates = !S.showAllDebates; loadRecent(); }
+    if (ev.target.id === 'retry-recent') loadRecent();
+  });
+  window.addEventListener('hashchange', route);
+  route();
+} catch (e) {
+  $('start').disabled = true;
+  $('setup-error').textContent = `Could not load setup. ${e.message} `;
+  const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'btn btn-small'; retry.textContent = 'Reload';
+  retry.addEventListener('click', () => location.reload()); $('setup-error').append(retry);
+}

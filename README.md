@@ -1,94 +1,87 @@
 # Roundtable
 
-A small local tool that runs a bounded debate between the coding agents you already pay for,
-Claude, Codex and Antigravity, on their subscriptions. You write the question; the agents argue
-in rounds, sceptical by default; you step in where it matters; a chairman writes the verdict;
-and the decision lands in your codebase as a plain markdown record your agents can read.
+Local decision reviews with Claude, Codex and Antigravity. Give each seat a perspective,
+compare blind positions and critique rounds, then accept or override the chairman's
+recommendation. Export the discussion and your decision as Markdown.
 
-No API key needed. No framework. No dependencies. Node 22 or newer.
+Uses your existing CLI logins. Node 22 or newer; no runtime dependencies. Optional
+OpenAI-compatible endpoints support local models and hosted APIs with separate billing.
 
-The CLIs are the main path. An OpenAI-compatible endpoint can also take a seat (Ollama or
-another local server, or a pay-per-token API such as DeepSeek or Moonshot); every card and
-every record says which kind a seat is, so a seat that bills per token is never mistaken for
-one on a plan. See `docs/workflow.md`, "An API endpoint as a seat".
+## Quick start
 
-## Start here
-
-With Node 22 or newer, no clone needed:
+Try the demo from a local checkout. It uses scripted replies and makes no model calls.
 
 ```bash
-npx @prplkane/roundtable fake     # the board with scripted seats, nothing spent
-npx @prplkane/roundtable          # the real board, opened in your browser
-npx @prplkane/roundtable doctor   # what this machine can seat
+git clone https://github.com/prplkane/roundtable.git
+cd roundtable
+npm test
+npm run fake -- --no-open
 ```
 
-From a clone:
+Open [localhost:4748](http://localhost:4748/). For a live review, install and log in to at
+least one supported CLI, then run:
 
 ```bash
-npm test          # runs without any CLI installed
-npm run doctor    # what this machine can seat, nothing spent
-npm run fake      # the board with scripted seats: http://localhost:4748
-npm start         # the real board: http://localhost:4747, opened in your browser
+npm run doctor
+npm start -- --no-open
 ```
 
-Both board commands take `--port <n>` and `--no-open`.
+Open [localhost:4747](http://localhost:4747/). The header distinguishes **Demo** from **Live**.
+First use starts with two seats and one critique round; both seats can use the same vendor.
+See the [user guide](docs/workflow.md) for provider setup and a complete walkthrough.
 
-**[docs/workflow.md](docs/workflow.md)** is the user guide: installing and logging in to each
-vendor, opening the board, writing field notes, seating agents, taking part in a debate,
-keeping cost low, exporting decisions into a codebase, second accounts, headless use, and
-troubleshooting.
+Without a checkout, use `npx @prplkane/roundtable fake` or `npx @prplkane/roundtable`.
+These commands use the published npm version, which may lag the repository. They accept
+`--port <n>` and `--no-open`; checkout commands use the `PORT` environment variable.
 
-## What it does
+## The review workflow
 
-- **Seats are independent agents.** Any number per vendor, each with its own session, its own
-  empty working folder, a unique lens, a mood (`grill` by default), a model and a thinking
-  level. Seats see each other only by lens, never by vendor.
-- **Rounds with rules.** A blind first round, critique rounds with a fixed reply format, one
-  retry for a broken reply, and stops for consensus, all-pass, no movement, round limit, wall
-  clock, budget, or you.
-- **You are a participant, not a courier.** The board always waits after the blind round, stops
-  for any question a seat asks you, and otherwise auto-continues unless you touch it.
-- **Cost you can see.** Per vendor account: the live remaining window where the vendor reports
-  one, the projected draw of each seat for this debate, and caps that stop a debate before it
-  crosses them. Rounds are stateless by default, so cost per round stays flat.
-- **Decisions you can keep.** `npm run export` writes a decision record and an index into any
-  folder of a codebase.
-- **No tools, no edits.** Claude seats run with no tool at all (no built-in tool, no MCP
-  server). Codex seats run with the sandbox read-only, no MCP server, no web search and no
-  tool-bearing feature, shell included. Antigravity seats run in plan mode, which denies what
-  they request; its MCP servers cannot be switched off by flag. Any tool use a CLI still reports
-  fails the seat for the round, and the chairman is checked the same way. Details per CLI in
-  `SECURITY.md`.
+- **Independent positions.** Two to eight seats, each with its own lens, mood, model and
+  effort. The first round is blind; later rounds compare the replies.
+- **Human input.** The board waits after the first round and when a seat asks a question.
+  Add a note, continue, or stop. The chairman recommends; you make the final choice.
+- **Bounded execution.** Round and time limits, usage estimates, and budget checks before
+  each provider attempt, including retries. Missing token usage blocks further calls to
+  that vendor when a token cap is set. Running calls can exceed estimates.
+- **Recoverable records.** Reopen saved reviews after a restart. Interrupted final writes
+  retain an exact backup before recovery; corrupt completed records require repair.
+- **Markdown exports.** Keep the recommendation, dissent, human decision, notes and reported
+  usage together in a decision record, with an index for your codebase.
+
+## Data and security
+
+The server listens on loopback. The page loads locally; live reviews send your notes and
+relevant replies to the selected providers. Stateless requests do not control provider
+retention. CLI tool restrictions depend on the installed CLI and are not an OS sandbox.
+
+Live records default to `debates/` in the installation folder; demo records use
+`debates-fake/`. Set `ROUNDTABLE_DEBATES_DIR` to keep a stable data location. **Local data
+and backups** on the setup screen shows the active folder. Stop the server before copying
+that entire folder for backup. Records and browser preferences may contain private context.
+
+Read [SECURITY.md](SECURITY.md) for credentials, billing, endpoint restrictions and the local
+HTTP boundary. Budget checks use estimates and reported usage; they are not guaranteed
+billing ceilings.
 
 ## Commands
 
-| command | does |
-|---|---|
-| `npm start` | serves the board on port 4747 (`PORT` to change) |
-| `npm run fake` | the same board with scripted seats on port 4748, no tokens |
-| `npm run doctor` | per vendor: binary, version, models, efforts, live quota; `-- --live` adds one tiny call each; `-- --profile <name>` prints how to log a second account in |
-| `npm run debate -- --token <hex> --rounds 1 < debate.json` | one debate headless against a running server (the token is on its startup line) |
-| `npm run export -- <debate> <folder>` | writes the decision record and refreshes the folder's index |
-| `npm test` | unit and integration tests, no CLI needed |
+| Command | Purpose |
+| --- | --- |
+| `npm start` | Live board on port 4747; opens a browser from an interactive terminal |
+| `npm run fake` | Scripted demo on port 4748 |
+| `npm run doctor` | Inspect installed providers, versions and available status without model calls |
+| `npm run doctor -- --live` | Add one small model call per CLI provider |
+| `npm run debate -- --token <hex> --rounds 1 < debate.json` | Run a review against an existing server without the board |
+| `npm run export -- <debate> <folder>` | Export a decision record and update its index |
+| `npm test` | Offline unit and integration tests; no vendor CLI or model call |
 
-## Documents
+## Documentation
 
-| file | for |
-|---|---|
-| [docs/workflow.md](docs/workflow.md) | using it, step by step |
-| [SECURITY.md](SECURITY.md) | what it touches on your machine, credentials, billing, reporting a problem |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | how changes are made and merged, including by AI agents |
-| [CHANGELOG.md](CHANGELOG.md) | what changed per version |
-
-## Layout
-
-- `src/adapters/` one file per CLI, plus `config.js`, the table of binaries, flags and JSON paths
-- `src/engine.js` the round engine; `src/prompts.js` everything a seat is told; `src/contract.js` the reply format
-- `src/server.js` the local server, gates, replay and resume; `src/ui/` the board
-- `src/estimate.js` projection and calibration; `src/export.js` decision records; `src/doctor.js` the doctor
-- `scripts/` the headless debate and export commands; `test/` unit and integration tests
-- `debates/` every debate's transcript, field notes and verdict, never committed
+- [User guide](docs/workflow.md): setup, limits, backup, recovery, profiles and troubleshooting
+- [Security](SECURITY.md): data handling, restrictions and private vulnerability reporting
+- [Contributing](CONTRIBUTING.md): development, tests and review requirements
+- [Changelog](CHANGELOG.md): changes by version
 
 ## Licence
 
-MIT, see [LICENSE](LICENSE).
+[MIT](LICENSE).

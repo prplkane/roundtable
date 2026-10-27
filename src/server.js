@@ -8,7 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { adapters, ADAPTERS, quotaReaders, poolsByAccount } from './adapters/index.js';
 import { profileHome, killAll, liveChildren, resolveBinary, runProcess, cleanEnv } from './adapters/spawn.js';
-import { checkPool, STATUS, endpointLamp } from './preflight.js';
+import { checkPool, STATUS, endpointLamp, createPreflightCache } from './preflight.js';
 import { retired } from './adapters/models.js';
 import { vendorCatalogue } from './adapters/catalogue.js';
 import { createDebate, DEFAULTS } from './engine.js';
@@ -35,7 +35,7 @@ const PORT = Number(process.env.PORT) || (FAKE ? 4748 : 4747);
 const TOKEN = randomBytes(16).toString('hex');
 const HOSTS = new Set([`localhost:${PORT}`, `127.0.0.1:${PORT}`]);
 const ORIGINS = new Set([...HOSTS].map((h) => `http://${h}`));
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.md': 'text/plain; charset=utf-8' };
 
 const debates = new Map(); // slug -> live debate record
 
@@ -89,16 +89,18 @@ function settleRound(d, r) {
   // Tokens per vendor, and per vendor:model when every seat of that vendor in the round ran one
   // model (a window delta cannot be split between two models in the same round).
   // keyed by pool (seats.poolKey): two profiles of one vendor draw from two windows
-  const tokens = {}, models = {};
+  const tokens = {}, models = {}, unknown = new Set();
   for (const e of d.events) {
-    if (e.type !== 'attempt' || e.round !== r || !e.usage || e.kind === 'verdict') continue;
+    if (e.type !== 'attempt' || e.round !== r || e.kind === 'verdict') continue;
     const pool = keyOf(e.seat.vendor, e.seat.account);
+    if (!e.usage) { unknown.add(pool); continue; }
     const t = (e.usage.input || 0) + (e.usage.cacheRead || 0) + (e.usage.cacheWrite || 0) + (e.usage.output || 0);
     tokens[pool] = (tokens[pool] || 0) + t;
     (models[pool] ??= new Set()).add(e.seat.model || 'default');
   }
   let changed = false;
   for (const [pool, t] of Object.entries(tokens)) {
+    if (unknown.has(pool)) continue; // a partial token count cannot calibrate the window's move
     const deltas = windowDeltas(prev[pool], next[pool]);
     if (!deltas.length) continue;
     calibration = updateCalibration(calibration, pool, deltas, t);
@@ -144,9 +146,11 @@ function loadDebate(slug) {
   if (!/^[a-z0-9-]+$/.test(slug)) return null;
   const store = openDebateDir(DEBATES_DIR, slug, { create: false });
   if (!store) return null;
-  const rebuilt = rebuildDebate(store.readTranscript());
+  const warnings = [];
+  const rebuilt = rebuildDebate(store.readTranscript({ onWarning: (w) => warnings.push(w) }));
   if (!rebuilt) return null;
-  const d = { slug, gen: Date.now(), events: [...rebuilt.events], clients: new Set(), pending: null, timer: null, stopQueued: false, store, qAtRound: {}, settled: new Set(), rebuilt, interrupted: !rebuilt.finished, finished: rebuilt.finished };
+  rebuilt.events.splice(1 + rebuilt.recoveryWarnings.length, 0, ...warnings.map((w) => ({ ...w, type: 'transcript-warning' })));
+  const d = { slug, gen: Date.now(), events: [...rebuilt.events], clients: new Set(), pending: null, timer: null, store, qAtRound: {}, settled: new Set(), rebuilt, interrupted: !rebuilt.finished, finished: rebuilt.finished };
   for (const [vendor, q] of Object.entries(quota)) push(d, { type: 'quota', vendor, quota: q });
   for (const [key, windows] of Object.entries(calibration)) push(d, { type: 'calibration', vendor: key.split(':')[0], key, windows });
   for (const [vendor, pool] of Object.entries(pools)) push(d, { type: 'pool', vendor, pool });
@@ -157,14 +161,21 @@ function loadDebate(slug) {
 
 // Continue an interrupted debate: the engine is recreated from the field-notes row (seats with
 // their recorded session ids, used when memory is 'resume') and runs from the first incomplete
-// round. An optional message becomes the human's note on the last complete round.
+// round. A message belongs to the last complete round, or precedes round zero if none completed.
 function resumeDebate(d, body = {}) {
   if (!d.interrupted) throw new Error(d.finished ? 'This debate is finished.' : 'This debate is running.');
+  prepareTranscript(d);
   const rb = d.rebuilt;
   const message = String(body.message || '').trim();
-  if (message && rb.nextRound > 0) { (rb.humanNotes[rb.nextRound - 1] ??= []).push(message); d.store.append({ type: 'human', round: rb.nextRound - 1, text: message }); push(d, { type: 'human', round: rb.nextRound - 1, text: message }); }
+  if (message) {
+    const round = rb.nextRound - 1;
+    const row = { type: 'human', round, text: message };
+    d.store.append(row);
+    (round < 0 ? rb.initialNotes : (rb.humanNotes[round] ??= [])).push(message);
+    push(d, row);
+  }
   d.interrupted = false;
-  attachEngine(d, { fieldNotes: rb.fieldNotes, seats: rb.seats, chairman: rb.chairman, options: { ...DEFAULTS, ...(rb.options || {}) }, resume: { rounds: rb.rounds, humanNotes: rb.humanNotes, ledger: rb.ledger, deadlineAt: rb.deadlineAt } });
+  attachEngine(d, { fieldNotes: rb.fieldNotes, seats: rb.seats, chairman: rb.chairman, options: { ...DEFAULTS, ...(rb.options || {}) }, resume: { rounds: rb.rounds, humanNotes: rb.humanNotes, initialNotes: rb.initialNotes, ledger: rb.ledger, deadlineAt: rb.deadlineAt } });
   console.log(`[${d.slug}] resumed from round ${rb.nextRound}`);
 }
 
@@ -174,6 +185,7 @@ function acceptDecision(d, body) {
   if (!d.finished) throw new Error('Accept after the debate has finished.');
   const rb = rebuildDebate(d.store.readTranscript());
   const { option, note } = validateAccept(body, rb.fieldNotes.options);
+  prepareTranscript(d);
   const row = { type: 'accepted', option, note, t: new Date().toISOString() };
   d.store.append(row);
   push(d, row);
@@ -182,8 +194,16 @@ function acceptDecision(d, body) {
 }
 
 // Pre-flight for the seat lamps: per pool key, the binary, the CLI's own login status and the
-// quota, with no model call. Cached a minute per pool (a quota read spawns the codex app-server).
-const preflightCache = new Map(); // key -> { at, result }
+// quota, with no model call. GET reads snapshots only. Authenticated refreshes share bounded
+// work and cache results for a minute (a quota read spawns the codex app-server).
+const preflightCache = createPreflightCache({ check: (key) => {
+  const vendor = poolVendor(key), account = poolAccount(key);
+  return checkPool({ vendor, account, key }, {
+    resolve: (v) => (FAKE ? true : resolveBinary(ADAPTERS[v].binary, ADAPTERS[v].npmBin)),
+    status: loginStatus,
+    quota: async (k) => { if (readers[vendor]) await refreshQuota(k); return quota[k] || null; },
+  });
+} });
 async function loginStatus(vendor, account) {
   if (FAKE) return true;
   const s = STATUS[vendor];
@@ -198,24 +218,16 @@ async function loginStatus(vendor, account) {
 // endpoints: { [key]: { url, keyEnv } } for API pools, from the board (POST only: it names a
 // variable of this process, so the launch token is required). No request leaves this server
 // for an endpoint pool (preflight.js endpointLamp).
-async function preflight(keys, fresh = false, endpoints = {}) {
+async function preflight(keys, { refresh = false, fresh = false, endpoints = {} } = {}) {
   return Promise.all(keys.map(async (key) => {
     const vendor = poolVendor(key), account = poolAccount(key);
-    if (!ADAPTERS[vendor]) return { key, state: 'danger', kind: 'missing', note: `unknown vendor ${vendor}` };
+    if (!Object.hasOwn(ADAPTERS, vendor)) return { key, state: 'danger', kind: 'missing', note: `unknown vendor ${vendor}` };
     if (ADAPTERS[vendor].kind === 'api') {
-      const ep = endpoints[key] || {};
+      const ep = refresh ? endpoints[key] || {} : {};
       const url = typeof ep.url === 'string' ? ep.url.slice(0, 500) : '', keyEnv = typeof ep.keyEnv === 'string' ? ep.keyEnv.slice(0, 64) : null;
       return { key, vendor, account, installed: true, loggedIn: null, plan: null, quota: null, ...endpointLamp({ url, keyEnv: keyEnv || null, keySet: !!(keyEnv && process.env[keyEnv]) }) };
     }
-    const hit = preflightCache.get(key);
-    if (!fresh && hit && Date.now() - hit.at < 60_000) return hit.result;
-    const result = await checkPool({ vendor, account, key }, {
-      resolve: (v) => (FAKE ? true : resolveBinary(ADAPTERS[v].binary, ADAPTERS[v].npmBin)),
-      status: loginStatus,
-      quota: async (k) => { if (readers[vendor]) await refreshQuota(k); return quota[k] || null; },
-    });
-    preflightCache.set(key, { at: Date.now(), result });
-    return result;
+    return refresh ? preflightCache.refresh(key, { fresh }) : preflightCache.read(key);
   }));
 }
 
@@ -229,7 +241,8 @@ function listDebates(limit = 50) {
   const out = [];
   for (const { slug, t } of withTime.slice(0, limit)) {
     try {
-      const rows = openDebateDir(DEBATES_DIR, slug, { create: false }).readTranscript();
+      const warnings = [];
+      const rows = openDebateDir(DEBATES_DIR, slug, { create: false }).readTranscript({ onWarning: (w) => warnings.push(w) });
       const rb = rebuildDebate(rows);
       if (!rb) continue;
       const { meta } = decisionRecord(rows, slug);
@@ -237,9 +250,15 @@ function listDebates(limit = 50) {
       const state = live && !live.finished && !live.interrupted ? 'running' : rb.finished ? 'finished' : 'interrupted';
       const u = rollup(normaliseRows(rows)).total;
       out.push({ slug, decision: rb.fieldNotes.decision, date: slug.slice(0, 10), updated: t, state, status: state === 'finished' ? meta.status : state,
+        warning: (warnings.at(-1) || rb.recoveryWarnings.at(-1))?.message || null,
         chosen: meta.chosen, recommended: meta.recommended, accepted: meta.accepted, seats: rb.seats.length, rounds: rb.rounds.length,
-        tokens: u.input + u.cacheRead + u.cacheWrite + u.output, cost: u.cost, costPartial: !!(u.costCoverage && u.costCoverage.reported < u.costCoverage.of) });
-    } catch (e) { console.warn(`[list] ${slug}: ${e.message}`); }
+        tokens: u.tokenCoverage?.reported === 0 ? null : u.input + u.cacheRead + u.cacheWrite + u.output,
+        tokensPartial: !!(u.tokenCoverage && u.tokenCoverage.reported < u.tokenCoverage.of),
+        cost: u.cost, costPartial: !!(u.costCoverage && u.costCoverage.reported < u.costCoverage.of) });
+    } catch (e) {
+      console.warn(`[list] ${slug}: ${e.message}`);
+      out.push({ slug, decision: slug, date: slug.slice(0, 10), updated: t, state: 'corrupt', status: 'corrupt', warning: e.message });
+    }
   }
   return out;
 }
@@ -261,9 +280,10 @@ function synthesizeDebate(d, body = {}) {
     chairman = normaliseChairman(body.chairman, { vendors: ADAPTERS, efforts: effortsByVendor() });
     if (!chairman) throw new Error('chairman vendor: one of ' + Object.keys(ADAPTERS).join(', '));
   }
+  prepareTranscript(d);
   d.synthesizing = true;
   attachEngine(d, { fieldNotes: rb.fieldNotes, seats: rb.seats, chairman, options: { ...DEFAULTS, ...(rb.options || {}) }, synthesisOnly: true,
-    resume: { rounds: rb.rounds, humanNotes: rb.humanNotes, ledger: rb.ledger, stopReason: rb.stopReason } });
+    resume: { rounds: rb.rounds, humanNotes: rb.humanNotes, initialNotes: rb.initialNotes, ledger: rb.ledger, stopReason: rb.stopReason } });
   console.log(`[${d.slug}] writing the verdict`);
 }
 
@@ -323,7 +343,7 @@ function startDebate(raw) {
   const slug = slugFor(fieldNotes.decision, DEBATES_DIR);
   const store = openDebateDir(DEBATES_DIR, slug);
   const options = { ...DEFAULTS, ...body.options };
-  const d = { slug, gen: Date.now(), events: [], clients: new Set(), pending: null, timer: null, stopQueued: false, store, qAtRound: {}, settled: new Set(), interrupted: false, finished: false };
+  const d = { slug, gen: Date.now(), events: [], clients: new Set(), pending: null, timer: null, store, qAtRound: {}, settled: new Set(), interrupted: false, finished: false };
   debates.set(slug, d);
   for (const [vendor, q] of Object.entries(quota)) push(d, { type: 'quota', vendor, quota: q }); // replayed to late boards
   for (const [key, windows] of Object.entries(calibration)) push(d, { type: 'calibration', vendor: key.split(':')[0], key, windows });
@@ -335,11 +355,20 @@ function startDebate(raw) {
   return slug;
 }
 
+// Finish any pending transcript repair before a write, then tell connected boards where the
+// exact original was saved. Read-only history and export do not repair the source transcript.
+function prepareTranscript(d) {
+  const recovery = d.store.prepareAppend();
+  if (recovery) push(d, { ...recovery, type: 'transcript-warning' });
+}
+
 // Write the decision record into a codebase: on request from the board or the script, or the
 // moment the verdict lands when the field notes name an "Export to" directory.
 function exportRecord(d, target) {
   const abs = validateTarget(target, { forbid: [DEBATES_DIR] });
-  const out = exportDebate(d.store.readTranscript(), d.slug, abs, { forbid: [DEBATES_DIR] });
+  const warnings = [];
+  const rows = d.store.readTranscript({ onWarning: (w) => warnings.push(w) });
+  const out = exportDebate(rows, d.slug, abs, { forbid: [DEBATES_DIR], warnings });
   push(d, { type: 'exported', path: out.path, indexPath: out.indexPath, status: out.meta.status, chosen: out.meta.chosen });
   console.log(`[${d.slug}] exported to ${out.path}`);
   return out;
@@ -371,7 +400,6 @@ function attachEngine(d, { fieldNotes, seats, chairman, options, resume = null, 
 
   const gate = (info) => new Promise((resolve) => {
     d.pending = { resolve, info };
-    if (d.stopQueued) { d.stopQueued = false; answerGate(d, { action: 'stop' }); return; }
     if (info.mode === 'countdown') {
       const deadline = Date.now() + info.autoContinueMs;
       push(d, { type: 'countdown', deadline });
@@ -448,11 +476,13 @@ const server = http.createServer(async (req, res) => {
       return res.end(html);
     }
     if (req.method === 'GET' && p.startsWith('/ui/')) return serveFile(res, path.join(UI, path.normalize(p.slice(4))));
+    if (req.method === 'GET' && p === '/docs/workflow.md') return serveFile(res, path.join(ROOT, 'docs', 'workflow.md'));
     if (req.method === 'GET' && p.startsWith('/src/') && p.endsWith('.js')) return serveFile(res, path.join(ROOT, path.normalize(p)));
 
     if (req.method === 'GET' && p === '/api/seats') {
       const cat = catalogue || await catalogueReady;
       return json(res, 200, {
+        runtime: { mode: FAKE ? 'demo' : 'live', dataDir: DEBATES_DIR },
         vendors: Object.entries(ADAPTERS).map(([vendor, a]) => ({
           vendor, kind: a.kind, label: a.label, colour: a.colour, usageUrl: a.usageUrl || null, quota: quota[vendor] || null, profiles: poolsByAccount(a),
           pool: a.pool, catalogue: cat[vendor],
@@ -469,12 +499,15 @@ const server = http.createServer(async (req, res) => {
     if (pm && req.method === 'POST') return json(res, 200, { pool: setPool(pm[1], await readBody(req)) });
     if (req.method === 'GET' && p === '/api/debates') return json(res, 200, { debates: listDebates() });
     if (p === '/api/preflight' && (req.method === 'GET' || req.method === 'POST')) {
-      // GET: pools=a,b (CLI pools). POST {pools, endpoints, fresh}: the same plus API pools.
-      const body = req.method === 'POST' ? await readBody(req) : { pools: String(url.searchParams.get('pools') || '').split(','), fresh: url.searchParams.has('fresh') };
+      // GET never executes, even with ?fresh. POST {pools, endpoints, fresh} refreshes under
+      // the launch token; forced refresh still shares in-flight work and obeys the cooldown.
+      const refresh = req.method === 'POST';
+      const body = refresh ? await readBody(req) : { pools: String(url.searchParams.get('pools') || '').split(',') };
+      if (body.fresh != null && typeof body.fresh !== 'boolean') throw new Error('fresh must be a boolean.');
       const list = Array.isArray(body.pools) ? body.pools : String(body.pools || '').split(',');
       const keys = [...new Set(list.map((k) => String(k).trim()).filter((k) => /^[a-z]+(@[a-z0-9][a-z0-9_.-]{0,39})?$/i.test(k)))].slice(0, 12);
       const endpoints = req.method === 'POST' && body.endpoints && typeof body.endpoints === 'object' ? body.endpoints : {};
-      return json(res, 200, { pools: await preflight(keys, !!body.fresh, endpoints) });
+      return json(res, 200, { pools: await preflight(keys, { refresh, fresh: body.fresh === true, endpoints }) });
     }
     if (req.method === 'POST' && p === '/api/debates') {
       const body = await readBody(req);
@@ -482,7 +515,13 @@ const server = http.createServer(async (req, res) => {
     }
     const m = p.match(/^\/api\/debates\/([^/]+)\/(events|continue|stop|hold|resume|export|synthesize|accept)$/);
     if (m) {
-      const d = debates.get(m[1]) || loadDebate(m[1]);
+      let d;
+      try { d = debates.get(m[1]) || loadDebate(m[1]); } catch (e) {
+        if (m[2] !== 'events' || e.code !== 'TRANSCRIPT_CORRUPT') throw e;
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+        res.end(`data: ${JSON.stringify({ type: 'error', message: e.message, fatal: true })}\n\n`);
+        return;
+      }
       if (!d) return json(res, 404, { error: 'No debate with that slug on this server or on disk. Start a new one.' });
       if (m[2] === 'events') {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
@@ -503,10 +542,10 @@ const server = http.createServer(async (req, res) => {
       if (d.finished || d.interrupted) return json(res, 400, { error: d.finished ? 'This debate is finished; it replays read-only.' : 'This debate was interrupted; resume it first.' });
       if (m[2] === 'continue') return json(res, 200, { ok: answerGate(d, { action: 'continue', message: body.message || '' }) });
       if (m[2] === 'stop') {
-        // At a gate the answer is the stop. Mid-round the seats' CLI children are killed (they
-        // fail for the round), the round closes at once and its gate takes the queued stop.
+        // At a gate the answer is the stop. Mid-call, save its note immediately and stop at
+        // the round boundary even if that round ends without a gate. Kill owned CLI children.
         if (!answerGate(d, { action: 'stop', message: body.message || '' })) {
-          d.stopQueued = true;
+          d.debate.requestStop(body.message || '');
           const killed = killAll(d.slug);
           push(d, { type: 'stop-queued', killed });
           if (killed) console.log(`[${d.slug}] stop: killed ${killed} CLI process${killed === 1 ? '' : 'es'}`);
@@ -537,6 +576,7 @@ server.listen(PORT, '127.0.0.1', () => {
   const open = process.stdout.isTTY && !process.argv.includes('--no-open') && process.env.ROUNDTABLE_NO_OPEN !== '1' && !process.env.CI;
   const opened = open && openBrowser(url);
   console.log(`roundtable${FAKE ? ' (fake seats)' : ''}: ${url}  token ${TOKEN}`);
+  console.log(`mode: ${FAKE ? 'demo (scripted replies and usage)' : 'live (configured providers)'}; data: ${DEBATES_DIR}`);
   if (opened) console.log('the board is open in your browser; Ctrl+C here stops the server and every CLI it started');
 });
 

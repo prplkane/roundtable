@@ -62,7 +62,7 @@ const STOPPED = new Set(['human', 'wall-clock', 'budget', 'all-failed', 'seats-d
 const yaml = (v) => (typeof v === 'string' && /[:#"'\n]|^\s|\s$/.test(v) ? JSON.stringify(v) : String(v));
 const k = (n) => (n || 0).toLocaleString('en-US');
 
-export function decisionRecord(rows, slug) {
+export function decisionRecord(rows, slug, { warnings = [] } = {}) {
   rows = normaliseRows(rows);
   const rb = rebuildDebate(rows);
   if (!rb) throw new Error('No field-notes row: nothing to export.');
@@ -101,6 +101,7 @@ export function decisionRecord(rows, slug) {
   const recommended = chosen;
   const status = accepted ? 'accepted' : failedVerdict ? 'no verdict' : !rb.finished || !verdictRow || verdictRow.skipped || STOPPED.has(rb.stopReason) ? 'stopped' : chosen === 'no consensus' || chosen === 'no pick' ? 'split' : 'recommended';
   const usage = rollup(rows);
+  const recoveryMessages = [...new Set([...rb.recoveryWarnings, ...warnings].map((w) => w.message).filter(Boolean))];
 
   // where the seat ran is part of the record: a CLI on a subscription, or an API endpoint by URL
   const where = (s) => (s.endpoint ? `API ${s.endpoint}` : 'CLI');
@@ -143,17 +144,20 @@ export function decisionRecord(rows, slug) {
   const tally = rb.rounds.length
     ? [`| seat | ${rb.rounds.map((_, i) => `round ${i}`).join(' | ')} | final |`, `|---|${rb.rounds.map(() => '---').join('|')}|---|`, ...tallyRows].join('\n')
     : '';
-  const humanNotes = rb.humanNotes.map((ns, i) => (ns?.length ? `### After round ${i}\n\n${ns.join('\n\n')}` : null)).filter(Boolean).join('\n\n');
+  const humanNotes = [rb.initialNotes?.length ? `### Before round 0\n\n${rb.initialNotes.join('\n\n')}` : null,
+    ...rb.humanNotes.map((ns, i) => (ns?.length ? `### After round ${i}\n\n${ns.join('\n\n')}` : null))].filter(Boolean).join('\n\n');
   const costCell = (u) => (u.cost == null ? 'not reported' : `$${u.cost.toFixed(2)}${u.costCoverage && u.costCoverage.reported < u.costCoverage.of ? ` (partial: ${u.costCoverage.reported} of ${u.costCoverage.of} calls report a cost)` : ''}`);
+  const tokens = (n, u) => u.tokenCoverage?.reported === 0 ? 'unknown'
+    : `${k(n)}${u.tokenCoverage && u.tokenCoverage.reported < u.tokenCoverage.of ? ' (partial)' : ''}`;
   const usageRows = seats.map((s) => {
     const u = usage.bySeat[s.id ?? `${s.vendor}:${s.lens}`]?.usage;
-    return u ? `| ${s.label || s.vendor} · ${s.lens} | ${k(u.input)} | ${k(u.cacheRead + u.cacheWrite)} | ${k(u.output)} | ${u.cost == null ? 'not reported' : `$${u.cost.toFixed(2)}`} |` : null;
+    return u ? `| ${s.label || s.vendor} · ${s.lens} | ${tokens(u.input, u)} | ${tokens(u.cacheRead + u.cacheWrite, u)} | ${tokens(u.output, u)} | ${costCell(u)} |` : null;
   }).filter(Boolean);
   const ch = usage.bySeat.chairman?.usage;
-  if (ch) usageRows.push(`| chairman (${rb.chairman?.vendor || '?'}) | ${k(ch.input)} | ${k(ch.cacheRead + ch.cacheWrite)} | ${k(ch.output)} | ${ch.cost == null ? 'not reported' : `$${ch.cost.toFixed(2)}`} |`);
+  if (ch) usageRows.push(`| chairman (${rb.chairman?.vendor || '?'}) | ${tokens(ch.input, ch)} | ${tokens(ch.cacheRead + ch.cacheWrite, ch)} | ${tokens(ch.output, ch)} | ${costCell(ch)} |`);
   const t = usage.total;
   const usageTable = usageRows.length
-    ? ['| seat | input | cache | output | cost |', '|---|---|---|---|---|', ...usageRows, `| **debate** | ${k(t.input)} | ${k(t.cacheRead + t.cacheWrite)} | ${k(t.output)} | ${costCell(t)} |`].join('\n')
+    ? ['| seat | input | cache | output | cost |', '|---|---|---|---|---|', ...usageRows, `| **debate** | ${tokens(t.input, t)} | ${tokens(t.cacheRead + t.cacheWrite, t)} | ${tokens(t.output, t)} | ${costCell(t)} |`].join('\n')
     : '';
   // a grammar line names an id: show its label in its place
   const recText = v.parsed ? v.RECOMMENDATION.replace(/^\s*(opt-\d+)\b\.?/, (m, id) => `**${optionLabel(id, options)}** (${id})`) : '';
@@ -169,6 +173,7 @@ export function decisionRecord(rows, slug) {
       : `Recommended by a roundtable of ${seats.length} seats on ${date}: **${recommended}** (${status}, stopped because: ${rb.stopReason || 'not stopped'}). Not yet accepted by a human.`,
     ...(acceptedRow?.note ? ['', `> ${String(acceptedRow.note).replace(/\r?\n/g, ' ')}`] : []),
     '',
+    ...(recoveryMessages.length ? section('Record recovery', recoveryMessages.join('\n\n')) : []),
     ...section('Question', `${fn.decision}\n\nOptions:\n${options.map((o) => `- ${o}`).join('\n')}`),
     ...section('Field notes', notesBody),
     ...section('Tally', [tally, tallyCount].filter(Boolean).join('\n\n')),
@@ -178,7 +183,7 @@ export function decisionRecord(rows, slug) {
     ...section('Kill criteria', list(v.KILL_CRITERIA)),
     ...section('Open questions', list(v.OPEN_QUESTIONS)),
     ...section('Human notes', humanNotes),
-    ...section('Usage', usageTable),
+    ...section('Usage', [usageTable, usage.unknownAttempts ? `${usage.unknownAttempts} call(s) did not report usable token counts. Totals include reported figures only; unknown usage is not zero.` : ''].filter(Boolean).join('\n\n')),
     `_Exported by roundtable from debates/${slug}/transcript.jsonl._`,
     '',
   ].join('\n');
@@ -259,7 +264,7 @@ function writeAtomic(file, text) {
 export function exportDebate(rows, slug, target, opts) {
   const file = recordPath(target, slug, opts);
   if (existsSync(file) && !ownsRecord(readFileSync(file, 'utf8'), slug)) throw new Error(`Refusing to replace ${file}: it was not written by roundtable for this debate.`);
-  const { markdown, meta } = decisionRecord(rows, slug);
+  const { markdown, meta } = decisionRecord(rows, slug, opts);
   let indexPath = null, indexText = null;
   for (const name of ['README.md', 'DECISIONS.md']) {
     const p = path.join(path.dirname(file), name);

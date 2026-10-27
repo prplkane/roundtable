@@ -21,21 +21,20 @@ const POOL_FATAL = new Set(['quota', 'auth', 'missing']);
 
 
 export const DEFAULTS = {
-  critiqueRounds: 3,       // rounds after round 0
+  critiqueRounds: 1,       // rounds after round 0; deeper reviews are an explicit choice
   wallClockMs: 30 * 60_000,
   callTimeoutMs: 5 * 60_000,
   autoContinueMs: 60_000,
   // 'stateless': every round is a fresh call whose prompt carries what the seat needs (its own
-  // last reply, the others', the note), so input tokens stay flat round over round. 'resume':
-  // the seat's CLI session is resumed each round and the whole thread is re-sent (34k to 117k
-  // input over four rounds for one Codex seat in the ninth real run).
+  // last reply, the others', the note). This avoids resending the full conversation; token use
+  // still varies. 'resume': the CLI session is resumed, so conversation context can grow.
   memory: 'stateless',
   // Roundtable is for thinking, not doing: a reply that used tools or ran commands is a contract
   // violation (one re-prompt that says so, then the seat fails for the round).
   strictTools: true,
-  // { [vendor]: { tokens?: number, usd?: number } }: before each round (and the verdict) the
-  // projection for that call plus the spend so far is compared with the cap; crossing it stops
-  // the debate with reason `budget` instead of running the call. Empty: no cap.
+  // { [vendor]: { tokens?: number, usd?: number } }: admit each round and every call attempt,
+  // retries included, against measured spend plus in-flight reservations and the next projection.
+  // A refused call never reaches the runner; a refused round stops the debate. Empty: no cap.
   budget: {},
   // the wait before the one retry a network failure gets (internal; not settable from the API)
   networkRetryMs: 2000,
@@ -55,7 +54,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
   const opts = { ...DEFAULTS, ...options };
   const maxRound = opts.critiqueRounds;
   const state = {
-    status: 'idle', round: -1, rounds: [], humanNotes: [], stopReason: null, verdict: null,
+    status: 'idle', round: -1, rounds: [], humanNotes: [], initialNotes: [...(resume?.initialNotes || [])], stopReason: null, verdict: null,
     down: {}, // vendor@account -> { kind, message, resetsAt }: a login that cannot take calls this debate
     seats: seats.map((s, i) => ({ ...s, id: s.id || `seat-${i}`, index: i, sessionId: (resume && s.sessionId) || null, mood: s.mood || { preset: 'grill' } })),
     chairman: chairman || { vendor: seats[0].vendor },
@@ -63,6 +62,20 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
   };
   const fire = (type, payload = {}) => emit(type, { ...payload, type });
   const record = (row) => { store?.append?.(row); };
+  let stopRequested = false, writingVerdict = false, stopVerdict = false;
+  function saveHumanNote(round, text) {
+    const message = String(text || '').trim();
+    if (!message || /^\/stop\b/i.test(message)) return;
+    record({ type: 'human', round, text: message });
+    (round < 0 ? state.initialNotes : (state.humanNotes[round] ??= [])).push(message);
+    fire('human', { round, text: message });
+  }
+  function requestStop(message = '') {
+    // Save before acknowledging the request, even if the round ends without another gate.
+    saveHumanNote(writingVerdict ? state.rounds.length - 1 : state.round, message);
+    stopRequested = true;
+    if (writingVerdict) stopVerdict = true;
+  }
 
   // The spend ledger: every attempt so far (on resume, the transcript's, legacy rows included),
   // and a reservation per call in flight, registered before the call is awaited so seats that
@@ -92,20 +105,34 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     fire('pool-down', { key, ...state.down[key] });
   }
 
-  async function callSeat(seat, prompt, round, kind, projection = {}) {
+  async function callSeat(seat, prompt, round, kind, projection = {}, { isChairman = false } = {}) {
     const down = state.down[downKey(seat)];
     if (down) return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false, error: `skipped: ${down.message}`, kind: down.kind, resetsAt: down.resetsAt, skipped: true, fresh: true, attemptId: null };
     for (let attemptNo = 1; ; attemptNo++) {
+      if (stopRequested && (!isChairman || stopVerdict)) return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false,
+        error: 'stopped by the human', kind: 'killed', fresh: !resumes || seat.sessionId == null, attemptId: null };
+      const action = attemptNo > 1 ? 'network retry' : kind === 'reprompt' ? 're-prompt' : kind;
+      const what = action === 'verdict' ? 'verdict' : `${action} of ${isChairman ? 'the chairman' : seat.lens}`;
+      // Check and reserve synchronously at the dispatch boundary. A retry sees the failed
+      // attempt's reported usage and every other call still in flight; seat calls also leave
+      // room for the verdict. A refusal is not an attempt and must not invent a usage row.
+      const crossing = budgetGate(what, isChairman ? projection : sumProjections(projection, chairmanCall()));
+      if (crossing) return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false,
+        error: budgetRefusal(crossing, action), kind: 'budget',
+        fresh: !resumes || seat.sessionId == null, attemptId: null };
       const attemptId = newId();
       reserved.set(attemptId, projection);
       const res = await callOnce(seat, prompt);
-      const attempt = { type: 'attempt', attemptId, round, kind, seat: pub(seat), fresh: res.fresh, usage: res.reported ? res.usage : null, ...(res.reported ? {} : { unknown: true, ms: res.usage.ms }), ...(res.ok ? {} : { errorKind: res.kind }) };
+      const attempt = { type: 'attempt', attemptId, round, kind, seat: pub(seat), fresh: res.fresh, usage: res.reported ? res.usage : null,
+        ...(res.reported ? {} : { unknown: true, ms: res.usage.ms,
+          ...(res.usage.cost != null ? { cost: res.usage.cost } : {}), ...(res.usage.raw?.cost != null ? { rawCost: res.usage.raw.cost } : {}) }),
+        ...(res.ok ? {} : { errorKind: res.kind }) };
       ledger.push(attempt);
       reserved.delete(attemptId);
       record(attempt);
       fire('attempt', attempt);
       if (!res.ok && POOL_FATAL.has(res.kind)) markDown(seat, res);
-      if (!res.ok && res.kind === 'network' && attemptNo === 1 && !expired()) { await new Promise((r) => setTimeout(r, opts.networkRetryMs)); continue; }
+      if (!res.ok && res.kind === 'network' && attemptNo === 1 && !expired() && !(stopRequested && (!isChairman || stopVerdict))) { await new Promise((r) => setTimeout(r, opts.networkRetryMs)); continue; }
       return { ...res, attemptId };
     }
   }
@@ -114,32 +141,38 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     const t0 = now();
     // Stateless: never hand the CLI a session to resume; the prompt is self-contained.
     const sessionId = resumes ? seat.sessionId : null;
+    const accounting = (res) => {
+      if (res.sessionId) seat.sessionId = res.sessionId;
+      const rawCost = res.usage?.raw?.cost ?? res.rawCost;
+      if (typeof rawCost === 'number') seat.lastRawCost = rawCost;
+      return { ...EMPTY_USAGE, ...(res.usage || {}), cost: res.usage?.cost ?? res.cost ?? null,
+        ...(!res.usage && rawCost != null ? { raw: { cost: rawCost } } : {}), ms: res.usage?.ms ?? res.ms ?? (now() - t0) };
+    };
     try {
       // prevCost: the session's last cumulative cost reading, so a resumed call is charged only
       // its own part even after a server restart (adapters/common.js).
       const res = await runner(seat.vendor, prompt, sessionId, { timeoutMs: opts.callTimeoutMs, seat, model: seat.model, effort: seat.effort, prevCost: sessionId ? seat.lastRawCost : undefined });
-      if (res.sessionId) seat.sessionId = res.sessionId;
-      if (typeof res.usage?.raw?.cost === 'number') seat.lastRawCost = res.usage.raw.cost;
-      const usage = { ...EMPTY_USAGE, ...(res.usage || {}), ms: res.usage?.ms ?? (now() - t0) };
+      const usage = accounting(res);
       return { ok: true, text: res.text || '', usage, reported: !!res.usage, raw: res.raw, fresh: sessionId == null, usedTools: !!res.usedTools };
     } catch (e) {
       const error = deadlineHit ? 'stopped: the wall clock ran out during the call' : e.message;
       const kind = deadlineHit ? 'killed' : e.kind || (e.code === 'TIMEOUT' ? 'timeout' : e.code === 'KILLED' ? 'killed' : 'other');
       // a failed call can still report what it cost (an error result); keep it in the ledger
-      const usage = e.usage ? { ...EMPTY_USAGE, ...e.usage, ms: now() - t0 } : { ...EMPTY_USAGE, ms: now() - t0 };
+      const usage = accounting(e);
       return { ok: false, text: '', usage, reported: !!e.usage, error, kind, resetsAt: e.resetsAt || null, timedOut: e.code === 'TIMEOUT', fresh: sessionId == null };
     }
   }
 
   const oneCall = (seat, round) => projectRound({ seats: [seat], round, baselines, memory: opts.memory });
-  const chairmanCall = () => projectChairman({ chairman: state.chairman, baselines });
+  const chairmanCall = (chairman = state.chairman) => projectChairman({ chairman, baselines });
 
   // A seat's connection state, as the board shows it: idle, thinking, replied, reprompted,
   // failed, timed-out. Emitted here so the UI only renders.
   const seatState = (seat, round, state) => fire('seat-state', { round, seat: pub(seat), state });
 
   // every note given before `round`, as { round, text }
-  const allNotes = (round) => state.humanNotes.slice(0, round).flatMap((ns, r) => (ns || []).map((text) => ({ round: r, text })));
+  const initialNotes = () => state.initialNotes.map((text) => ({ round: -1, text }));
+  const allNotes = (round) => [...initialNotes(), ...state.humanNotes.slice(0, round).flatMap((ns, r) => (ns || []).map((text) => ({ round: r, text })))];
 
   const prefixFor = (seat) => statelessPrefix({ fieldNotes, lens: seat.lens, mood: seat.mood, seatCount: state.seats.length });
 
@@ -161,6 +194,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     let v = check(res, round);
     let reprompted = false, toolFail = false;
     if (res.ok && !v.ok) {
+      let crossing;
       reprompted = true;
       record({ type: 'reprompt', round, seat: pub(seat), errors: v.errors, text: res.text, attemptId: res.attemptId, usedTools: res.usedTools });
       fire('reprompt', { round, seat: pub(seat), errors: v.errors, usedTools: res.usedTools, attemptId: res.attemptId });
@@ -169,8 +203,8 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       if (expired()) {
         res = { ...res, ok: false, error: 'the wall clock ran out before the re-prompt' };
         v = { ok: false, errors: [res.error], parsed: null, tools: false };
-      } else if (budgetGate(`re-prompt of ${seat.lens}`, sumProjections(oneCall(seat, round), chairmanCall()))) {
-        res = { ...res, ok: false, error: `re-prompt would cross the ${seat.vendor} budget` };
+      } else if ((crossing = budgetGate(`re-prompt of ${seat.lens}`, sumProjections(oneCall(seat, round), chairmanCall())))) {
+        res = { ...res, ok: false, error: budgetRefusal(crossing, 're-prompt'), kind: 'budget' };
         v = { ok: false, errors: [res.error], parsed: null, tools: false };
       } else {
         seatState(seat, round, 'reprompted');
@@ -208,12 +242,12 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     // every note so far for a stateless call; only the notes since the last round for a resumed
     // thread, which already holds the older ones
     const notesSince = (from) => state.humanNotes.slice(from, round).flatMap((ns, r) => (ns || []).map((text) => ({ round: from + r, text })));
-    const notes = resumes ? notesSince(round - 1) : notesSince(0);
+    const notes = resumes ? notesSince(Math.max(0, round - 1)) : [...initialNotes(), ...notesSince(0)];
     const prev = state.rounds[round - 1] || [];
     const replies = await Promise.all(state.seats.map((seat) => {
       const others = prev.filter((r) => r.seat.index !== seat.index).map((r) => ({ lens: r.seat.lens, text: r.text || '(no reply)' }));
       const prompt = round === 0
-        ? round0Prompt({ fieldNotes, lens: seat.lens, mood: seat.mood, seatCount: state.seats.length })
+        ? round0Prompt({ fieldNotes, lens: seat.lens, mood: seat.mood, seatCount: state.seats.length, notes: initialNotes() })
         : resumes
           ? roundPrompt({ round, maxRound, others, notes, options: fieldNotes.options, mood: seat.mood })
           : statelessRoundPrompt({ prefix: prefixFor(seat), round, maxRound, own: prev.find((r) => r.seat.index === seat.index)?.text, others, notes });
@@ -288,11 +322,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     if (answer.reason === 'wall-clock') { state.status = 'running'; fire('gate-expired', { round }); return 'wall-clock'; }
     state.status = 'running';
     const message = (answer.message || '').trim();
-    if (message && !/^\/stop\b/i.test(message)) {
-      (state.humanNotes[round] ??= []).push(message);
-      record({ type: 'human', round, text: message });
-      fire('human', { round, text: message });
-    }
+    saveHumanNote(round, message);
     if (answer.action === 'stop' || /^\/stop\b/i.test(message)) return 'human';
     return null;
   }
@@ -307,6 +337,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
   }
 
   async function verdict(chair = state.chairman, { fallenFrom = null } = {}) {
+    writingVerdict = true;
     const seat = { id: 'chairman', vendor: chair.vendor, lens: 'chairman', colour: chair.colour || 'ink', index: -1, sessionId: null, model: chair.model, effort: chair.effort, account: chair.account, ...(chair.endpoint ? { endpoint: chair.endpoint, keyEnv: chair.keyEnv } : {}) };
     if (state.down[downKey(seat)] && !fallenFrom) {
       const next = fallbackChairman(seat);
@@ -316,7 +347,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     const prompt = chairmanPrompt({
       fieldNotes,
       rounds: state.rounds.map((r) => r.map((x) => ({ lens: x.seat.lens, text: x.text || '(no reply)' }))),
-      humanNotes: state.humanNotes,
+      humanNotes: state.humanNotes, initialNotes: state.initialNotes,
     });
     const R = state.rounds.length;
     // The verdict is checked like a reply: the tool guard and its grammar (contract.validateVerdict).
@@ -325,16 +356,17 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       const tools = opts.strictTools && res.usedTools;
       return tools ? { ok: false, errors: ['used tools or ran commands, which are not allowed at this table', ...v.errors], tools: true } : { ...v, tools: false };
     };
-    let res = await callSeat(seat, prompt, R, 'verdict', chairmanCall());
+    let res = await callSeat(seat, prompt, R, 'verdict', chairmanCall(seat), { isChairman: true });
     let v = res.ok ? checkVerdict(res) : { ok: false, errors: [res.error] };
     if (res.ok && !v.ok) {
       record({ type: 'reprompt', round: R, seat: pub(seat), errors: v.errors, text: res.text, attemptId: res.attemptId, usedTools: res.usedTools });
       fire('reprompt', { round: R, seat: pub(seat), errors: v.errors, usedTools: res.usedTools, attemptId: res.attemptId });
       const first = res;
+      let crossing;
       if (!synthesisOnly && expired()) v = { ok: false, errors: ['the wall clock ran out before the re-prompt'] };
-      else if (budgetGate('re-prompt of the chairman', chairmanCall())) v = { ok: false, errors: [`re-prompt would cross the ${seat.vendor} budget`] };
+      else if ((crossing = budgetGate('re-prompt of the chairman', chairmanCall(seat)))) v = { ok: false, errors: [budgetRefusal(crossing, 're-prompt')] };
       else {
-        res = await callSeat(seat, verdictRepromptText({ options: fieldNotes.options, text: first.text, errors: v.errors, extra: v.tools ? [NO_TOOLS_LINE] : [] }), R, 'reprompt', chairmanCall());
+        res = await callSeat(seat, verdictRepromptText({ options: fieldNotes.options, text: first.text, errors: v.errors, extra: v.tools ? [NO_TOOLS_LINE] : [] }), R, 'reprompt', chairmanCall(seat), { isChairman: true });
         v = res.ok ? checkVerdict(res) : { ok: false, errors: [res.error] };
         if (v.tools) v = { ok: false, errors: ['used tools again after being told not to'] };
       }
@@ -345,6 +377,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       const next = fallbackChairman(seat);
       if (next) { record({ type: 'chairman-fallback', from: pub(seat), to: next.vendor, reason: res.error }); fire('chairman-fallback', { from: pub(seat), to: next.vendor, reason: res.error }); return verdict(next, { fallenFrom: seat }); }
     }
+    if (!res.ok && res.kind === 'budget') { skipVerdict(res.error, 'budget'); return; }
     const failed = !res.ok || !v.ok;
     const text = res.ok ? res.text : `Chairman failed: ${res.error}`;
     const errorKind = failed ? (res.ok ? 'format' : res.kind || 'other') : null;
@@ -359,12 +392,13 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
   // attempt's cost is not known. Calls in flight count at their reservation.
   function spentByVendor() {
     const out = {};
-    const at = (vendor) => (out[vendor] ??= { tokens: 0, cost: 0, costUnknown: false });
+    const at = (vendor) => (out[vendor] ??= { tokens: 0, cost: 0, costUnknown: false, tokensUnknown: false });
     for (const e of ledger) {
       const v = at(e.seat.vendor);
-      if (!e.usage) { v.costUnknown = true; continue; }
-      v.tokens += (e.usage.input || 0) + (e.usage.cacheRead || 0) + (e.usage.cacheWrite || 0) + (e.usage.output || 0);
-      if (e.usage.cost == null) v.costUnknown = true; else v.cost += e.usage.cost;
+      if (!e.usage) v.tokensUnknown = true;
+      else v.tokens += (e.usage.input || 0) + (e.usage.cacheRead || 0) + (e.usage.cacheWrite || 0) + (e.usage.output || 0);
+      const cost = e.usage?.cost ?? e.cost;
+      if (cost == null) v.costUnknown = true; else v.cost += cost;
     }
     for (const projection of reserved.values()) for (const [vendor, p] of Object.entries(projection)) {
       const v = at(vendor);
@@ -382,7 +416,12 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     const info = { ...crossing, what };
     record({ type: 'budget', ...info });
     fire('budget', info);
-    return 'budget';
+    return info;
+  }
+
+  function budgetRefusal(crossing, action) {
+    if (crossing.kind === 'tokens-unknown') return `${action} was not run: ${crossing.vendor} token usage is unknown, so further calls under its token cap are blocked`;
+    return `${action} would cross the ${crossing.vendor} budget`;
   }
 
   // After an interruption the last complete round may already have met a stop condition (the
@@ -420,7 +459,8 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       record({ type: 'synthesize', stopReason: state.stopReason });
       fire('synthesize', { stopReason: state.stopReason });
       // The chairman alone, under the budget; its own call timeout is its time bound.
-      if (!budgetGate('verdict', chairmanCall())) await verdict(); else skipVerdict('the chairman call would cross the budget', 'budget');
+      const crossing = budgetGate('verdict', chairmanCall());
+      if (!crossing) await verdict(); else skipVerdict(budgetRefusal(crossing, 'verdict'), 'budget');
       state.status = 'done';
       fire('done', { reason: state.stopReason, synthesis: synthesisOf(state.verdict) });
       return state;
@@ -436,7 +476,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     } else {
       record({ type: 'field-notes', schemaVersion: 3, ...provenance, fieldNotes, seats: state.seats.map(pub), chairman: state.chairman, options: opts, deadlineAt });
       store?.writeFieldNotes?.(fieldNotes, state.seats);
-      fire('started', { seats: state.seats.map(pub), fieldNotes, options: opts });
+      fire('started', { seats: state.seats.map(pub), fieldNotes, options: opts, chairman: state.chairman });
     }
     try {
       const carried = from > 0 ? stopAfterResume(from - 1) : null;
@@ -445,8 +485,9 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
         if (expired()) { state.stopReason = 'wall-clock'; break; }
         // A round is admitted only if the verdict after it is still affordable.
         const over = budgetGate(`round ${round}`, sumProjections(projectRound({ seats: state.seats, round, baselines, memory: opts.memory }), chairmanCall()));
-        if (over) { state.stopReason = over; break; }
+        if (over) { state.stopReason = 'budget'; break; }
         await runRound(round);
+        if (stopRequested) { state.stopReason = 'human'; break; }
         let stop = stopCheck(round);
         // Round 0 always shows the blind positions and waits, even when a stop condition is met.
         if (round === 0 || !stop) {
@@ -468,8 +509,11 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       // written later, on request, through POST .../synthesize.
       if (!state.rounds.length) skipVerdict('no round ran', 'no-round');
       else if (expired()) skipVerdict('the wall clock ran out', 'wall-clock');
-      else if (budgetGate('verdict', chairmanCall())) skipVerdict('the chairman call would cross the budget', 'budget');
-      else await verdict();
+      else {
+        const crossing = budgetGate('verdict', chairmanCall());
+        if (crossing) skipVerdict(budgetRefusal(crossing, 'verdict'), 'budget');
+        else await verdict();
+      }
       state.status = 'done';
       fire('done', { reason: state.stopReason, synthesis: synthesisOf(state.verdict) });
     } catch (e) {
@@ -481,7 +525,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     return state;
   }
 
-  return { state, run };
+  return { state, run, requestStop };
 }
 
 // What leaves the engine about a seat (events, transcript). Vendor and label are for the human
@@ -521,16 +565,19 @@ export function positions(replies) {
   return out;
 }
 
-// Sum two usages. `cost` is the sum of the costs that were reported; `costCoverage` says how many
-// of the summed calls reported one, so a total never passes a partial figure off as complete.
+// Sum reported figures. Coverage distinguishes missing measurements from measured zeros,
+// for tokens and dollars independently; renderers must label incomplete totals.
 export function addUsage(a, b) {
   const sum = (k) => (a?.[k] || 0) + (b?.[k] || 0);
   const cost = a?.cost == null && b?.cost == null ? null : (a?.cost || 0) + (b?.cost || 0);
   const cov = (u) => u?.costCoverage || (u ? { reported: u.cost == null ? 0 : 1, of: 1 } : { reported: 0, of: 0 });
   const ca = cov(a), cb = cov(b);
+  const tokens = (u) => u?.tokenCoverage || { reported: u ? 1 : 0, of: u ? 1 : 0 };
+  const ta = tokens(a), tb = tokens(b);
   const usageVersion = a?.usageVersion ?? b?.usageVersion;
   return { input: sum('input'), cacheRead: sum('cacheRead'), cacheWrite: sum('cacheWrite'), output: sum('output'), thinking: sum('thinking'), cost, ms: sum('ms'),
-    costCoverage: { reported: ca.reported + cb.reported, of: ca.of + cb.of }, ...(usageVersion ? { usageVersion } : {}) };
+    costCoverage: { reported: ca.reported + cb.reported, of: ca.of + cb.of },
+    tokenCoverage: { reported: ta.reported + tb.reported, of: ta.of + tb.of }, ...(usageVersion ? { usageVersion } : {}) };
 }
 
 export function sumProjections(...ps) {
@@ -568,13 +615,14 @@ export function rollup(rows) {
   let total = null; // not a zero row: costCoverage counts only real calls
   let unknownAttempts = 0;
   for (const r of ledgerEntries(rows)) {
-    if (!r.usage) { unknownAttempts++; continue; }
+    if (!r.usage) unknownAttempts++;
+    const usage = r.usage || { ...EMPTY_USAGE, cost: r.cost ?? null, ms: r.ms || 0, tokenCoverage: { reported: 0, of: 1 } };
     const key = r.seat ? (r.seat.id || `${r.seat.vendor}:${r.seat.lens}`) : 'other';
-    bySeat[key] = { seat: r.seat || null, usage: addUsage(bySeat[key]?.usage, r.usage) };
+    bySeat[key] = { seat: r.seat || null, usage: addUsage(bySeat[key]?.usage, usage) };
     const rk = r.kind === 'verdict' ? 'verdict' : String(r.round);
-    byRound[rk] = addUsage(byRound[rk], r.usage);
-    (bySeatRound[key] ??= {})[rk] = addUsage(bySeatRound[key][rk], r.usage); // one seat, one round
-    total = addUsage(total, r.usage);
+    byRound[rk] = addUsage(byRound[rk], usage);
+    (bySeatRound[key] ??= {})[rk] = addUsage(bySeatRound[key][rk], usage); // one seat, one round
+    total = addUsage(total, usage);
   }
   return { bySeat, byRound, bySeatRound, total: total ?? { ...EMPTY_USAGE }, unknownAttempts };
 }

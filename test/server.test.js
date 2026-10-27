@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync } from 'node:fs';
 import { rollup } from '../src/engine.js';
 import { decisionRecord } from '../src/export.js';
 import os from 'node:os';
@@ -57,6 +57,115 @@ async function readEvents(res, until, onEvent) {
   return events;
 }
 
+test('history and replay preserve unknown usage; a restart cannot bypass its token cap', { timeout: 30_000 }, async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rt-unknown-server-'));
+  const slug = '2026-10-26-unknown';
+  const dir = path.join(root, slug); mkdirSync(dir);
+  const seat = { id: 'seat-0', vendor: 'codex', lens: 'cost', colour: 'olive', index: 0 };
+  const rows = [
+    { type: 'field-notes', fake: true, schemaVersion: 3, fieldNotes: { decision: 'Unknown usage?', options: ['Ship', 'Wait'] },
+      seats: [seat], chairman: { vendor: 'codex' }, options: { critiqueRounds: 1, budget: { codex: { tokens: 100_000 } } } },
+    { type: 'attempt', attemptId: 'unknown', seat, round: 0, kind: 'reply', usage: null, unknown: true, ms: 12 },
+  ];
+  writeFileSync(path.join(dir, 'transcript.jsonl'), rows.map(JSON.stringify).join('\n') + '\n');
+  const srv = await startFakeServer(root);
+  try {
+    const list = (await fetch(`${srv.base}/api/debates`).then((r) => r.json())).debates;
+    assert.equal(list[0].tokens, null, 'unknown is not a measured zero');
+    assert.equal(list[0].tokensPartial, true);
+    const before = await readEvents(await fetch(`${srv.base}/api/debates/${slug}/events`), (e) => e.type === 'interrupted');
+    assert.deepEqual(rollup(before).total.tokenCoverage, { reported: 0, of: 1 });
+    const response = await fetch(`${srv.base}/api/debates/${slug}/resume`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token }, body: '{}' });
+    assert.equal(response.status, 200);
+    const after = await readEvents(await fetch(`${srv.base}/api/debates/${slug}/events`), (e) => e.type === 'done');
+    assert.equal(after.filter((e) => e.type === 'attempt').length, 1, 'no call was dispatched after restart');
+    assert.equal(after.find((e) => e.type === 'budget').kind, 'tokens-unknown');
+    assert.equal(after.find((e) => e.type === 'stopped').reason, 'budget');
+  } finally { srv.child.kill(); }
+});
+
+test('a torn record replays with a warning, resumes with an exact backup, and exports its recovery notice', { timeout: 60_000 }, async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rt-recovery-server-'));
+  const slug = '2026-10-26-recovery';
+  const dir = path.join(root, slug); mkdirSync(dir);
+  const file = path.join(dir, 'transcript.jsonl');
+  const seats = [{ id: 'seat-0', vendor: 'claude', lens: 'risk', colour: 'rust', index: 0 }, { id: 'seat-1', vendor: 'codex', lens: 'cost', colour: 'olive', index: 1 }];
+  const original = Buffer.from(JSON.stringify({ type: 'field-notes', schemaVersion: 3, fake: true,
+    fieldNotes: { decision: 'Recovery check?', options: ['Ship', 'Wait'] }, seats, chairman: { vendor: 'claude' },
+    options: { critiqueRounds: 0, memory: 'stateless' } }) + '\n{"type":"attempt","usage":');
+  writeFileSync(file, original);
+  let srv = await startFakeServer(root);
+  const post = (p, body = {}) => fetch(`${srv.base}${p}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token }, body: JSON.stringify(body) });
+  try {
+    const listed = (await fetch(`${srv.base}/api/debates`).then((r) => r.json())).debates[0];
+    assert.equal(listed.state, 'interrupted');
+    assert.match(listed.warning, /incomplete final line 2/);
+    const before = await readEvents(await fetch(`${srv.base}/api/debates/${slug}/events`), (e) => e.type === 'interrupted');
+    assert.equal(before.find((e) => e.type === 'transcript-warning').line, 2);
+    assert.deepEqual(readFileSync(file), original, 'GET history and replay are read-only');
+    assert.deepEqual(readdirSync(dir), ['transcript.jsonl']);
+    assert.equal((await post(`/api/debates/${slug}/resume`, { message: 'Correction before the first round.' })).status, 200);
+    const events = await readEvents(await fetch(`${srv.base}/api/debates/${slug}/events`), (e) => e.type === 'done' && !e.replayed, async (e) => {
+      if (e.type === 'gate') assert.equal((await post(`/api/debates/${slug}/continue`)).status, 200);
+    });
+    const recovery = events.find((e) => e.type === 'transcript-warning' && e.backup);
+    assert.ok(recovery);
+    assert.deepEqual(readFileSync(path.join(dir, recovery.backup)), original);
+    const rows = readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assert.ok(rows.some((r) => r.type === 'human' && r.round === -1 && r.text === 'Correction before the first round.'));
+    assert.equal(rows.filter((r) => r.type === 'field-notes').length, 1);
+    assert.equal(rows.filter((r) => r.type === 'transcript-recovered').length, 1);
+    // A later interrupted acceptance must not be hidden by the older recovery notice.
+    const secondTornWrite = Buffer.concat([readFileSync(file), Buffer.from('{"type":"accepted","option":')]);
+    writeFileSync(file, secondTornWrite);
+    const exited = new Promise((resolve) => srv.child.once('exit', resolve)); srv.child.kill(); await exited;
+    srv = await startFakeServer(root);
+    const replay = await readEvents(await fetch(`${srv.base}/api/debates/${slug}/events`), (e) => e.type === 'done');
+    assert.ok(replay.some((e) => e.type === 'human' && e.round === -1 && e.text === 'Correction before the first round.'));
+    assert.equal(replay.find((e) => e.type === 'transcript-warning').backup, recovery.backup);
+    assert.equal(replay.filter((e) => e.type === 'transcript-warning').at(-1).code, 'TRANSCRIPT_TAIL');
+    const target = mkdtempSync(path.join(os.tmpdir(), 'rt-recovery-export-'));
+    const exported = await post(`/api/debates/${slug}/export`, { target });
+    assert.equal(exported.status, 200);
+    const result = await exported.json();
+    const record = readFileSync(result.path, 'utf8');
+    assert.match(record, /## Record recovery/);
+    assert.ok(record.includes(recovery.backup));
+    assert.match(record, /incomplete final line/);
+    assert.deepEqual(readFileSync(file), secondTornWrite, 'export discloses the incomplete suffix without changing its source');
+    assert.equal(readdirSync(dir).filter((f) => f.startsWith('transcript.recovery-')).length, 1);
+  } finally { srv.child.kill(); }
+});
+
+test('completed corrupt records stay visible, report their line, and cannot resume or export', { timeout: 30_000 }, async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rt-corrupt-server-'));
+  const head = { type: 'field-notes', fake: true, schemaVersion: 3, fieldNotes: { decision: 'Damaged record?', options: ['A', 'B'] }, seats: [], options: {} };
+  const badSlug = '2026-10-26-corrupt', goodSlug = '2026-10-26-healthy';
+  for (const slug of [badSlug, goodSlug]) mkdirSync(path.join(root, slug));
+  const file = path.join(root, badSlug, 'transcript.jsonl');
+  const original = JSON.stringify(head) + '\ninvalid private content\n' + JSON.stringify({ type: 'stop', reason: 'human', rounds: 0 }) + '\n';
+  writeFileSync(file, original);
+  writeFileSync(path.join(root, goodSlug, 'transcript.jsonl'), JSON.stringify(head) + '\n');
+  const srv = await startFakeServer(root);
+  try {
+    const list = (await fetch(`${srv.base}/api/debates`).then((r) => r.json())).debates;
+    assert.equal(list.length, 2, 'one bad record does not hide the healthy one or disappear itself');
+    const bad = list.find((r) => r.slug === badSlug);
+    assert.equal(bad.state, 'corrupt');
+    assert.match(bad.warning, /line 2.*backup/);
+    assert.ok(!bad.warning.includes('invalid private content'), 'diagnostics do not echo transcript contents');
+    const events = await readEvents(await fetch(`${srv.base}/api/debates/${badSlug}/events`), (e) => e.type === 'error');
+    assert.equal(events[0].fatal, true);
+    for (const action of ['resume', 'export']) {
+      const response = await fetch(`${srv.base}/api/debates/${badSlug}/${action}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token }, body: '{}' });
+      assert.equal(response.status, 400);
+      assert.match((await response.json()).error, /line 2/);
+    }
+    assert.equal(readFileSync(file, 'utf8'), original);
+    assert.deepEqual(readdirSync(path.dirname(file)), ['transcript.jsonl']);
+  } finally { srv.child.kill(); }
+});
+
 test('fake server end to end: three seats, gates answered through the API, transcript and strip events on disk and on the wire', { timeout: 90_000 }, async () => {
   const debatesDir = mkdtempSync(path.join(os.tmpdir(), 'rt-debates-'));
   const srv = await startFakeServer(debatesDir);
@@ -73,6 +182,16 @@ test('fake server end to end: three seats, gates answered through the API, trans
     assert.deepEqual(seatsApi.vendors.map((v) => v.kind), ['cli', 'cli', 'cli', 'api'], 'every vendor says whether it is a CLI or an API');
     assert.equal(seatsApi.vendors.find((v) => v.vendor === 'api').profiles, true, 'API pools are per endpoint host');
     assert.equal(seatsApi.defaults.memory, 'stateless');
+    assert.equal(seatsApi.defaults.critiqueRounds, 1, 'the default review has one critique round');
+    assert.deepEqual(seatsApi.runtime, { mode: 'demo', dataDir: debatesDir });
+    assert.ok(srv.log().includes(`data: ${debatesDir}`));
+    const page = await fetch(`${srv.base}/`).then((r) => r.text());
+    assert.match(page, /id="run-mode"/);
+    assert.doesNotMatch(page, /https:\/\/fonts\./, 'the board needs no remote font request');
+    const guide = await fetch(`${srv.base}/docs/workflow.md`);
+    assert.equal(guide.status, 200);
+    assert.match(guide.headers.get('content-type'), /^text\/plain/);
+    assert.match(await guide.text(), /### Back up and restore/);
     const started = await post('/api/debates', body);
     assert.ok(started.ok, JSON.stringify(started.body));
     const slug = started.body.slug;
@@ -298,13 +417,24 @@ test('GET /api/debates lists the debates on disk with the status and pick the re
   }
 });
 
-test('GET /api/preflight answers per pool, read-only, without a model call', { timeout: 60_000 }, async () => {
+test('GET preflight is cached-only; authenticated POST refreshes and GET fresh cannot execute checks', { timeout: 60_000 }, async () => {
   const srv = await startFakeServer(mkdtempSync(path.join(os.tmpdir(), 'rt-debates-')));
   try {
     const { pools } = await fetch(`${srv.base}/api/preflight?pools=claude,codex,codex@work,nope@x,BAD!`).then((r) => r.json());
     assert.deepEqual(pools.map((p) => p.key), ['claude', 'codex', 'codex@work', 'nope@x']);
-    assert.ok(pools.slice(0, 3).every((p) => p.installed && p.loggedIn === true && ['ok', 'warn', 'danger'].includes(p.state)));
+    assert.ok(pools.slice(0, 3).every((p) => p.state === 'idle' && p.checkedAt === null), 'GET does not run a missing check');
     assert.equal(pools[3].kind, 'missing');
+    const body = JSON.stringify({ pools: ['claude', 'codex', 'codex@work'], fresh: true });
+    const noToken = await fetch(`${srv.base}/api/preflight`, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
+    assert.equal(noToken.status, 401);
+    const forcedGet = await fetch(`${srv.base}/api/preflight?pools=claude,codex&fresh=1`).then((r) => r.json());
+    assert.ok(forcedGet.pools.every((p) => p.checkedAt === null), 'a query flag cannot authorize execution');
+    const refreshed = await fetch(`${srv.base}/api/preflight`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token }, body }).then((r) => r.json());
+    assert.ok(refreshed.pools.every((p) => p.installed && p.loggedIn === true && p.checkedAt > 0 && !p.stale));
+    const cached = await fetch(`${srv.base}/api/preflight?pools=claude,codex,codex@work&fresh`).then((r) => r.json());
+    assert.deepEqual(cached.pools, refreshed.pools, 'GET returns the exact saved checks');
+    const forbidden = await fetch(`${srv.base}/api/preflight`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token, origin: 'https://foreign.example' }, body });
+    assert.equal(forbidden.status, 403);
   } finally {
     srv.child.kill();
   }

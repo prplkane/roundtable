@@ -1,22 +1,20 @@
-# Using roundtable
+# Using Roundtable
 
-A step-by-step guide for running a debate, from a fresh machine to a decision record in your
-codebase. What the tool touches on your machine, and what it never does, is in
-[SECURITY.md](../SECURITY.md).
+Set up providers, run a review, and export a decision record. For data handling and the
+limits of the security controls, see [SECURITY.md](../SECURITY.md).
 
 ## 1. What you need
 
-- **Node 22 or newer** (20 is end of life). Check with `node --version`.
-- **At least one of the three agent CLIs**, logged in with your own subscription. Roundtable
-  never asks for an API key and never sees your password. It only starts the CLIs you already
-  use, the way you would in a terminal. (An OpenAI-compatible endpoint can take a seat too,
-  section 7b; that is a choice you make per seat, and the card says so.)
+- **Node 22 or newer.** Check with `node --version`.
+- **At least one supported CLI**, logged in with your subscription. CLI seats use that login;
+  they do not need an API key. OpenAI-compatible endpoints are optional and use their own
+  credentials and billing (section 7b).
 - **A browser**, for the board. Any modern one.
 
 Get the code and check it runs:
 
 ```bash
-git clone <this repo> roundtable
+git clone https://github.com/prplkane/roundtable.git
 cd roundtable
 npm test
 ```
@@ -63,9 +61,8 @@ is not found in a terminal afterwards, let it set up your PATH:
 agy install
 ```
 
-On Windows the binary usually sits in `C:\Tools\agy\bin`. Run `agy` once in a terminal to
-confirm it opens signed in, then exit. Gemini CLI was retired in June 2026; the Google seat is
-always `agy`.
+Run `agy --version` to check that the command is available. Roundtable uses `agy` for the
+Google seat.
 
 ### Check what this machine can seat
 
@@ -85,28 +82,34 @@ A vendor that says "logged in NO" needs the login step above again.
 
 ## 3. Open the board
 
-The board is a web page served by a small local server. Nothing leaves your machine except the
-CLIs' own traffic to their vendors.
+The board is a web page served by a small local server. Its assets load locally. Live debates
+send field notes and relevant replies through the CLIs or API endpoints you selected.
 
 ```bash
-npm start
+npm start -- --no-open
 ```
 
-The board opens in your browser by itself (or open http://localhost:4747; `--no-open` keeps the
-browser closed). Stop the server with Ctrl+C in that terminal; any CLI it started is stopped
-with it. Without a clone, `npx @prplkane/roundtable` does the same.
+Open http://localhost:4747. This is the normal launch command for a local checkout. Omit
+`-- --no-open` to open the browser automatically from an interactive terminal. Stop the
+server with Ctrl+C in that terminal; any CLI it started is stopped with it. Without a clone,
+`npx @prplkane/roundtable` starts the installed package instead.
 
 **Try it first without spending anything.** The fake board runs the same screens with scripted
 seats:
 
 ```bash
-npm run fake
+npm run fake -- --no-open
 ```
 
-Open http://localhost:4748. Use it to learn the flow, and to show the tool to someone.
+Open http://localhost:4748. The header and notice say **Demo**: replies and usage are scripted,
+with no model calls. The normal server says **Live** and uses the selected providers' quota
+or billing. Use the demo to learn the flow and show the tool to someone.
 
-To use another port, set `PORT` before starting, for example `PORT=5000 npm start`
-(PowerShell: `$env:PORT=5000; npm start`).
+To use another port, set `PORT` before starting, for example
+`PORT=5000 npm start -- --no-open` (PowerShell: set `$env:PORT='5000'`, then run the normal
+launch command). An existing `PORT` value also overrides the demo port. The startup terminal
+prints the actual address, mode and data folder. **Local data and backups** on the setup screen
+shows the same folder and links to this guide.
 
 The first screen lists the debates on this machine, newest first: whether each is live,
 interrupted or finished, what was recommended or accepted, and its size and cost. Click one to
@@ -119,7 +122,7 @@ take, next to **Open the table**.
 
 ### Write the field notes
 
-This is your part, and the most useful part. Fill in:
+Fill in:
 
 - **Decision**: one question, answerable.
 - **Options**: at least two, one chip each. Press Enter in a chip to add the next, Backspace in
@@ -129,7 +132,7 @@ This is your part, and the most useful part. Fill in:
 - **More context** (collapsed until you open it or fill it): evidence known, evidence assumed,
   reversibility, deadline, and **Export to**, a folder in your codebase where the decision record
   is written the moment the verdict is ready (see step 6). Seats see only these notes in round 0,
-  so what you leave out, they will guess.
+  so include the facts they need to assess the options.
 
 ### Seat the agents
 
@@ -147,7 +150,15 @@ checked yet).
 | Effort | The thinking level, as pips: click one to set it, click the last filled one again for the CLI's default. Higher thinks longer and draws more. |
 | Login profile | Behind "Login profile" on the card. Leave empty to use your normal login; fill in only to seat a second account of the same CLI (step 7). |
 
-Use **+ Add seat** for more. Two or three seats are enough for most questions.
+First use starts with **two seats and one critique round**: normally two blind replies, two
+critique replies and one verdict, before any retries. The first status check prefers ready
+default logins; if only one vendor is ready, it fills both seats with different lenses. If no
+vendor is known ready, two editable choices remain and their lamps explain the state. Editing
+a seat stops this automatic first-use selection. Saved seats are preserved.
+
+Use **+ Add seat** for more. Two or three seats are enough for most questions. Opening a table
+saves its field notes, seats, limits, memory, chairman choices and budgets in this browser for
+this address. These preferences return on reload; unsent edits are not automatically saved.
 
 Below the seats is the **chairman**: a fresh session that did not argue. It reads every round
 and writes the verdict, sceptically (agreement between seats is not evidence; it recommends
@@ -156,30 +167,46 @@ verdict. It can have its own vendor, model and effort.
 
 ### How seats stay independent
 
-- Every seat has its own CLI session and runs in its own empty working folder,
-  `debates/<slug>/seats/<id>/`. Your projects' `CLAUDE.md`, `AGENTS.md` and `GEMINI.md`, project
-  memory and project settings are never in a seat's context.
+- Every CLI seat has its own session and working folder, `debates/<slug>/seats/<id>/`.
+  Roundtable does not run the seat in the project you are reviewing. CLI-specific discovery
+  of instructions and settings still applies; these controls are not a sandbox.
 - Claude seats load no user-level settings (`--setting-sources local`); Codex seats skip
   `AGENTS.md` discovery, the global one included.
-- Other seats and the chairman see a seat only by its lens. Vendor, model and mood are never in
-  any prompt, so no seat can defer to "the Claude one".
+- Other seats and the chairman identify a seat by its lens. Roundtable omits vendor and model
+  labels from the prompts; each seat receives its own mood instructions.
 - Still shared: the CLI's own state folder (login, local history) unless the seat has a login
   profile, and whatever the vendor applies to every request from your account.
-- Two seats on the same model with the same mood tend to converge. Give them different lenses
-  and moods; that is the lever.
+- Use different lenses to test different assumptions. Agreement between seats is not evidence
+  that their shared assumptions are correct.
 
 ### Set the limits
 
-- **Critique rounds**: rounds after the blind first one. One or two is usually enough; most real
-  debates agreed by round one.
-- **Auto-continue (s)**: after a round, the board waits this long for you, then moves on. Any
-  click or keystroke holds it.
+- **Critique rounds**: rounds after the blind first one. Start with one and increase it only
+  when another round is useful.
+- **Auto-continue (s)**: after a round, the board waits this long for you, then moves on. A
+  click or keystroke requests a pause. **Countdown held** confirms the server paused it; if
+  the request fails, the board reports that the countdown may still be running.
 - **Wall clock (min)**: a hard stop.
 - **Memory**: leave on `stateless`. Each round is a fresh call with the field notes, the seat's
-  own last reply and the others' replies, so the cost per round stays flat. `resume` re-sends
-  the whole conversation every round and costs more each round.
+  own last reply and the others' replies. This avoids resending the full conversation, but
+  token use and cost still vary. `resume` retains a conversation and can grow the context each
+  round. Neither setting controls the provider's logging or retention policy.
 - **Budget caps**, in the quota panel: an optional token or dollar ceiling per vendor. The
-  debate stops before a call that would cross it.
+  engine checks projected usage before each round and every provider attempt, including network
+  retries, re-prompts and a fallback chairman. It counts reported usage and calls still in
+  flight, and keeps room for the verdict. A refused retry fails that seat for the round; a
+  refused round stops the debate. Calls can consume more than their estimates, so a cap is an
+  admission check rather than a guaranteed final bill.
+  A dollar cap needs a dollar estimate; without one it blocks calls. A saved dollar cap stays
+  visible so you can clear it and use a token cap while dollar estimates are unavailable.
+  If a call omits usable token counts, further calls to that vendor are blocked when it has a
+  token cap, including retries, re-prompts and the chairman. This also applies after a restart.
+  Calls already in flight can finish. A chairman on another vendor can still write the verdict
+  if its own checks pass. Without a token cap, unknown usage does not stop further calls.
+  The board, history and exports label missing counts **unknown** and mixed totals **partial**;
+  reported dollar costs remain available even when token counts are missing. Explicit zero
+  counts remain zero. Older transcripts that already saved fabricated zeros cannot be repaired
+  automatically from those records.
 
 ### Read the quota picture
 
@@ -210,14 +237,38 @@ stance, or passed).
 The debate also stops by itself when all seats agree, all pass, a round changes nothing, the
 round limit or wall clock is reached, or a budget cap would be crossed.
 
+**Stop** during a round saves your note immediately, cancels owned CLI processes, and prevents
+further seat retries or rounds. Calls already in flight settle before the chairman runs under
+the existing limits. A natural stop such as consensus does not discard your stop request.
+
 ### The verdict
 
 The chairman writes the recommendation, the tally per seat, the strongest dissent, kill
 criteria (what would prove the decision wrong) and open questions. Everything is saved in
 `debates/<date-and-question>/`: the transcript, the field notes and the verdict.
 
+If the verdict was skipped or failed, **Write** requests it separately, subject to the existing
+budget. Choosing the original CLI chairman keeps its model, effort and login profile; the
+selector shows those settings. Choosing another CLI vendor uses that vendor's defaults.
+
 If the server stops in the middle of a debate, start it again and reopen the same address. The
 board replays what happened and offers **Resume**.
+
+A note entered when resuming before round 0 is saved as **Before round 0**. It reaches the
+restarted blind calls, subsequent stateless calls and the chairman, and remains in replay and
+exports. The original field notes stay unchanged.
+
+If a write was interrupted in the final line, the board shows the complete records and a
+recovery notice. Opening history does not change the file. Before the next write, Roundtable
+saves a byte-for-byte `transcript.recovery-<id>.jsonl` backup beside the original, then restores
+the complete prefix. The notice remains on replay and in exported records. A valid final row
+without a newline is preserved too. The incomplete row cannot be reconstructed, and any usage
+inside it may be missing; check the provider's own usage before relying on a cap after recovery.
+
+A corrupt completed line is different: the list says **needs repair**, names the line, and
+blocks resume and export. Restore `transcript.jsonl` from a known good backup and restart the
+server. Keep the damaged file until you have checked the restored record; recovery never
+silently skips a corrupt completed line.
 
 ## 5. Keep the cost low
 
@@ -285,7 +336,7 @@ the OpenAI chat-completions API.
 
 | field | what it does |
 |---|---|
-| Endpoint | The base URL, ending in `/v1`. Presets: Ollama (`http://localhost:11434/v1`), LM Studio, vLLM, llama.cpp server, DeepSeek (`https://api.deepseek.com/v1`), Moonshot/Kimi (`https://api.moonshot.ai/v1`; China keys use `api.moonshot.cn`), OpenAI. Any other URL works. Plain `http` is accepted only for this machine or a private network (`localhost`, `10.`, `192.168.`, `.local`, a bare LAN name); a hosted API must be `https`. |
+| Endpoint | The base URL, ending in `/v1`. Presets: Ollama (`http://localhost:11434/v1`), LM Studio, vLLM, llama.cpp server, DeepSeek (`https://api.deepseek.com/v1`), Moonshot/Kimi (`https://api.moonshot.ai/v1`; China keys use `api.moonshot.cn`), OpenAI. Any other URL works. Plain `http` is accepted for local names and private IP literals (`localhost`, `10.0.0.5`, `192.168.0.9`, `.local`, a bare LAN name); a hosted API must be `https`. A name such as `10.api.example.com` still requires HTTPS. |
 | Key var | For a hosted API: the **name** of the environment variable that holds your key, for example `DEEPSEEK_API_KEY`. Not the key. Set the variable in the shell you start roundtable from; a preset fills in its usual name. A local server needs none. |
 | Model | Required: the endpoint has no default. Type the id the server knows (`llama3`, `deepseek-chat`, `kimi-k2`...). |
 | Effort | Sent as `reasoning_effort` only when you set a pip; a server without that field answers 400, so leave it on default for most local servers. |
@@ -296,22 +347,27 @@ What is different from a CLI seat:
   named; a local server costs your hardware. The tag on the card, `API · pay-per-token` or
   `API · local`, is there so this is never a surprise. The strip shows tokens but no dollar
   figure (the endpoint does not report one), so a dollar cap is refused for it; a token cap works.
-- **The key never leaves your environment except to that endpoint.** Roundtable reads the
+- **The key is sent to the endpoint you choose.** Roundtable reads the
   variable at call time and sends it as a bearer to the URL you named, with redirects refused.
-  It is not stored, not written to the transcript, not shown on the board, not put in an
-  error message.
+  Roundtable does not deliberately add it to transcripts, logs or the board. Provider response
+  and error text can be displayed and recorded, so use an endpoint you trust not to echo it.
 - **The lamp cannot check reachability.** Before the first call the lamp says only whether the
   URL passes the rules and whether the named variable is set. Roundtable sends no probe: a
   probe would mean this server fetching a URL the page named, with the key attached, which a
   hostile web page could abuse. The first real call is the check; a failure shows on the card
   like a CLI's would (`could not reach`, `401`, and so on).
-- **Stateless only.** An endpoint keeps no thread, so `memory: resume` is refused when an
-  endpoint sits at the table. Stateless is the default and the cheaper mode anyway.
+- **Stateless requests only.** Roundtable sends a fresh request and does not manage a remote
+  conversation for endpoints, so `memory: resume` is refused when an endpoint sits at the table.
+  This describes Roundtable's requests, not what the endpoint stores or retains.
 - **One pool per host.** Two seats on `localhost:11434` share a pool; a seat on DeepSeek has
   its own. A host that fails (wrong key, no credit, nothing listening) benches only its own seats.
   The token cap, though, is per vendor: one cap covers every endpoint seat at the table.
 - **No tools are offered** in the request. A reply that carries `tool_calls` anyway is treated
   like a CLI reaching for a tool: one re-prompt, then the seat fails for the round.
+- **Response size is bounded.** The complete response body, including JSON metadata, must fit
+  within 1 MiB after decompression. A larger success or error response is cancelled and the
+  card reports the limit; it is not retried as a network failure. Reduce the endpoint's output
+  length if a legitimate reply reaches this limit.
 
 The chairman can be an endpoint too; its card takes the same fields. The decision record
 names the endpoint on each seat's line (`API http://localhost:11434/v1`) and on the chairman's.
@@ -357,10 +413,34 @@ reply, the usage per seat and the quota readings.
 
 ## 9. When something goes wrong
 
+Failed Start, Continue, Resume, Stop, acceptance and export requests show an error beside the
+action. The board keeps your note or target path until the request is acknowledged and blocks
+duplicate submissions while it is pending. Keyboard focus stays on an effort control when its
+value changes. The effort squares have larger click targets than their visible marks.
+
+A connection error or a 15-second action-request timeout does not prove the server rejected
+the action: it may already be running or saved. Roundtable does not retry these writes
+automatically. Check the current board or recent history before retrying. This browser timeout
+does not cancel model work on the server. If the page reports an expired launch token, copy
+unsent notes and reload. A failed history load says **unavailable**, with **Retry history**;
+it does not claim your records are gone. A setup-load failure offers **Reload**.
+
 Before a debate, each seat card's round lamp says whether that seat can take a call, checked
 for free (no model call): green ready, yellow nearly out of quota or unknown, red not installed,
 not logged in or out of quota (with the reset time), grey not checked yet. **Open the table**
 names any red seat and asks once more before it starts.
+
+Use **Refresh status** after signing in or changing an account. It runs free status checks,
+shows when they finish, and reports a failed refresh. Results are reused for a minute unless
+you refresh explicitly; repeated explicit refreshes within five seconds reuse the same check.
+Overlapping requests for one pool share work. At most two pool checks run at once, with twelve
+running or queued; if busy, try Refresh status again shortly. API endpoint checks validate the
+URL and key-variable presence without sending a request to the endpoint.
+
+For local scripts, `GET /api/preflight?pools=claude,codex` only reads cached snapshots: it never
+launches a CLI, even with `?fresh`. `checkedAt: null` means no check yet; `stale: true` means
+there is no current snapshot. Refresh with an authenticated JSON `POST /api/preflight`, using
+`{"pools":["claude","codex"],"fresh":true}` and the launch token in `x-roundtable-token`.
 
 | what you see | what to do |
 |---|---|
@@ -382,7 +462,50 @@ names any red seat and asks once more before it starts.
 
 | what | where |
 |---|---|
-| Debates (transcript, field notes, verdict) | `debates/` in this folder, never committed |
-| Measured quota rates | `debates/_calibration.json` |
+| Live debates (transcript, field notes, verdict) | `debates/` under this installation, unless `ROUNDTABLE_DEBATES_DIR` is set |
+| Demo debates | `debates-fake/` under this installation, unless the same override is set |
+| Measured quota rates and entered pool figures | `_calibration.json` and `_pools.json` in the live data folder; demo names include `.fake` |
+| Saved setup preferences | browser local storage, separate for each host and port |
 | Account profiles | `%LOCALAPPDATA%\roundtable\homes` on Windows, `~/Library/Application Support/roundtable/homes` on macOS, `~/.local/share/roundtable/homes` on Linux |
 | Decision records you exported | the folder you chose |
+
+The default data path belongs to the installation, not the directory from which you happen to
+launch it. Keep the same checkout for this local version. When changing installations, set an
+absolute `ROUNDTABLE_DEBATES_DIR` to retain your data location. Use separate paths for demo and
+live data; an explicit override replaces the usual separation.
+
+### Back up and restore
+
+1. Check the actual data folder in **Local data and backups** or the startup terminal. Stop
+   every Roundtable server using that folder with Ctrl+C before copying it.
+2. Copy the **entire folder** to a private backup location. Include `transcript.jsonl`, any
+   `transcript.recovery-*.jsonl` files, field notes, verdicts, calibration/pool files and seat
+   folders. Keep exported decision folders separately if you need them too. These files can
+   contain private prompts and responses.
+3. To test a restore, copy the backup into a **new, empty directory**. Keep the original data
+   folder unchanged. Set `ROUNDTABLE_DEBATES_DIR` to the restored copy and use a spare port.
+
+For a synthetic backup on PowerShell, replace the example path with your restored demo folder:
+
+```powershell
+$env:ROUNDTABLE_DEBATES_DIR='C:\roundtable-restore\demo'
+$env:PORT='4750'
+npm run fake -- --no-open
+```
+
+For bash or zsh:
+
+```bash
+ROUNDTABLE_DEBATES_DIR='/path/to/restored-demo' PORT=4750 npm run fake -- --no-open
+```
+
+Open http://localhost:4750. Confirm the data folder, open a saved debate, check its notes,
+verdict and human decision, then export to a new test folder. A live backup uses
+`npm start -- --no-open` instead. Reading history does not start model calls; Resume and
+Write the verdict can. Stop the restore server when finished. Use a fresh terminal for normal
+launches so the temporary environment settings do not redirect your next session.
+
+Browser preferences and provider logins are not part of this backup. The restored debates
+contain their own saved configuration. A new browser address starts with fresh preferences;
+sign in through the vendor's own CLI if its login is missing. Do not copy login files as part
+of a debate restore.

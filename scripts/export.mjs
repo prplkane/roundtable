@@ -15,6 +15,8 @@ const debatesDir = process.env.ROUNDTABLE_DEBATES_DIR ? path.resolve(process.env
 const store = openDebateDir(debatesDir, slug, { create: false });
 if (!store) { console.error(`no transcript for ${slug} under ${debatesDir}`); process.exit(1); }
 try {
-  const out = exportDebate(store.readTranscript(), slug, target, { forbid: [debatesDir] });
+  const warnings = [];
+  const rows = store.readTranscript({ onWarning: (w) => { warnings.push(w); console.warn(w.message); } });
+  const out = exportDebate(rows, slug, target, { forbid: [debatesDir], warnings });
   console.log(`${out.path}\n${out.indexPath}  (${out.meta.status}: ${out.meta.chosen})`);
 } catch (e) { console.error(e.message); process.exit(1); }

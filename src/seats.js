@@ -13,6 +13,15 @@ export const DEFAULT_MOOD = 'grill';
 // Seat colours from the signature-design accent family, cycled when a table has more seats.
 export const COLOURS = ['rust', 'olive', 'teal', 'dusk', 'steel'];
 
+// First use starts small. Prefer ready default logins; one ready vendor can fill both seats.
+// With no ready result yet, show two editable CLI choices and their status lamps.
+export function initialSeatVendors(vendors, checks = []) {
+  const cli = vendors.filter((v) => v.kind !== 'api').map((v) => v.vendor);
+  const ready = cli.filter((v) => checks.some((p) => p.key === v && p.state === 'ok'));
+  const choices = ready.length ? ready : cli;
+  return choices.length ? [choices[0], choices[1] || choices[0]] : [];
+}
+
 // A profile name is a directory name under the roundtable data dir, so it is kept plain.
 // (Here rather than in adapters/spawn.js because this module also runs in the browser.)
 export const PROFILE_RE = /^[a-z0-9][a-z0-9_.-]{0,39}$/i;
@@ -71,8 +80,13 @@ export function privateHost(hostname) {
   if (h === 'localhost' || h === '::1' || h === '0.0.0.0' || h === '::') return true;
   if (/\.(localhost|local|test|internal|lan|home|home\.arpa)$/.test(h)) return true;
   if (!h.includes('.') && !h.includes(':')) return true; // a bare LAN hostname
-  if (/^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h) || /^169\.254\./.test(h)) return true;
-  if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;
+  // URL callers already canonicalize alternate IPv4 spellings. Check the whole address:
+  // a DNS name such as 10.api.example.com must not inherit a private address's HTTP policy.
+  const ipv4 = /^(?:\d{1,3}\.){3}\d{1,3}$/.test(h) ? h.split('.').map(Number) : null;
+  if (ipv4 && ipv4.every((n) => n <= 255)) {
+    const [a, b] = ipv4;
+    return a === 127 || a === 10 || (a === 192 && b === 168) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31);
+  }
   if (/^(fc|fd)[0-9a-f]{2}:/.test(h) || /^fe80:/.test(h)) return true;
   return false;
 }

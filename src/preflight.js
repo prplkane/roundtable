@@ -8,6 +8,53 @@
 //
 import { checkEndpointUrl, privateHost, KEY_ENV_RE } from './seats.js';
 
+export const PREFLIGHT_TTL_MS = 60_000;
+
+// Reading a snapshot is always free of work. Only refresh() can enqueue a CLI check; callers
+// must authenticate that action. Keep running and queued work shared per pool, including
+// forced refreshes, and never release a slot before its check actually settles.
+export function createPreflightCache({ check, now = Date.now, ttlMs = PREFLIGHT_TTL_MS,
+  cooldownMs = 5_000, maxConcurrent = 2, maxPending = 12, maxCached = 64 }) {
+  const cache = new Map(), pending = new Map(), queue = [];
+  let active = 0;
+  function read(key) {
+    const hit = cache.get(key);
+    const result = hit?.result || { key, state: 'idle', kind: 'not-checked', note: 'not checked yet · use Refresh status' };
+    return { ...result, checkedAt: hit?.at ?? null, stale: !hit || now() - hit.at >= ttlMs, refreshing: pending.has(key) };
+  }
+  function drain() {
+    while (active < maxConcurrent && queue.length) {
+      const { key, resolve } = queue.shift();
+      active++;
+      Promise.resolve().then(() => check(key))
+        .catch(() => ({ key, state: 'warn', kind: 'check-failed', note: 'status check failed · try Refresh status again' }))
+        .then((result) => {
+          cache.delete(key);
+          cache.set(key, { at: now(), result });
+          while (cache.size > maxCached) cache.delete(cache.keys().next().value);
+          pending.delete(key);
+          active--;
+          resolve(read(key));
+          drain();
+        });
+    }
+  }
+  function refresh(key, { fresh = false } = {}) {
+    if (pending.has(key)) return pending.get(key);
+    const hit = cache.get(key);
+    if (hit && now() - hit.at < (fresh ? cooldownMs : ttlMs)) return Promise.resolve(read(key));
+    if (pending.size >= maxPending) return Promise.resolve({ ...read(key), state: 'warn', kind: 'busy',
+      note: 'status checks are busy · try Refresh status again shortly' });
+    let resolve;
+    const promise = new Promise((r) => { resolve = r; });
+    pending.set(key, promise);
+    queue.push({ key, resolve });
+    drain();
+    return promise;
+  }
+  return { read, refresh };
+}
+
 // deps are injected so tests never spawn a CLI: resolve(binary), status(vendor, home) ->
 // true | false | null (null: the CLI cannot say), quota(key) -> the pool's snapshot or null.
 
@@ -62,10 +109,9 @@ export async function checkPool({ vendor, account = null, key }, { resolve, stat
 
 // The lamp for an API endpoint pool, from what can be known without a request: does the URL
 // pass the seat rules, and is the named key variable set in this process's environment. No
-// probe is sent. A reachability check would mean this server making a request to a URL the
-// board named, with the key attached; the pre-flight route is reachable by any page on this
-// machine, so that would let a hostile page pick where the key goes. The first real call is
-// the check, and its failure lands on this lamp like a CLI's would.
+// probe is sent, even on authenticated refresh. This check says only whether configuration
+// is present; it does not establish reachability or send a key. The first real call is the
+// connection check, and its failure lands on this lamp like a CLI's would.
 export function endpointLamp({ url, keyEnv = null, keySet = false }) {
   if (!url) return { state: 'idle', kind: null, note: 'no endpoint yet' };
   let u;

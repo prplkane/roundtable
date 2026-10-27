@@ -14,15 +14,23 @@ function parseLines(text) {
   }).filter(Boolean);
 }
 
+// Input and output are required measurements. Optional breakdowns may be absent, but an
+// invalid counter is not a measured zero. This distinction is also used by HTTP endpoints.
+export function usageCounters({ input, output, cacheRead, cacheWrite, thinking }) {
+  const u = { input, output, cacheRead: cacheRead ?? 0, cacheWrite: cacheWrite ?? 0, thinking: thinking ?? 0 };
+  return Object.values(u).every((v) => Number.isSafeInteger(v) && v >= 0) ? u : null;
+}
+const reportedCost = (v) => Number.isFinite(v) && v >= 0 ? v : null;
+
 // Pull the normalised fields out of one JSON object using the config's dot paths.
 export function pickJson(obj, paths) {
-  const n = (p) => { const v = dig(obj, p); return typeof v === 'number' ? v : 0; };
+  const n = (p) => dig(obj, p);
   return {
     text: String(dig(obj, paths.text) ?? ''),
     sessionId: dig(obj, paths.sessionId) ?? null,
-    usage: { input: n(paths.input), cacheRead: n(paths.cacheRead), cacheWrite: n(paths.cacheWrite),
-      output: n(paths.output), thinking: n(paths.thinking) },
-    cost: paths.cost ? (dig(obj, paths.cost) ?? null) : null,
+    usage: usageCounters({ input: n(paths.input), cacheRead: n(paths.cacheRead), cacheWrite: n(paths.cacheWrite),
+      output: n(paths.output), thinking: n(paths.thinking) }),
+    cost: reportedCost(dig(obj, paths.cost)),
     quota: paths.quota ? (dig(obj, paths.quota) ?? null) : null,
     isError: paths.isError ? dig(obj, paths.isError) === true : false,
   };
@@ -42,13 +50,12 @@ export function pickJsonl(text, paths) {
     }
     return hit;
   };
-  const n = (spec) => { const v = find(spec); return typeof v === 'number' ? v : 0; };
   return {
     text: String(find(paths.text) ?? ''),
     sessionId: find(paths.sessionId) ?? null,
-    usage: { input: n(paths.input), cacheRead: n(paths.cacheRead), cacheWrite: n(paths.cacheWrite),
-      output: n(paths.output), thinking: n(paths.thinking) },
-    cost: paths.cost ? (find(paths.cost) ?? null) : null,
+    usage: usageCounters({ input: find(paths.input), cacheRead: find(paths.cacheRead), cacheWrite: find(paths.cacheWrite),
+      output: find(paths.output), thinking: find(paths.thinking) }),
+    cost: reportedCost(find(paths.cost)),
     quota: paths.quota ? (find(paths.quota) ?? null) : null, // raw vendor object; quota.js normalises
     isError: paths.isError ? find(paths.isError) === true : false,
   };
@@ -60,6 +67,7 @@ const lastCost = new Map(); // sessionId -> cumulative cost already charged (thi
 // cacheWrite is everything the model read. The vendor's own numbers stay under `raw`.
 export const USAGE_VERSION = 3;
 export function normaliseUsage(cfg, u, rawCost = null) {
+  if (!u) return null;
   const raw = { input: u.input, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite, output: u.output, thinking: u.thinking, ...(rawCost != null ? { cost: rawCost } : {}) };
   const semantics = cfg.cacheSemantics || 'unknown';
   const input = semantics === 'subset' ? Math.max(0, u.input - u.cacheRead) : u.input;
@@ -137,14 +145,6 @@ export function makeAdapter(name, overrides = {}) {
       usedTools = !!cfg.usedTools?.(obj);
     }
 
-    if (!picked.text) {
-      const hint = (res.stderr || res.stdout).trim().split('\n').pop() || `exit ${res.code}`;
-      throw Object.assign(new Error(`${cfg.label}: empty reply (${hint.slice(0, 200)})`), { raw });
-    }
-    // The CLI answered with an error as its result (claude: a usage limit, a lapsed login). That
-    // text is not a reply; what the call cost still counts.
-    if (picked.isError) throw Object.assign(new Error(`${cfg.label}: ${picked.text.trim().slice(0, 300)}`), { raw, usage: normaliseUsage(cfg, picked.usage) });
-
     // A cumulative counter is charged as the difference from the session's previous reading.
     // opts.prevCost is that reading from the transcript (survives a restart); the in-process map
     // is the fallback. A fresh call (no sessionId) starts at zero.
@@ -155,9 +155,18 @@ export function makeAdapter(name, overrides = {}) {
       lastCost.set(key, cost);
       cost = Math.max(0, cost - prev);
     }
-    const usage = { ...normaliseUsage(cfg, picked.usage, typeof picked.cost === 'number' ? picked.cost : null), cost: typeof cost === 'number' ? cost : null, ms: res.ms };
+    const usage = picked.usage ? { ...normaliseUsage(cfg, picked.usage, picked.cost), cost, ms: res.ms } : null;
+    // A CLI can report dollars without tokens. Preserve both the charge and its cumulative
+    // reading separately so a restart does not charge that part of the session again.
+    const accounting = { usage, ...(!usage ? { cost, rawCost: picked.cost, ms: res.ms } : {}) };
+    if (!picked.text) {
+      const hint = (res.stderr || res.stdout).trim().split('\n').pop() || `exit ${res.code}`;
+      throw Object.assign(new Error(`${cfg.label}: empty reply (${hint.slice(0, 200)})`), { raw, ...accounting, sessionId: picked.sessionId });
+    }
+    // An error result is not a reply; what the call cost still counts.
+    if (picked.isError) throw Object.assign(new Error(`${cfg.label}: ${picked.text.trim().slice(0, 300)}`), { raw, ...accounting, sessionId: picked.sessionId });
     const quota = cfg.normaliseQuota && picked.quota ? cfg.normaliseQuota(picked.quota) : null;
-    return { text: picked.text.trim(), usage, sessionId: picked.sessionId, quota, usedTools, raw };
+    return { text: picked.text.trim(), ...accounting, sessionId: picked.sessionId, quota, usedTools, raw };
   }
 }
 

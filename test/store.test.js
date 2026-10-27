@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { openDebateDir, rebuildDebate, readAllTranscripts } from '../src/store.js';
@@ -20,6 +20,22 @@ const reply = (seat, round, stance, extra = {}) => ({
 });
 const VERDICT_OK = 'RECOMMENDATION: opt-1\nShip.\nTALLY:\n- opt-1: all\nDISSENT: none raised\nKILL_CRITERIA:\n- x\nOPEN_QUESTIONS:\n- y';
 const head = (options = {}) => ({ type: 'field-notes', schemaVersion: 2, fieldNotes: FN, seats: SEATS, chairman: { vendor: 'codex' }, options: { critiqueRounds: 2, memory: 'resume', ...options } });
+
+test('notes before round zero survive replay and export separately from later gate notes', async () => {
+  const rows = [head(), { type: 'human', round: -1, text: 'First correction before starting.' },
+    { type: 'human', round: -1, text: 'Second correction after another interruption.' },
+    ...SEATS.map((s) => reply(s, 0, 'Ship now')),
+    { type: 'human', round: 0, text: 'After seeing the blind replies.' }, { type: 'stop', reason: 'human', rounds: 1 }];
+  const rb = rebuildDebate(rows);
+  assert.deepEqual(rb.initialNotes, ['First correction before starting.', 'Second correction after another interruption.']);
+  assert.deepEqual(rb.humanNotes, [['After seeing the blind replies.']]);
+  assert.deepEqual(rb.events.filter((e) => e.type === 'human').map((e) => [e.round, e.text]),
+    [[-1, rb.initialNotes[0]], [-1, rb.initialNotes[1]], [0, rb.humanNotes[0][0]]]);
+  const { decisionRecord } = await import('../src/export.js');
+  const record = decisionRecord(rows, 'initial-note').markdown;
+  assert.match(record, /### Before round 0\n\nFirst correction before starting\.\n\nSecond correction after another interruption\./);
+  assert.match(record, /### After round 0\n\nAfter seeing the blind replies\./);
+});
 
 test('rebuildDebate: a finished transcript replays read-only with the same event shapes as the live engine', () => {
   const rows = [
@@ -152,6 +168,127 @@ test('openDebateDir writes rows the rebuild reads back; create:false returns nul
   assert.equal(rb.finished, false);
   assert.equal(rb.nextRound, 1);
   assert.equal(readAllTranscripts(root).length, 4);
+});
+
+test('single and bulk transcript reads recover an unterminated final line without changing any bytes', () => {
+  const incompleteUtf8 = Buffer.from('{"type":"reply","text":"💡').subarray(0, -2);
+  for (const tail of [Buffer.from('{"type":"reply","text":"unfinished'), incompleteUtf8]) {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'rt-torn-read-'));
+    const store = openDebateDir(root, 'torn');
+    const file = path.join(store.dir, 'transcript.jsonl');
+    const prefix = Buffer.from(JSON.stringify(head()) + '\r\n' + JSON.stringify(reply(SEATS[0], 0, 'Ship now')) + '\r\n');
+    const original = Buffer.concat([prefix, tail]);
+    writeFileSync(file, original);
+    const warnings = [];
+    const rows = store.readTranscript({ onWarning: (w) => warnings.push(w) });
+    assert.deepEqual(rows.map((r) => r.type), ['field-notes', 'reply']);
+    assert.equal(warnings.length, 1);
+    assert.equal(warnings[0].code, 'TRANSCRIPT_TAIL');
+    assert.equal(warnings[0].line, 3);
+    const bulkWarnings = [];
+    assert.deepEqual(readAllTranscripts(root, { onWarning: (w) => bulkWarnings.push(w) }).map((r) => r.type), rows.map((r) => r.type));
+    assert.equal(bulkWarnings[0].code, warnings[0].code);
+    assert.deepEqual(readFileSync(file), original, 'opening history never repairs or truncates a file');
+    assert.deepEqual(readdirSync(store.dir), ['transcript.jsonl']);
+  }
+});
+
+test('resuming a torn transcript backs up its exact bytes and preserves its valid records and usage', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rt-torn-resume-'));
+  const store = openDebateDir(root, 'torn');
+  const file = path.join(store.dir, 'transcript.jsonl');
+  const prefix = Buffer.from([head({ critiqueRounds: 0 }), reply(SEATS[0], 0, 'Ship now')].map((r) => JSON.stringify(r)).join('\n') + '\n');
+  const original = Buffer.concat([prefix, Buffer.from('{"type":"reply","text":"partial')]);
+  writeFileSync(file, original);
+  const rb = rebuildDebate(store.readTranscript({ onWarning() {} }));
+  const recovery = store.prepareAppend();
+  assert.equal(recovery.type, 'transcript-recovered');
+  assert.equal(recovery.line, 3);
+  assert.deepEqual(readFileSync(path.join(store.dir, recovery.backup)), original);
+  const calls = [];
+  const d = createDebate({ fieldNotes: rb.fieldNotes, seats: rb.seats, chairman: rb.chairman, options: rb.options,
+    resume: { rounds: rb.rounds, humanNotes: rb.humanNotes, ledger: rb.ledger }, store,
+    gate: async () => ({ action: 'continue' }), runner: async (vendor, prompt, sid, opts) => {
+      calls.push(opts.seat.id);
+      return { text: opts.seat.id === 'chairman' ? VERDICT_OK : text('Ship now'), usage: { input: 2, output: 1 } };
+    } });
+  assert.equal((await d.run()).status, 'done');
+  const bytes = readFileSync(file);
+  assert.deepEqual(bytes.subarray(0, prefix.length), prefix, 'the valid prefix stays byte-for-byte intact');
+  const rows = bytes.toString('utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(rows.filter((r) => r.type === 'field-notes').length, 1);
+  assert.equal(rows.filter((r) => r.type === 'transcript-recovered').length, 1);
+  assert.equal(rebuildDebate(rows).finished, true);
+  assert.equal(rebuildDebate(rows).ledger.length, 1 + calls.length, 'the paid partial round stays in the ledger');
+  assert.equal(rebuildDebate(rows).events.find((e) => e.type === 'transcript-warning').backup, recovery.backup);
+  assert.deepEqual(readFileSync(path.join(store.dir, recovery.backup)), original, 'later appends leave the backup untouched');
+  assert.equal(store.prepareAppend(), null, 'repeated preparation creates no extra recovery');
+});
+
+test('append separates a valid last row without a newline and preserves blank lines and Unicode', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rt-final-row-'));
+  const store = openDebateDir(root, 'valid');
+  const file = path.join(store.dir, 'transcript.jsonl');
+  const row = { type: 'human', round: 0, text: 'A full row 💡' };
+  const original = JSON.stringify(head()) + '\r\n \t\r\n' + JSON.stringify(row);
+  writeFileSync(file, original);
+  assert.equal(store.readTranscript().length, 2);
+  store.append({ type: 'human', round: 0, text: 'Next' });
+  assert.deepEqual(store.readTranscript().map((r) => r.type), ['field-notes', 'human', 'human']);
+  assert.equal(store.readTranscript()[1].text, row.text);
+  assert.ok(readFileSync(file, 'utf8').startsWith(original + '\n'));
+  assert.deepEqual(readdirSync(store.dir), ['transcript.jsonl'], 'a valid file needs no recovery backup');
+});
+
+test('corrupt completed lines are reported, never skipped into a resumable record or bulk calibration', () => {
+  const good = JSON.stringify(head()) + '\n';
+  for (const bad of [good + 'broken\n', good + 'broken\n' + JSON.stringify(reply(SEATS[0], 0, 'Ship now')) + '\n', good + 'null', good + '[]\n', good + '{}\n', '{"type":', Buffer.concat([Buffer.from(good), Buffer.from([0xff, 10])])]) {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'rt-corrupt-'));
+    const store = openDebateDir(root, 'corrupt');
+    const file = path.join(store.dir, 'transcript.jsonl');
+    writeFileSync(file, bad);
+    const isCorruption = (e) => e.code === 'TRANSCRIPT_CORRUPT' && /line \d+/.test(e.message) && /backup/i.test(e.message);
+    assert.throws(() => store.readTranscript(), isCorruption);
+    assert.throws(() => store.append({ type: 'human', text: 'must not append' }), isCorruption);
+    const healthy = openDebateDir(root, 'healthy'); healthy.append(head());
+    const warnings = [];
+    assert.equal(readAllTranscripts(root, { onWarning: (w) => warnings.push(w) }).length, 1, 'the whole corrupt record is excluded');
+    assert.equal(warnings.length, 1);
+    assert.equal(warnings[0].code, 'TRANSCRIPT_CORRUPT');
+    assert.deepEqual(readFileSync(file), Buffer.isBuffer(bad) ? bad : Buffer.from(bad));
+    assert.deepEqual(readdirSync(store.dir), ['transcript.jsonl']);
+  }
+});
+
+test('failed recovery writes never replace a transcript or an existing backup', (t) => {
+  t.mock.method(globalThis.crypto, 'randomUUID', () => 'fixed-test-id');
+  for (const blocked of ['transcript.recovery-fixed-test-id.jsonl', 'transcript.repair-fixed-test-id.tmp']) {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'rt-backup-failure-'));
+    const store = openDebateDir(root, 'torn');
+    const file = path.join(store.dir, 'transcript.jsonl');
+    const original = Buffer.from(JSON.stringify(head()) + '\n{"type":');
+    writeFileSync(file, original);
+    writeFileSync(path.join(store.dir, blocked), 'existing file');
+    assert.throws(() => store.prepareAppend(), (e) => e.code === 'EEXIST');
+    assert.deepEqual(readFileSync(file), original);
+    assert.equal(readFileSync(path.join(store.dir, blocked), 'utf8'), 'existing file');
+  }
+});
+
+test('exports disclose a recovered prefix while leaving an unrepaired transcript unchanged', async () => {
+  const { exportDebate } = await import('../src/export.js');
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rt-recovery-export-'));
+  const store = openDebateDir(root, 'torn');
+  const file = path.join(store.dir, 'transcript.jsonl');
+  const original = JSON.stringify(head()) + '\n{"type":"human","text":"unfinished';
+  writeFileSync(file, original);
+  const warnings = [];
+  const rows = store.readTranscript({ onWarning: (w) => warnings.push(w) });
+  const target = mkdtempSync(path.join(os.tmpdir(), 'rt-recovery-record-'));
+  const out = exportDebate(rows, 'torn', target, { warnings });
+  assert.match(readFileSync(out.path, 'utf8'), /## Record recovery\s+.*incomplete final line 2/);
+  assert.equal(readFileSync(file, 'utf8'), original);
+  assert.deepEqual(readdirSync(store.dir), ['transcript.jsonl']);
 });
 
 test('legacy usage is normalised at read time, once: codex input loses its cached part, version 3 rows are left alone', async () => {

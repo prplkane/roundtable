@@ -51,6 +51,19 @@ test('decisionRecord: front matter, every section, tally per round with PASS hol
   assert.doesNotMatch(md, /<[a-z]+>/, 'plain markdown, no HTML');
 });
 
+test('exports label unknown and partial token counts, preserving measured zeros and reported costs', () => {
+  const head = rows()[0];
+  const missing = { type: 'attempt', attemptId: 'u', round: 0, kind: 'reply', seat: SEATS[0], usage: null, unknown: true, cost: 0.05, ms: 12 };
+  const allUnknown = decisionRecord([head, missing], 'unknown').markdown;
+  assert.match(allUnknown, /\| Claude · risk \| unknown \| unknown \| unknown \| \$0\.05 \|/);
+  assert.match(allUnknown, /\| \*\*debate\*\* \| unknown \| unknown \| unknown \| \$0\.05 \|/);
+  assert.match(allUnknown, /1 call\(s\) did not report usable token counts/);
+  const zero = { ...missing, attemptId: 'zero', seat: SEATS[1], usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 } };
+  const mixed = decisionRecord([head, missing, zero], 'partial').markdown;
+  assert.match(mixed, /\| Codex · cost \| 0 \| 0 \| 0 \| \$0\.00 \|/);
+  assert.match(mixed, /\| \*\*debate\*\* \| 0 \(partial\) \| 0 \(partial\) \| 0 \(partial\) \| \$0\.05 \|/);
+});
+
 test('status: decided, split (no option chosen), stopped (human, budget, no verdict)', () => {
   assert.equal(decisionRecord(rows('RECOMMENDATION: the evidence does not support a pick yet.\nTALLY: x\nDISSENT: y\nKILL_CRITERIA:\n- z\nOPEN_QUESTIONS:\n- q'), 's').meta.status, 'split');
   assert.equal(decisionRecord(rows('RECOMMENDATION: the evidence does not support a pick yet.'), 's').meta.chosen, 'no consensus');
