@@ -25,6 +25,8 @@
 
 ### Local operation and interface
 
+- Mark session opening and completion with a brief, silent browser animation. Keep it out of
+  saved-review replay and the JSON agent client; honor reduced-motion settings.
 - Put delayed hover explanations on text labels. Separate positions from arguments, emphasize
   rejection words, and collapse usage into quota bars with expandable details.
 - Collect questions and answers in one area, combine identical questions without a model call,

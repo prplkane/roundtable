@@ -63,7 +63,20 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); font: v
 .seat-card .flat[aria-invalid="true"] { border-color: var(--color-danger); border-style: solid; }
 .seat-field-error { margin: 2px 0 5px; }
 .reply-text { display: contents; }
+.session-ceremony { position: fixed; z-index: 90; top: 68px; left: 50%; width: min(390px, calc(100vw - 32px)); display: flex; align-items: center; gap: 14px; padding: 12px 20px; background: var(--color-surface-raised); border: 1px solid var(--color-border-strong); border-top: 3px solid var(--color-accent); border-radius: var(--radius); box-shadow: 0 8px 28px #24152d24; pointer-events: none; transform: translateX(-50%); }
+.session-ceremony svg { width: 58px; height: 58px; flex: none; fill: var(--color-surface); stroke: var(--color-action); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+.session-ceremony strong { display: block; font: var(--weight-strong) var(--text-md) var(--font-sans); }
+.session-ceremony span { display: block; margin-top: 3px; font-size: var(--text-sm); color: var(--color-text-muted); }
+.session-gavel { transform-origin: 42px 42px; }
+.session-tap { opacity: 0; }
+.session-ceremony.is-playing { animation: session-notice 1750ms ease both; }
+.session-ceremony.is-playing .session-gavel { animation: session-gavel 700ms ease-in-out both; }
+.session-ceremony.is-playing .session-tap { animation: session-tap 700ms ease-out both; }
+@keyframes session-notice { 0% { opacity: 0; transform: translate(-50%, -6px); } 12%, 78% { opacity: 1; transform: translate(-50%, 0); } 100% { opacity: 0; transform: translate(-50%, -3px); } }
+@keyframes session-gavel { 0%, 20% { transform: rotate(-23deg) translateY(-3px); } 48% { transform: rotate(8deg) translateY(3px); } 70% { transform: rotate(-4deg); } 100% { transform: none; } }
+@keyframes session-tap { 0%, 45% { opacity: 0; } 49%, 65% { opacity: 1; } 100% { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) {
+  .session-ceremony { display: none !important; }
   .help-popover, .help-label { transition: none; transform: none; }
   .text-reveal-word { animation: none !important; opacity: 1; text-shadow: none; }
   .cursor, .led-thinking { animation: none; }

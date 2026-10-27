@@ -7,10 +7,13 @@ import { project, projectedWindows } from '/src/estimate.js';
 import { PREFLIGHT_TTL_MS } from '/src/preflight.js';
 import { createBrowserDiagnostics, requestAction } from '/ui/diagnostics.js';
 import { installHelp, revealText, MOOD_HELP } from '/ui/help.js';
+import { installCeremony } from '/ui/ceremony.js';
 import { groupQuestions, answerMessage, stopExplanation, cancellationReason, remainingWindow, argumentHtml } from '/src/review-view.js';
 
 const $ = (id) => document.getElementById(id);
 const helpNotes = installHelp();
+const ceremony = installCeremony();
+let openingSlug = null;
 const replyReveals = new Map();
 const replyKey = (r) => `${r.type}:${r.attemptId || `${r.seat?.id || 'chairman'}:${r.round ?? -1}`}`;
 // The launch token the server put in the page; every POST carries it (server.js refuse()).
@@ -742,7 +745,7 @@ async function start() {
   S.startPending = true; updateLamps();
   try {
     const out = await requestJson('/api/debates', body);
-    if (revision === viewRevision) location.hash = out.slug; // route() opens the board
+    if (revision === viewRevision) { openingSlug = out.slug; location.hash = out.slug; } // route() opens the board
   } catch (e) {
     showSetupError(e);
     loadRecent();
@@ -766,7 +769,7 @@ function budgetBody() {
 // the list of debates. Back and forward work, and a board link can be shared or bookmarked.
 let live = null; // the open board's { es, timer }
 let viewRevision = 0;
-function closeBoard() { if (live) { live.es.close(); clearInterval(live.timer); live = null; } }
+function closeBoard() { ceremony.cancel(); if (live) { live.es.close(); clearInterval(live.timer); live = null; } }
 function route() {
   viewRevision++;
   closeBoard();
@@ -833,6 +836,8 @@ function openBoard(slug) {
   es.onopen = () => { S.connected = true; void clientDiagnostics.flush(); renderGate(); renderBanners(); };
   live = { es, timer: setInterval(tick, 1000) };
   render(); // clear what the last board showed, before this one's first event (or a 404)
+  if (openingSlug === slug) ceremony.play('open');
+  openingSlug = null;
 }
 
 function resetBoard({ clearDrafts = false } = {}) {
@@ -878,7 +883,7 @@ function handle(e) {
     case 'chairman-fallback': S.chairmanFallback = e; break;
     case 'attempt': S.rows.push(e); break;
     case 'verdict': S.rows.push(e); S.verdict = e; break;
-    case 'done': S.status = 'done'; S.gate = null; S.deadline = null; S.pending.clear(); S.stopReason = e.reason || S.stopReason; S.replayed = !!e.replayed; S.synthesis = e.synthesis || (S.verdict ? (S.verdict.skipped ? 'skipped' : S.verdict.failed ? 'failed' : 'done') : 'missing'); break;
+    case 'done': S.status = 'done'; S.gate = null; S.deadline = null; S.pending.clear(); S.stopReason = e.reason || S.stopReason; S.replayed = !!e.replayed; S.synthesis = e.synthesis || (S.verdict ? (S.verdict.skipped ? 'skipped' : S.verdict.failed ? 'failed' : 'done') : 'missing'); if (!e.replayed) ceremony.play('close', { verdictReady: S.synthesis === 'done' }); break;
     case 'synthesize': S.status = 'verdict'; S.verdict = null; break;
     case 'accepted': S.accepted = e; break;
     case 'exported': S.exported = e; S.exportError = null; break;

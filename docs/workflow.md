@@ -252,6 +252,10 @@ Open **Usage details** for per-seat tokens, partial totals, costs, timing and ot
 
 Press **Open the table**.
 
+A brief, silent gavel animation marks a new session and its completion. It does not delay
+requests or block controls. Saved reviews stay still, and reduced-motion settings disable it.
+The JSON agent client does not load the animation or other browser assets.
+
 1. **Round 0 is blind.** Every seat answers at once without seeing the others. The board then
    always waits for you. This is the best moment to step in: correct a wrong assumption, add a
    fact, answer a seat's question. Type in the bar at the bottom and press **Continue**, or just
