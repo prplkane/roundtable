@@ -1,15 +1,35 @@
 # Roundtable
 
-Local decision reviews with Claude, Codex and Antigravity. Give each seat a perspective,
-compare blind positions and critique rounds, then accept or override the chairman's
-recommendation. Export the discussion and your decision as Markdown.
+Roundtable runs structured decision reviews with multiple AI models. Provide a question,
+options and constraints; the models take independent positions, critique the alternatives
+and produce a recommendation. You can answer questions, add context and record your own
+decision alongside the result.
 
-Uses your existing CLI logins. Node 22 or newer; no runtime dependencies. Optional
-OpenAI-compatible endpoints support local models and hosted APIs with separate billing.
+Use it to compare technical approaches, review a product decision or examine a plan from
+different perspectives. The browser interface runs locally, and a JSON command-line client
+supports the same workflow for agents and scripts.
+
+**Requirements:** Node.js 22 or newer. No runtime dependencies. Live reviews use installed
+Claude, Codex or Antigravity CLIs, or an OpenAI-compatible endpoint for a local or hosted model.
+
+## How a review works
+
+1. **Define the decision.** Add the alternatives, known facts and constraints. Choose two to
+   eight participants, called seats, and give each a perspective such as risk, cost or evidence.
+   Seats can use different models or share the same provider.
+2. **Collect independent positions.** Each seat answers before seeing the others' responses.
+   The board then pauses for your input.
+3. **Discuss the differences.** A critique round lets seats review the previous replies and
+   revise their positions. Questions appear together so you can answer them in one place.
+4. **Review the recommendation.** A designated chairman summarizes the discussion and its
+   disagreements. Accept the recommendation or record a different decision, then export the
+   record as Markdown.
 
 ## Quick start
 
-Try the demo from a local checkout. It uses scripted replies and makes no model calls.
+### Try the demo
+
+The demo uses scripted replies. It needs no provider account and makes no model calls.
 
 ```bash
 git clone https://github.com/prplkane/roundtable.git
@@ -18,81 +38,80 @@ npm test
 npm run fake -- --no-open
 ```
 
-Open [localhost:4748](http://localhost:4748/). For a live review, install and log in to at
-least one supported CLI, then run:
+Open [localhost:4748](http://localhost:4748/). The header identifies the session as **Demo**.
+
+### Run a live review
+
+Install and sign in to a supported CLI, or configure an OpenAI-compatible endpoint using
+the [provider setup guide](docs/workflow.md). CLI seats use your existing logins; hosted API
+endpoints have separate billing.
 
 ```bash
 npm run doctor
 npm start -- --no-open
 ```
 
-Open [localhost:4747](http://localhost:4747/). The header distinguishes **Demo** from **Live**.
-First use starts with two seats and one critique round; both seats can use the same vendor.
-See the [user guide](docs/workflow.md) for provider setup and a complete walkthrough.
+Open [localhost:4747](http://localhost:4747/). The header identifies the session as **Live**.
+Start with two seats and one critique round; see the [first test-drive checklist](docs/workflow.md#a-first-live-test-drive)
+for a complete walkthrough. `npm run doctor` checks setup without making model calls.
 
-The package is not on npm yet. Once it is published, `npx @prplkane/roundtable fake` and
-`npx @prplkane/roundtable` will start the same boards without a checkout; that version may lag
-the repository. They accept `--port <n>` and `--no-open`; checkout commands use the `PORT`
-environment variable.
+## Controls and limits
 
-## The review workflow
+| Control | Behavior |
+| --- | --- |
+| Answer questions | Add context before the discussion continues. Agent notes and your notes are labelled separately. |
+| Finish with verdict | End the discussion and request a recommendation from the completed replies. Available after a usable round. |
+| Stop | Cancel the discussion and any active chairman call. Saved replies and reported usage remain. |
+| Delete / Clear finished | Remove inactive history while protecting running sessions. Exports and usage statistics are retained. |
 
-- **Independent positions.** Two to eight seats, each with its own lens, mood, model and
-  effort. The first round is blind; later rounds compare the replies.
-- **Human input.** The board waits after the first round and when a seat asks a question.
-  Add a note, continue, or stop. The chairman recommends; you make the final choice.
-- **Bounded execution.** Round and time limits, usage estimates, and budget checks before
-  each provider attempt, including retries. Missing token usage blocks further calls to
-  that vendor when a token cap is set. Running calls can exceed estimates.
-- **Recoverable records.** Reopen saved reviews after a restart. Interrupted final writes
-  retain an exact backup before recovery; corrupt completed records require repair.
-- **Markdown exports.** Keep the recommendation, dissent, human decision, notes and reported
-  usage together in a decision record, with an index for your codebase.
+Set round, time and provider budget limits before starting. Budget checks run before each
+attempt, including retries. If a provider omits token usage while a token cap is set, further
+calls to that provider are blocked. Calls already running can exceed estimates; these checks
+are not guaranteed billing ceilings.
 
-## Data and security
+## Records and privacy
 
-The server listens on loopback. The page loads locally; live reviews send your notes and
-relevant replies to the selected providers. Stateless requests do not control provider
-retention. CLI tool restrictions depend on the installed CLI and are not an OS sandbox.
+- **Local storage:** history is saved outside the checkout in the OS user-data folder, with
+  separate live and demo directories. The board shows the active location under **Local data
+  and backups**. Stop the server before copying or moving that folder.
+- **Recovery and export:** saved reviews can be reopened after a restart. Interrupted writes
+  retain a backup before recovery. Markdown exports include the recommendation, dissent,
+  human decision, notes and reported usage.
+- **Provider access:** live reviews send relevant notes and replies to the selected providers.
+  Local storage and stateless requests do not control provider retention. CLI tool restrictions
+  depend on the installed CLI and are not an operating-system sandbox.
 
-History is saved outside the checkout, in your OS user-data folder, with separate `live` and
-`demo` directories. **Local data and backups** shows the active path; `ROUNDTABLE_DEBATES_DIR`
-overrides it. **Delete** removes one inactive session; **Clear finished** removes the finished
-sessions you confirm. Exported files and usage statistics are kept. Stop the server before
-backing up or moving its data folder. Records and browser preferences may contain private context.
+Records, exports and browser preferences may contain private context. See [SECURITY.md](SECURITY.md)
+for credentials, billing, endpoint restrictions and the local HTTP boundary. If a request
+fails, use **Save error log** and keep its reference ID; diagnostic logs stay local and omit
+review text, credentials and personal paths.
 
-Read [SECURITY.md](SECURITY.md) for credentials, billing, endpoint restrictions and the local
-HTTP boundary. Budget checks use estimates and reported usage; they are not guaranteed
-billing ceilings.
+## Automation and commands
 
-For a first live run, follow the [test-drive steps](docs/workflow.md#a-first-live-test-drive).
-If something fails, use **Save error log** and note the reference ID. Diagnostic logs stay
-local and exclude review text, credentials and personal paths.
+```bash
+node src/cli.js agent --help
+```
 
-## Commands
+The JSON client provides `status`, `check`, `start`, `wait` and `answer` commands, plus controls
+to finish or stop a review. Questions remain paused until answered, explicitly skipped or
+the time limit expires. See the [agent workflow](docs/workflow.md#8-run-a-debate-without-the-browser)
+for request examples and response fields.
 
 | Command | Purpose |
 | --- | --- |
-| `npm start` | Live board on port 4747; opens a browser from an interactive terminal |
-| `npm run fake` | Scripted demo on port 4748 |
-| `npm run doctor` | Inspect installed providers, versions and available status without model calls |
-| `npm run doctor -- --live` | Add one small model call per CLI provider |
-| `node src/cli.js agent --help` | Check setup and run reviews through compact JSON commands; no GUI needed |
-| `npm run debate -- --token <hex> --rounds 1 < debate.json` | Run a review against an existing server without the board |
-| `npm run export -- <debate> <folder>` | Export a decision record and update its index |
-| `npm test` | Offline unit and integration tests; no vendor CLI or model call |
-
-For coding agents, use `agent status`, `check`, `start`, `wait` and `answer`. Questions remain
-paused until answered, explicitly skipped, or the review time limit expires.
-See the [agent workflow](docs/workflow.md#8-run-a-debate-without-the-browser).
+| `npm run fake` | Open the scripted demo on port 4748. |
+| `npm start` | Open the live board on port 4747. |
+| `npm run doctor` | Check installed providers and available status without model calls. |
+| `npm run export -- <debate> <folder>` | Export a decision record and update its index. |
+| `npm test` | Run offline unit and integration tests, without vendor CLIs or model calls. |
 
 ## Documentation
 
-- [User guide](docs/workflow.md): setup, limits, backup, recovery, profiles and troubleshooting
-- [Security](SECURITY.md): data handling, restrictions and private vulnerability reporting
-- [Contributing](CONTRIBUTING.md): development, tests and review requirements
+- [User guide](docs/workflow.md): setup, providers, limits, backup, recovery and troubleshooting
+- [Security](SECURITY.md): data handling and private vulnerability reporting
+- [Contributing](CONTRIBUTING.md): development and review requirements
 - [Changelog](CHANGELOG.md): changes by version
 
-## Licence
+## License
 
 [MIT](LICENSE).
