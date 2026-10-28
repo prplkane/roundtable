@@ -6,6 +6,7 @@
 // stdin: the same JSON body the setup screen posts ({fieldNotes, seats, chairman, options}).
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
+import { dataDirectory } from '../src/history.js';
 
 const arg = (name, dflt) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : dflt; };
 const PORT = Number(arg('port', 4747));
@@ -64,6 +65,6 @@ while (!done) {
 const per = {};
 for (const e of usage) { const k = e.seat.label ? `${e.seat.label} (${e.seat.lens})` : 'chairman'; const u = (per[k] ??= { in: 0, cache: 0, out: 0, cost: 0 }); u.in += e.usage.input; u.cache += e.usage.cacheRead + e.usage.cacheWrite; u.out += e.usage.output; u.cost += e.usage.cost || 0; }
 console.log('\nper seat:'); for (const [k, u] of Object.entries(per)) console.log(`  ${k}: in ${u.in} cache ${u.cache} out ${u.out}${u.cost ? ' $' + u.cost.toFixed(2) : ''}`);
-const f = path.join('debates', '_calibration.json');
+const f = path.join(dataDirectory(), '_calibration.json');
 if (existsSync(f)) console.log('\ncalibration file:', readFileSync(f, 'utf8'));
 process.exit(0);

@@ -636,6 +636,9 @@ The user-data folder is `%LOCALAPPDATA%\Roundtable` on Windows,
 changes. An absolute `ROUNDTABLE_DEBATES_DIR` selects another location; use distinct paths for
 demo and live data. Only one server can use a data folder at a time, even on different ports.
 
+The live diagnostic check (`doctor --live`) keeps its working files under `_doctor/` in the
+same live folder. The headless discussion script reads calibration from that folder too.
+
 ### Delete and clear history
 
 Use **Delete** beside a saved session, then confirm its title. Interrupted sessions can be
