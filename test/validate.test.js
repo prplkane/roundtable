@@ -24,6 +24,9 @@ test('debate request: bounds on rounds, seats, options and caps', () => {
   rejects((b) => { b.options.budget = { codex: { usd: 1 } }; }, /does not report cost/);
   rejects((b) => { b.options.budget = { claude: { tokens: Infinity } }; }, /token cap/);
   rejects((b) => { b.options.memory = 'forever'; }, /memory/);
+  rejects((b) => { b.options.unattended = 'yes'; }, /unattended/);
+  const unattended = base(); unattended.options.unattended = true;
+  assert.equal(validateDebateRequest(unattended, { adapters: ADAPTERS }).options.unattended, true);
   rejects((b) => { b.options.wallClockMs = 10; }, /wallClockMs/);
 });
 

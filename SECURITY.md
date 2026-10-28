@@ -83,6 +83,10 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   per minute. A tab can retain up to 20 sanitized events in session storage until delivered;
   closing it can discard pending events. Logs stay local until you choose to share a download.
   Transcripts, terminal output and provider logs have their own data handling described above.
+- **Copy result:** an explicit browser action copies the readable conclusion and questions to
+  the system clipboard. Review text is still private content; the clipboard may be visible to
+  other applications or managed by your OS clipboard history. No server write or model call is
+  made. If access is blocked, the board offers selected text for manual copying.
 - **Agent client:** `roundtable agent` connects only to a numeric loopback port. It reads the
   page's launch token into memory for authenticated writes, refuses redirects and does not
   print or persist the token. Setup checks and state reads make no model call. Start, answers,

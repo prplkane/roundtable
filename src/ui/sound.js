@@ -62,6 +62,8 @@ const CUES = {
   verdict(t) { knock(t); [523.25, 659.25, 783.99].forEach((f, i) => tone(t + 0.08 + i * 0.075, f, 0.09, { gain: 0.035 })); tone(t + 0.31, 1046.5, 0.26, { gain: 0.03 }); },
   ended(t) { knock(t, { gain: 0.08 }); tone(t + 0.08, 783.99, 0.1, { gain: 0.032 }); tone(t + 0.19, 523.25, 0.22, { gain: 0.032 }); },
   cancelled(t) { tone(t, 392, 0.1, { gain: 0.025 }); tone(t + 0.12, 261.63, 0.16, { gain: 0.025 }); },
+  // The table waits for the person: three rising notes that end on a question, no gavel.
+  waiting(t) { tone(t, 659.25, 0.1, { gain: 0.03 }); tone(t + 0.13, 880, 0.12, { gain: 0.03 }); tone(t + 0.3, 1046.5, 0.3, { gain: 0.028, to: 1108.73 }); },
   failed(t) { knock(t, { gain: 0.07, freq: 700, body: 140 }); tone(t + 0.07, 311.13, 0.16, { type: 'square', gain: 0.022, lowpass: 1100 }); tone(t + 0.25, 233.08, 0.3, { type: 'square', gain: 0.022, lowpass: 900, to: 220 }); },
 };
 

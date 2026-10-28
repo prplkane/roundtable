@@ -11,6 +11,7 @@ const HELP = {
   critique: { title: 'Critique rounds', text: 'After the first independent replies, each seat reads and responds to the others. Set 0 for initial replies and a verdict only; 1 allows one extra exchange. The review can finish early. Extra rounds use more quota.' },
   auto: { title: 'Auto-continue', text: 'How long the table waits at a timed pause before continuing. Clicking or typing requests a pause; “Countdown held” confirms it. A direct question still waits for your answer.' },
   wall: { title: 'Wall clock', text: 'The total time limit, including pauses while you read or type. When it runs out, the review stops. Give yourself enough time to respond.' },
+  unattended: { title: 'Unattended', text: 'Off: the table pauses after the blind round and whenever a seat asks you something. On: it never waits for you; every pause is skipped and questions stay unanswered. For a review nobody is watching.' },
   memory: { title: 'Memory', text: 'Stateless starts a fresh call each round with the relevant notes and replies. Resume continues a growing conversation and may use more tokens. Stateless is a good starting point.' },
   effort: { title: 'Effort', text: 'How much reasoning the model should use. Higher effort can take longer and use more quota. No filled squares means the provider’s default.' },
 };

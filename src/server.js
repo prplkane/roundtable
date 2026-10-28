@@ -62,6 +62,7 @@ const catalogueReady = (FAKE ? vendorCatalogue({ agyModels: async () => [] }) : 
   .then((c) => { catalogue = c; return c; })
   .catch((e) => { diagnostics.write({ code: 'status-failed', action: 'catalogue' }, e); console.error('[catalogue]', e.message); return vendorCatalogue({ agyModels: async () => [] }).then((c) => (catalogue = c)); });
 const effortsByVendor = () => Object.fromEntries(Object.entries(catalogue || {}).map(([v, c]) => [v, c.efforts]));
+const modelsByVendor = () => Object.fromEntries(Object.entries(catalogue || {}).map(([v, c]) => [v, c.models || []]));
 
 // The quota picture. Baselines: tokens per call per vendor from every transcript on disk.
 // Calibration: how much of each vendor window one round took, measured between the quota
@@ -405,7 +406,7 @@ function prepareDebate(raw, { board = false } = {}) {
   const body = validateDebateRequest(raw, { adapters: ADAPTERS });
   const fieldNotes = body.fieldNotes;
   if (fieldNotes.exportTo) fieldNotes.exportTo = validateTarget(fieldNotes.exportTo, { forbid: [DEBATES_DIR] }); // checked up front, not when the verdict lands
-  const seats = normaliseSeats(body.seats, { vendors: ADAPTERS, efforts: effortsByVendor(), hidden: board });
+  const seats = normaliseSeats(body.seats, { vendors: ADAPTERS, efforts: effortsByVendor(), models: modelsByVendor(), hidden: board });
   // a retired model fails its first call: refuse it here, with what to use instead
   for (const s of [...seats, ...(body.chairman ? [body.chairman] : [])]) {
     const r = s?.model && retired(s.vendor, String(s.model).trim());

@@ -363,10 +363,13 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
   }
 
   async function humanGate(round, stop = null) {
-    const questions = state.rounds[round].filter((r) => r.question).map((r) => ({ lens: r.seat.lens, question: r.question }));
+    // seat: for the human's side only; what goes back to the seats names the lens (review-view.js)
+    const questions = state.rounds[round].filter((r) => r.question).map((r) => ({ lens: r.seat.lens, seat: r.seat.id, question: r.question }));
     const blocking = round === 0 || questions.length > 0;
     const reopenable = round === 0 && stop === 'consensus' && round < maxRound;
     const info = { round, mode: blocking ? 'blocking' : 'countdown', reason: round === 0 ? 'round0' : (questions.length ? 'question' : 'auto'), questions, autoContinueMs: opts.autoContinueMs, stop, reopenable };
+    // Nobody is at the table: no pause, no answers. The questions stay on the cards, unanswered.
+    if (opts.unattended) { fire('gate-skipped', { round, questions }); return null; }
     state.status = 'waiting';
     fire('gate', { ...info, deadlineAt });
     // A gate nobody answers ends at the deadline (the server then closes its own side).
@@ -417,7 +420,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     const prompt = chairmanPrompt({
       fieldNotes,
       rounds: state.rounds.map((r) => r.map((x) => ({ lens: x.seat.lens, text: x.text || '(no reply)' }))),
-      humanNotes: state.humanNotes, initialNotes: state.initialNotes,
+      humanNotes: state.humanNotes, initialNotes: state.initialNotes, unattended: !!opts.unattended,
     });
     const R = state.rounds.length;
     // The verdict is checked like a reply: the tool guard and its grammar (contract.validateVerdict).

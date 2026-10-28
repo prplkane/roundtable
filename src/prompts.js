@@ -29,7 +29,7 @@ export function contractText(options) {
     '- up to 2 short bullets of new evidence or angles, or "none"',
     'ASSUMPTIONS:',
     '- up to 3 short bullets: what must be true for your stance',
-    'QUESTION_FOR_HUMAN: <optional; one unanswered question that would change your stance; omit this entire line if none, never write a placeholder or commentary; do not repeat an answered question>',
+    'QUESTION_FOR_HUMAN: <optional; one unanswered question that would change your stance; ask as soon as a missing goal or constraint matters, not at the end; omit this entire line if none, never write a placeholder or commentary; do not repeat an answered question>',
     '',
     'If you have nothing new to add and no change of stance, reply with the single word PASS instead.',
   ].join('\n');
@@ -171,7 +171,7 @@ export function repromptText(errors, options, extra = []) {
   ].join('\n');
 }
 
-export function chairmanPrompt({ fieldNotes, rounds, humanNotes, initialNotes = [] }) {
+export function chairmanPrompt({ fieldNotes, rounds, humanNotes, initialNotes = [], unattended = false }) {
   const parts = [
     'You are the chairman of a roundtable. You did not take part in the debate. Your job is to write the verdict.',
     'Be sceptical. Judge the arguments, not the votes: seats agreeing is not evidence, and a majority can share one unsupported premise.',
@@ -198,12 +198,15 @@ export function chairmanPrompt({ fieldNotes, rounds, humanNotes, initialNotes = 
     'Aim for 220 words total. Keep the reasoning specific; do not repeat the field notes or whole seat replies.',
     LANGUAGE,
     `RECOMMENDATION: <on this line only: one option id (${optionIds(fieldNotes.options).map((o) => o.id).join(' | ')}), or none if the evidence does not support a pick yet>`,
-    'then the rationale on the lines below it, in at most four sentences.',
-    'DISSENT: the strongest argument against the recommendation, stated fairly in at most two sentences, with the lens that made it. Never erase it.',
+    'Below the option id, write two short paragraphs, at most four sentences total. First answer the person directly, naming the suggested approach and any condition it depends on. After a blank line, explain the decisive reasons. Do not lead the prose with lens names or a report of who won.',
+    'For philosophical or reflective questions, give a nuanced conclusion rather than treating the options as an exhaustive binary. A synthesis can use none when no single listed option fits; explain it in the answer.',
+    'If a missing goal or fact could change the answer, make the conclusion explicitly conditional. Use none when you cannot justify a pick. Do not bury that uncertainty in the questions.',
+    'DISSENT: the strongest argument against the recommendation, stated fairly in at most two sentences, with the lens that made it. Preserve substantive dissent; use None. only if there is none.',
     'KILL_CRITERIA:',
-    '- up to 3 bullets, one sentence each: observable evidence that would overturn the recommendation',
+    '- up to 3 bullets, one sentence each: evidence or a changed condition that would change the answer. Do not invent arbitrary thresholds; use None. if nothing specific is supported.',
     'OPEN_QUESTIONS:',
-    '- up to 3 bullets, one sentence each: what the human still has to find out, including any QUESTION_FOR_HUMAN left unanswered',
+    '- up to 3 bullets for the human. Prefix each with NEEDED: when the answer could change the conclusion, or OPTIONAL: for further exploration. Include material unanswered QUESTION_FOR_HUMAN questions; never repeat answered ones. Use the literal None. when no questions remain. Do not fill a quota.',
+    ...(unattended ? ['Nobody answered during this review: every QUESTION_FOR_HUMAN above is still open. Put the ones that matter under OPEN_QUESTIONS and never read silence as agreement.'] : []),
     'Do not restate the tally; it is counted from the replies.',
   );
   return parts.join('\n');
@@ -235,7 +238,9 @@ export function verdictRepromptText({ options, text, errors, extra = [], context
     '',
     'Write it again with the same content, in exactly these sections:',
     `RECOMMENDATION: <on this line only: one option id (${optionIds(options).map((o) => `${o.id} = ${o.label}`).join(' | ')}), or none>`,
-    'then the rationale on the lines below it, in at most four sentences.',
+    'Below the option id, write two short paragraphs, at most four sentences total. First answer the person directly, naming the suggested approach and any condition it depends on. After a blank line, explain the decisive reasons. Do not lead the prose with lens names or a report of who won.',
+    'For philosophical or reflective questions, give a nuanced conclusion rather than treating the options as an exhaustive binary. A synthesis can use none when no single listed option fits; explain it in the answer.',
+    'If a missing goal or fact could change the answer, make the conclusion explicitly conditional. Use none when you cannot justify a pick. Do not bury that uncertainty in the questions.',
     'DISSENT:', 'KILL_CRITERIA:', 'OPEN_QUESTIONS:',
     'Every section must have content. Nothing before or after.',
   ].join('\n');

@@ -28,6 +28,14 @@ export function filterReply(mood, text) {
 // agy: Flash-low over gpt-oss-120b-medium, measured on a hidden-mood prompt: the same input,
 // but gpt-oss wrote 1.7k-4k output tokens to Flash-low's ~190, and took two to four times longer.
 export const LIGHTEST = { claude: 'claude-haiku-4-5', codex: 'gpt-6-luna', agy: 'gemini-3.8-flash-low' };
+// agy's list depends on the account (`agy models`): a Flash-Lite model, where offered, is lighter
+// than Flash, and a family's "-low" level is its lightest. LIGHTEST.agy when the list has neither.
+export function lightestModel(vendor, models = []) {
+  if (vendor !== 'agy') return LIGHTEST[vendor];
+  const rank = (id) => (/flash-lite/.test(id) ? 0 : 3) + (/-low$/.test(id) ? 0 : /-medium$/.test(id) ? 1 : 2);
+  const ids = models.map((m) => m?.id || m).filter((id) => /^gemini-.*flash/.test(String(id)));
+  return ids.sort((a, b) => rank(a) - rank(b))[0] || LIGHTEST.agy;
+}
 
 const STARTER_LENSES = ['risk and failure modes', 'cost and effort', 'evidence and assumptions',
   'long-term effects', 'practical steps', 'alternatives', 'people affected', 'opportunities'];
@@ -189,8 +197,9 @@ function normaliseEndpoint(raw, label) {
 }
 
 // vendors: { [vendor]: { label, effortLevels } } (the adapter table). efforts may widen a
-// vendor's levels from the catalogue (codex reads its list from config.toml).
-export function normaliseSeats(input, { vendors, efforts = {}, hidden = false }) {
+// vendor's levels from the catalogue (codex reads its list from config.toml); models is the
+// catalogue's model list per vendor, for the lightest model a hidden mood runs on.
+export function normaliseSeats(input, { vendors, efforts = {}, models = {}, hidden = false }) {
   const issue = seatSetupIssue((input || []).map((raw) => raw && vendors[raw.vendor] ? raw : null));
   if (issue) throw Object.assign(new Error(issue.message), issue, { status: 400 });
   const seats = [];
@@ -206,7 +215,7 @@ export function normaliseSeats(input, { vendors, efforts = {}, hidden = false })
     const ep = vendors[raw.vendor].kind === 'api' ? normaliseEndpoint(raw, `Seat "${lens}"`) : null;
     const mood = normaliseMood(raw.mood, { hidden });
     // a hidden mood always runs as cheaply as the seat's vendor allows
-    const locked = mood.hidden ? { model: ep ? ep.model : LIGHTEST[raw.vendor] || (raw.model ? String(raw.model).trim() : undefined), effort: allowed[0] || undefined } : null;
+    const locked = mood.hidden ? { model: ep ? ep.model : lightestModel(raw.vendor, models[raw.vendor]) || (raw.model ? String(raw.model).trim() : undefined), effort: allowed[0] || undefined } : null;
     seats.push({
       id: `seat-${seats.length}`,
       vendor: raw.vendor,

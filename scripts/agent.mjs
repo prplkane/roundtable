@@ -21,8 +21,9 @@ const HELP = {
     size: 'Two seats, critiqueRounds 0, memory stateless, an explicit budget per vendor. That is three calls. Add a seat or a round only when the user asks for depth; each one is another full call per seat.',
     lenses: 'Give every seat a different lens, taken from what the decision could get wrong: risk, cost, evidence, reversibility, long-term effects, user impact. Two seats with one lens mostly agree, which wastes a call.',
     moods: 'Pair one sceptical seat (grill) with one practical seat (builder). Use steelman when the user already leans one way, contrarian when the seats would otherwise agree too early.',
-    effort: 'effort low and the lightest model in status for a small review. Raise effort for one seat, not all, when the decision is hard to reverse.',
+    effort: 'effort low and the lightest model in status for the seats of a small review. Give the chairman one effort step more than the seats (medium when they run low): it judges the arguments, and at low effort it dismisses the hardest objection in a word. Raise one seat, not all, when the decision is hard to reverse.',
     context: 'constraints, known, assumed, reversibility and deadline go into every prompt. Fill them only with facts the user stated; put guesses under assumed, never under known. Leave a field empty rather than invent it.',
+    unattended: 'options.unattended true skips every pause: no wait after the blind round and none for questions, which stay unanswered. Off by default; set it only when nobody will answer, since wait then never returns waiting.',
     agreement: 'When gate.reopenCalls is present, every seat already agrees. Empty answers and no message go straight to the verdict. Any answer text or message runs one more round at reopenCalls calls. Send text only if it could change a seat\'s position; a fact that confirms what the seats already said is better left for the verdict.',
   },
 };

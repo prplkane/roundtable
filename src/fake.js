@@ -38,7 +38,7 @@ export function fakeRunner({ consensus = false } = {}) {
     const usage = { input: 9000 + n * 1200, cacheRead: n * 400, cacheWrite: 0, output: 180 + (n % 5) * 40, thinking: 60, cost: vendor === 'claude' ? 0.11 + n * 0.02 : null, ms: 900, usageVersion: 3 };
     let text;
     if (round === -1) {
-      text = `RECOMMENDATION: opt-1\n${pick(options, 0)}, on the balance of risk and cost; the customer lens did not overturn it.\nDISSENT: The customer lens argued that ${pick(options, 1)} protects adoption; that risk is real and should be watched.\nKILL_CRITERIA:\n- Support tickets about the change exceed 5% of weekly volume\n- The migration takes more than two sprints\nOPEN_QUESTIONS:\n- Is the deadline movable by a week?`;
+      text = `RECOMMENDATION: opt-1\nChoose ${pick(options, 0)} if the rollout can be monitored and reversed.\n\nIt offers the better balance of risk and cost. The adoption concern remains worth watching.\nDISSENT: The customer lens argued that ${pick(options, 1)} protects adoption; that risk is real and should be watched.\nKILL_CRITERIA:\n- Support tickets about the change exceed 5% of weekly volume\n- The migration takes more than two sprints\nOPEN_QUESTIONS:\n- OPTIONAL: Is the deadline movable by a week?`;
     } else if (!consensus && round >= 2 && who === 'codex') {
       text = 'PASS';
     } else if (!consensus && round === 0 && who === 'agy' && !/did not follow the contract/.test(prompt)) {
