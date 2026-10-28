@@ -10,6 +10,65 @@ const reply = 'STANCE: opt-1\nAGREE_WITH: []\nDISAGREE: none\nNEW: none\nASSUMPT
 const verdict = 'RECOMMENDATION: opt-1\nTry it.\nDISSENT: cost\nKILL_CRITERIA: overrun\nOPEN_QUESTIONS: date';
 const response = (text) => ({ text, usage: { input: 10, output: 5 } });
 
+for (const trigger of ['Stop', 'saving a reply']) {
+  test(`a failed disk write while ${trigger} still cancels every active call`, async () => {
+    let refuseWrites = false, arrived = 0, entered, finishFirst;
+    const ready = new Promise((resolve) => { entered = resolve; });
+    const signals = [], cancellations = [];
+    const failure = Object.assign(new Error('Synthetic full disk'), { code: 'ENOSPC' });
+    const d = createDebate({ fieldNotes, seats, options: { critiqueRounds: 0 },
+      store: { append() { if (refuseWrites) throw failure; } },
+      cancel: (reason) => cancellations.push(reason), gate: async () => ({ action: 'continue' }),
+      runner: async (_, __, ___, { seat, signal }) => {
+        signals.push(signal);
+        if (++arrived === seats.length) entered();
+        return new Promise((resolve, reject) => {
+          if (seat.id === 'seat-0') finishFirst = () => resolve(response(reply));
+          signal.addEventListener('abort', () => reject(Object.assign(new Error('Synthetic cancellation'), { code: 'KILLED' })), { once: true });
+        });
+      },
+    });
+    const running = d.run();
+    const failed = assert.rejects(running, (error) => error === failure);
+    await ready; refuseWrites = true;
+    if (trigger === 'Stop') assert.throws(() => d.requestStop('Cancel now.'), (error) => error === failure);
+    else finishFirst();
+    await failed;
+    assert.ok(signals.every((signal) => signal.aborted), 'no provider call survives the storage error');
+    assert.deepEqual(cancellations, [trigger === 'Stop' ? 'human' : 'error']);
+    assert.equal(d.state.status, 'error');
+    assert.equal(arrived, seats.length, 'no retry or chairman call starts');
+  });
+}
+
+for (const phase of ['seat', 'chairman']) {
+  test(`a ${phase} network retry is refused if the deadline passes during its delay`, async () => {
+    let clock = 0, failed = false;
+    const calls = [], rows = [];
+    const state = await createDebate({ fieldNotes, seats, now: () => clock,
+      options: { critiqueRounds: 0, wallClockMs: 10_000, networkRetryMs: 10 },
+      gate: async () => ({ action: 'continue' }), store: { append: (row) => rows.push(row) },
+      emit: (_, event) => {
+        // Advance only after retry eligibility was checked, while its delay is pending.
+        if (event.type === 'attempt' && event.errorKind === 'network') setTimeout(() => { clock = 10_001; }, 0);
+      },
+      runner: async (_, __, ___, { seat }) => {
+        calls.push({ seat: seat.id, at: clock });
+        if (!failed && seat.id === (phase === 'seat' ? 'seat-0' : 'chairman')) {
+          failed = true; throw Object.assign(new Error('Synthetic network failure'), { kind: 'network' });
+        }
+        return response(seat.id === 'chairman' ? verdict : reply);
+      },
+    }).run();
+    assert.ok(failed, 'the initial network attempt ran');
+    assert.equal(calls.length, phase === 'seat' ? 2 : 3, 'the retry never reaches the runner');
+    assert.ok(calls.every((call) => call.at < state.deadlineAt));
+    assert.equal(rows.filter((row) => row.type === 'attempt').length, calls.length, 'refused calls add no usage attempt');
+    const stopped = phase === 'seat' ? state.rounds[0][0] : state.verdict;
+    assert.equal(stopped.cancelReason, 'wall-clock');
+  });
+}
+
 test('Finish with verdict at the blind gate works with zero critique rounds', async () => {
   let calls = 0;
   const events = [], rows = [];

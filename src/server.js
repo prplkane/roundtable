@@ -454,7 +454,7 @@ function attachEngine(d, { fieldNotes, seats, chairman, options, resume = null, 
     adapters[vendor](prompt, sessionId, {
       cwd: store.seatDir(opts.seat?.id || 'chairman'), home: opts.seat?.account && ADAPTERS[vendor].home ? profileHome(vendor, opts.seat.account) : null,
       endpoint: opts.seat?.endpoint ? { url: opts.seat.endpoint, keyEnv: opts.seat.keyEnv || null } : null, // an API seat: where to send the round
-      timeoutMs: opts.timeoutMs, model: opts.model || undefined, effort: opts.effort || undefined, tag: d.slug,
+      timeoutMs: opts.timeoutMs, prevCost: opts.prevCost, model: opts.model || undefined, effort: opts.effort || undefined, tag: d.slug,
     });
   // Every reply either carries the vendor's quota or triggers a separate read (not awaited).
   const runner = async (vendor, ...rest) => {
@@ -475,7 +475,7 @@ function attachEngine(d, { fieldNotes, seats, chairman, options, resume = null, 
 
   d.debate = createDebate({
     fieldNotes, seats, chairman, options, runner, gate, store, resume, baselines, provenance: FAKE ? { fake: true } : {}, synthesisOnly,
-    cancel: (reason) => { const n = killAll(d.slug); if (n) console.log(`[${d.slug}] ${reason === 'human' ? 'stop' : reason === 'finish' ? 'finish discussion' : 'wall clock'}: cancelled ${n} call${n === 1 ? '' : 's'}`); },
+    cancel: (reason) => { const n = killAll(d.slug); if (n) console.log(`[${d.slug}] ${reason === 'human' ? 'stop' : reason === 'finish' ? 'finish discussion' : reason === 'error' ? 'engine error' : 'wall clock'}: cancelled ${n} call${n === 1 ? '' : 's'}`); },
     emit: (type, payload) => {
       // run() rejects with the original Error after emitting this. Its catch below logs a
       // sanitized source location and sends one useful failure instead of exposing internals.
@@ -492,6 +492,7 @@ function attachEngine(d, { fieldNotes, seats, chairman, options, resume = null, 
     },
   });
   d.debate.run().catch((e) => {
+    d.synthesizing = false;
     const diagnostic = diagnostics.write({ code: 'engine-failed', action: 'events' }, e);
     push(d, { type: 'error', message: 'The review stopped unexpectedly. Check saved history and save the error log before trying again.', diagnostic });
     console.error(`[${d.slug}]`, e.message);

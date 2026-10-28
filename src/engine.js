@@ -75,16 +75,18 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
   }
   function requestStop(message = '', source = 'human') {
     if (stopRequested || ['done', 'error'].includes(state.status)) return;
-    // Save before acknowledging the request, even if the round ends without another gate.
-    saveHumanNote(writingVerdict ? state.rounds.length - 1 : state.round, message, source);
     stopRequested = true;
     state.stopReason = 'human';
-    // Persist the intent before cancelling, including during a manually requested verdict.
-    // A restart must not turn a cancelled call into a review waiting to resume.
-    record({ type: 'stop', reason: 'human', rounds: state.rounds.length });
-    fire('stop-queued');
-    controller.abort();
-    cancel('human');
+    try {
+      saveHumanNote(writingVerdict ? state.rounds.length - 1 : state.round, message, source);
+      // Persist intent before cancellation when storage is available, including during a
+      // manually requested verdict. A failed write must never keep provider calls alive.
+      record({ type: 'stop', reason: 'human', rounds: state.rounds.length });
+    } finally {
+      controller.abort();
+      cancel('human');
+      fire('stop-queued');
+    }
   }
 
   function canFinish() {
@@ -138,6 +140,10 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     for (let attemptNo = 1; ; attemptNo++) {
       if (stopRequested || finishRequested && !isChairman) return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false,
         error: stopRequested ? 'stopped by the user' : 'discussion ended for the verdict', kind: 'killed', cancelReason: stopRequested ? 'human' : 'finish', fresh: !resumes || seat.sessionId == null, attemptId: null };
+      // The deadline can pass during a retry delay, after the timer already cancelled the
+      // earlier calls. Never dispatch a new call after that one-time cancellation sweep.
+      if (expired()) return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false,
+        error: 'the wall clock ran out before the call', kind: 'killed', cancelReason: 'wall-clock', fresh: !resumes || seat.sessionId == null, attemptId: null };
       const action = attemptNo > 1 ? 'network retry' : kind === 'reprompt' ? 're-prompt' : kind;
       const what = action === 'verdict' ? 'verdict' : `${action} of ${isChairman ? 'the chairman' : seat.lens}`;
       // Check and reserve synchronously at the dispatch boundary. A retry sees the failed
@@ -492,7 +498,12 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     state.deadlineAt = deadlineAt;
     // At the deadline the calls in flight are stopped; each fails for its round.
     const deadlineTimer = setTimeout(() => { deadlineHit = true; if (state.status !== 'done') { controller.abort(); cancel('wall-clock'); } }, Math.max(0, deadlineAt - now()));
-    try { return await runInner(); } finally { clearTimeout(deadlineTimer); }
+    try { return await runInner(); }
+    catch (error) {
+      state.status = 'error';
+      if (!controller.signal.aborted) { controller.abort(); cancel('error'); }
+      throw error;
+    } finally { clearTimeout(deadlineTimer); }
   }
 
   async function runInner() {

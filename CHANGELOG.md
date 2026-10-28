@@ -8,6 +8,8 @@
   Limit decoded API responses, including errors, to 1 MiB.
 - Check budgets before every provider attempt, including retries and fallback chairmen.
   Reserve for concurrent calls and the verdict; refused calls add no usage.
+- Recheck the wall-clock deadline after a retry delay, before dispatching another provider call.
+- Carry the saved cumulative cost into resumed CLI calls so a server restart does not charge it twice.
 - Keep missing token counts unknown and block further calls to that vendor under a token cap,
   including after restart. Show unknown or partial totals while retaining reported costs.
 - Make preflight reads cached-only. Authenticate refreshes, share overlapping checks, and
@@ -23,6 +25,7 @@
   outside the checkout, and allow one server per data folder.
 - Make Stop cancel the whole review, including automatic and manually requested verdicts.
   Keep Stop visible during synthesis and distinguish cancellation from successful completion.
+  Cancel active calls even if a transcript write fails; fatal engine errors cancel them too.
 - Add Finish with verdict after the first usable round, so ending discussion and aborting the
   whole review are separate choices in the board and agent client.
 - Keep agent-submitted notes distinct from human notes in the board, prompts, replay and exports.
