@@ -36,6 +36,8 @@ test('extra bullets are trimmed to the limit, not sent back for a re-prompt', ()
   assert.deepEqual(r.parsed.disagree, ['a', 'b', 'c']);
   assert.deepEqual(r.parsed.new, ['one', 'two']);
   assert.deepEqual(r.parsed.trimmed, ['DISAGREE', 'NEW']);
+  const rant = validateReply(['STANCE: opt-1', 'AGREE_WITH: []', 'DISAGREE:', '- a', '- b', '- c', '- d', 'NEW:', '- one', '- two', '- three', 'ASSUMPTIONS:', '- x'].join('\n'), { options: OPTS, round: 1, trim: false });
+  assert.deepEqual([rant.parsed.disagree.length, rant.parsed.new.length, rant.parsed.trimmed], [4, 3, undefined], 'a hidden mood keeps its whole rant');
   assert.equal(validateReply('STANCE: opt-1\nDISAGREE:\n- a\nNEW: none\nASSUMPTIONS:\n- x', { options: OPTS, round: 0 }).parsed.trimmed, undefined);
 });
 

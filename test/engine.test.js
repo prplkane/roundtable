@@ -647,7 +647,7 @@ test('unknown token usage blocks further calls only for that capped vendor, incl
     };
     const d = createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS, chairman: { vendor: 'claude' }, runner,
       gate: autoGate, store: { append: (r) => rows.push(r) },
-      options: { critiqueRounds: 2, networkRetryMs: 0, budget: capped ? { codex: { tokens: 1_000_000 } } : {} } });
+      options: { critiqueRounds: 2, networkRetryMs: 0, seatTokenCap: 0, budget: capped ? { codex: { tokens: 1_000_000 } } : {} } });
     const s = await d.run();
     assert.equal(calls === 1, capped, `${failure}, capped=${capped}`);
     assert.equal(rows.filter((r) => r.type === 'attempt' && r.seat.vendor === 'codex').length, calls, 'refusals are not attempts');
@@ -879,12 +879,12 @@ test('a login out of quota is down for the debate: its seat is skipped without a
   assert.ok(s.verdict.text && !s.verdict.failed, 'the debate goes on with the other seats');
 });
 
-test('a network failure gets one retry, and a second one fails the seat for the round only', async () => {
+test('a network failure with reported usage gets one retry, and a second fails the seat for the round only', async () => {
   const fr = fakeRunner(disagreeForever);
   let tries = 0;
   const runner = async (vendor, prompt, sid, o) => {
-    if (vendor === 'agy' && /round 0/i.test(prompt) && tries++ < 1) throw Object.assign(new Error('Antigravity: could not reach the service.'), { kind: 'network' });
-    if (vendor === 'codex') throw Object.assign(new Error('Codex: could not reach the service.'), { kind: 'network' });
+    if (vendor === 'agy' && /round 0/i.test(prompt) && tries++ < 1) throw Object.assign(new Error('Antigravity: could not reach the service.'), { kind: 'network', usage: { input: 0, output: 0 } });
+    if (vendor === 'codex') throw Object.assign(new Error('Codex: could not reach the service.'), { kind: 'network', usage: { input: 0, output: 0 } });
     return fr.runner(vendor, prompt, sid, o);
   };
   const events = [];
@@ -1045,10 +1045,10 @@ test('a seat out for the debate leaves the table: the others can reach consensus
   assert.equal(b.stopReason, 'seats-down');
   assert.equal(b.rounds.length, 1);
   assert.ok(b.verdict.text && !b.verdict.skipped, 'the chairman still writes from what was said');
-  // a seat failing for one round only (a timeout) still blocks consensus that round
+  // a timeout with reported usage can retry next round, but still blocks consensus this round
   let n = 0;
   const fr3 = fakeRunner(() => reply('Ship now'));
-  const runner3 = async (vendor, ...rest) => { if (vendor === 'agy' && n++ === 0) throw Object.assign(new Error('timed out'), { kind: 'timeout', code: 'TIMEOUT' }); return fr3.runner(vendor, ...rest); };
+  const runner3 = async (vendor, ...rest) => { if (vendor === 'agy' && n++ === 0) throw Object.assign(new Error('timed out'), { kind: 'timeout', code: 'TIMEOUT', usage: { input: 10, output: 0 } }); return fr3.runner(vendor, ...rest); };
   const c = await createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS, runner: runner3, gate: autoGate, store: stub(), emit() {}, options: { critiqueRounds: 3 } }).run();
   assert.equal(c.rounds.length, 2, 'round 0 had a timeout, so consensus waited for round 1');
 });
@@ -1077,4 +1077,84 @@ test('a chairman whose login is out hands the verdict to another seated vendor, 
   const c = await createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS.slice(0, 2), chairman: { vendor: 'claude' }, runner: runner3, gate: autoGate, store: stub(), emit() {}, options: { critiqueRounds: 0 } }).run();
   assert.equal(c.stopReason, 'all-failed', 'no seat answered at all');
   assert.ok(c.verdict.failed || c.verdict.skipped, 'no vendor left to fall back to');
+});
+
+test('seat cap: a seat that would pass its own token cap sits out; a hidden mood gets the smaller cap', async () => {
+  const baselines = Object.fromEntries(['claude', 'codex', 'agy'].map((v) => [v, { fresh: { input: 100, output: 10, n: 1, cost: null, nCost: 0 }, resumed: { input: 100, output: 10, n: 1, cost: null, nCost: 0 } }]));
+  const seats = [{ ...SEATS[0], mood: { preset: 'custom', text: 'x', hidden: 'h1' } }, SEATS[1], SEATS[2]];
+  const fr = fakeRunner(disagreeForever);
+  const events = [];
+  // each call projects 110 tokens and spends 15: a 120 hidden cap fits round 0 only (0 + 110), not round 1 (15 + 110)
+  const d = createDebate({ fieldNotes: FIELD_NOTES, seats, runner: fr.runner, gate: autoGate, store: { append() {}, writeFieldNotes() {}, writeVerdict() {} },
+    emit: (t, p) => events.push(p), options: { critiqueRounds: 2, hiddenSeatTokenCap: 120 }, baselines });
+  const s = await d.run();
+  const capped = events.filter((e) => e.type === 'budget');
+  assert.ok(capped.length >= 1 && capped.every((e) => e.kind === 'seat-tokens' && e.seat === 'seat-0' && e.cap === 120), 'only the hidden seat meets a cap, its own');
+  assert.equal(s.rounds.length, 3, 'the other seats keep going under the large ordinary cap');
+  const hidden = (round) => s.rounds[round].find((r) => r.seat.index === 0);
+  assert.equal(hidden(0).failed, false, 'round 0 fit');
+  assert.deepEqual([hidden(1).failed, hidden(1).errorKind], [true, 'budget'], 'round 1 did not');
+  assert.match(hidden(1).errors.join(' '), /token cap for this review/);
+  assert.ok(s.verdict.text, 'the verdict still runs');
+});
+
+test('a chairman whose first attempt has nothing to keep is re-prompted with the whole question, not just the format', async () => {
+  let n = 0;
+  const fr = fakeRunner((v, round) => (round === 'verdict' ? (n++ === 0 ? { text: "I'll create a plan file and put the RECOMMENDATION there.", usedTools: true } : GOOD_VERDICT) : disagreeForever(v, round)));
+  const d = createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS, runner: fr.runner, gate: autoGate, store: stub(), emit() {}, options: { critiqueRounds: 0 } });
+  const s = await d.run();
+  const chair = fr.calls.filter((c) => c.round === 'verdict');
+  assert.equal(chair.length, 2, 'one re-prompt');
+  assert.ok(chair[1].prompt.includes(FIELD_NOTES.decision), 'the retry carries the decision');
+  assert.match(chair[1].prompt, /--- TRANSCRIPT/, 'and the discussion');
+  assert.match(chair[1].prompt, /DID NOT FOLLOW THE FORMAT/);
+  assert.equal(s.verdict.failed, false);
+});
+
+test('a hidden-mood seat that leaves out AGREE_WITH costs no re-prompt; an ordinary seat still gets one', async () => {
+  const noAgree = (stance) => reply(stance).replace(/^AGREE_WITH:.*\n/m, '');
+  const seats = [{ ...SEATS[0], mood: { preset: 'custom', text: 'x', hidden: 'h1' } }, SEATS[1], SEATS[2]];
+  const fr = fakeRunner((v, round) => (round === 'verdict' ? GOOD_VERDICT : round === 'reprompt' ? reply('Ship now') : round >= 1 ? noAgree(v === 'codex' ? 'Wait a sprint' : 'Ship now') : reply(v === 'codex' ? 'Wait a sprint' : 'Ship now')));
+  const d = createDebate({ fieldNotes: FIELD_NOTES, seats, runner: fr.runner, gate: autoGate, store: stub(), emit() {}, options: { critiqueRounds: 1 } });
+  const s = await d.run();
+  const r1 = s.rounds[1];
+  assert.equal(r1.find((r) => r.seat.index === 0).reprompted, false, 'the hidden seat is read as agreeing with nobody');
+  assert.equal(r1.find((r) => r.seat.index === 1).reprompted, true, 'an ordinary seat is still asked again');
+});
+
+
+test('a seat cap blocks unknown or partial usage before another round, re-prompt or network retry', async () => {
+  for (const failure of ['valid', 'format', 'network']) for (const partial of [false, true]) {
+    const fr = fakeRunner(disagreeForever), rows = [];
+    let seatCalls = 0;
+    const usage = partial ? { input: 2, output: 1, tokenCoverage: { reported: 1, of: 2 } } : null;
+    const runner = async (vendor, prompt, sid, opts) => {
+      if (opts.seat.id !== 'seat-1') return fr.runner(vendor, prompt, sid, opts);
+      seatCalls++;
+      if (failure === 'network') throw Object.assign(new Error('lost response'), { kind: 'network', usage });
+      return { text: failure === 'format' ? 'invalid reply' : reply('Wait a sprint'), usage };
+    };
+    const state = await createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS, chairman: { vendor: 'codex' }, runner,
+      gate: autoGate, store: { append: (row) => rows.push(row) }, options: { critiqueRounds: 2, networkRetryMs: 0 } }).run();
+    assert.equal(seatCalls, 1, `${failure}, partial=${partial}: no further dispatch under the seat cap`);
+    assert.equal(rows.filter((r) => r.type === 'attempt' && r.seat.id === 'seat-1').length, 1, 'refusals do not invent attempts');
+    assert.equal(rows.find((r) => r.type === 'budget').kind, 'seat-tokens-unknown');
+    assert.equal(state.verdict.failed, false, 'a seat cap does not block a separate chairman on the same vendor');
+    assert.equal(state.rounds.length, 3, 'other seats continue');
+  }
+});
+
+test('a seat cap retains unknown usage after replay and resume', async () => {
+  const { rebuildDebate } = await import('../src/store.js');
+  const rows = [], first = fakeRunner(disagreeForever);
+  await createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS, runner: async (vendor, prompt, sid, opts) => ({
+    ...await first.runner(vendor, prompt, sid, opts), ...(opts.seat.id === 'seat-1' ? { usage: null } : {}),
+  }), gate: autoGate, store: { append: (row) => rows.push(row) }, options: { critiqueRounds: 0 } }).run();
+  const rebuilt = rebuildDebate(rows), resumed = fakeRunner(disagreeForever);
+  const state = await createDebate({ fieldNotes: FIELD_NOTES, seats: rebuilt.seats, runner: resumed.runner,
+    gate: autoGate, store: stub(), options: { critiqueRounds: 2 },
+    resume: { rounds: rebuilt.rounds, humanNotes: rebuilt.humanNotes, ledger: rebuilt.ledger } }).run();
+  assert.equal(resumed.calls.filter((c) => c.key === 'seat-1').length, 0, 'restart does not clear the cap');
+  assert.ok(state.rounds.slice(1).every((round) => round.find((r) => r.seat.id === 'seat-1').errorKind === 'budget'));
+  assert.equal(state.verdict.failed, false);
 });

@@ -11,7 +11,7 @@ import { playCue } from '/ui/sound.js';
 const ART = sprite('chairman');
 const GAVEL = ART.map((row, y) => (y <= 7 ? row : ''));
 const BLOCK = ART.map((row, y) => (y >= 9 ? row : ''));
-const FINE = 2, SIZE = 12 * FINE, PAD = 3, PIVOT = [11.5 * FINE, 7.5 * FINE]; // PAD: headroom for the lifted head
+const FINE = 2, SIZE = 12 * FINE, PAD = 5, PIVOT = [11.5 * FINE, 4 * FINE]; // PAD: headroom for the lifted head
 function rotated(rows, deg) {
   const r = (deg * Math.PI) / 180, cos = Math.cos(r), sin = Math.sin(r), [px, py] = PIVOT;
   return Array.from({ length: SIZE + PAD }, (_, i) => Array.from({ length: SIZE }, (_, x) => {
@@ -21,7 +21,7 @@ function rotated(rows, deg) {
   }).join(''));
 }
 const scaled = (rows) => [...Array(PAD).fill(''), ...rows.flatMap((row) => { const r = [...row].map((c) => c.repeat(FINE)).join(''); return Array(FINE).fill(r); })];
-const ANGLES = [0, 8, 16, -14, 4]; // rest, lifted, high, struck, bounce
+const ANGLES = [0, 6, 12, -7, 3]; // rest, lifted, high, struck, bounce
 
 // [ms after play, frame]. The strike lands on frame 0 at HIT_MS, where the sound's knock is.
 const HIT_MS = 505;

@@ -5,7 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import path from 'node:path';
 
 import { PUBLIC, DEV_ONLY } from './public-tree.mjs';
@@ -58,4 +58,16 @@ test('the npm package ships only public files, and local state stays ignored', (
   }
   const ignore = readFileSync(path.join(ROOT, '.gitignore'), 'utf8').split(/\r?\n/);
   for (const must of ['debates/', 'debates-fake/']) assert.ok(ignore.includes(must), `.gitignore lists ${must}`);
+});
+
+test('a public tree ships only the public persona catalogue', async () => {
+  const { PERSONA_EDITION, HIDDEN_MOODS } = await import('../src/personas.js');
+  if (existsSync(path.join(ROOT, 'internal', 'export-public.mjs'))) {
+    assert.equal(PERSONA_EDITION, 'development');
+    assert.equal(HIDDEN_MOODS.length, 5, 'the development checkout retains every persona');
+    return;
+  }
+  assert.equal(PERSONA_EDITION, 'public', 'export the public tree before publishing');
+  assert.deepEqual(HIDDEN_MOODS.map((h) => h.codes).flat().sort(), ['alien', 'cat', 'meow', 'ufo']);
+  assert.deepEqual(HIDDEN_MOODS.map((h) => h.art), ['h1', 'h2']);
 });

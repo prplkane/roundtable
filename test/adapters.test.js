@@ -201,6 +201,9 @@ test('a profile home is created empty and no credential file is ever read or cop
     assert.match(r.text, /^STANCE:/);
     const rec = JSON.parse(readFileSync(record, 'utf8'));
     assert.equal(rec.env.CLAUDE_CONFIG_DIR, home, 'the CLI is pointed at the profile home');
+    assert.equal(rec.env.MAX_THINKING_TOKENS, undefined, 'an ordinary seat keeps the CLI default thinking');
+    await run('hello', null, { minimal: true, cwd: path.join(fakeHome, 'cwd'), timeoutMs: 20_000 });
+    assert.equal(JSON.parse(readFileSync(record, 'utf8')).env.MAX_THINKING_TOKENS, '0', 'a minimal seat turns thinking off');
     assert.equal(rec.stdin, 'hello');
     assert.ok(existsSync(home), 'the home exists so the CLI can write its own login there');
     assert.deepEqual(readdirSync(home), [], 'and it is empty: nothing was seeded into it');

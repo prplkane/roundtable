@@ -1,5 +1,5 @@
 const CODES = new Set(['browser-network', 'browser-timeout', 'browser-response', 'browser-error', 'browser-rejection', 'browser-stream', 'browser-validation']);
-const ACTIONS = new Set(['setup', 'history', 'delete', 'clear-finished', 'preflight', 'create', 'events', 'continue', 'finish', 'stop', 'hold', 'resume', 'export', 'synthesize', 'accept', 'pools', 'diagnostics', 'unknown']);
+const ACTIONS = new Set(['setup', 'history', 'delete', 'clear-finished', 'preflight', 'create', 'events', 'continue', 'finish', 'stop', 'hold', 'resume', 'export', 'synthesize', 'accept', 'pools', 'diagnostics', 'pick-folder', 'unknown']);
 const KEY = 'roundtable.diagnostics';
 
 export function requestAction(url, write = false) {

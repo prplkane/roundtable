@@ -120,7 +120,8 @@ export function makeAdapter(name, overrides = {}) {
     if (opts.home && cfg.home) { mkdirSync(opts.home, { recursive: true }); home = { env: cfg.home.env, dir: opts.home }; }
     if (opts.cwd) mkdirSync(opts.cwd, { recursive: true }); // a missing cwd makes spawn fail with ENOENT
     const res = await runProcess(bin, args, {
-      stdin, cwd: opts.cwd, timeoutMs: opts.timeoutMs ?? 300_000, env: cleanEnv(home), tag: opts.tag ?? null,
+      // opts.minimal: the seat runs as cheaply as the vendor allows (cfg.minimalEnv, if any)
+      stdin, cwd: opts.cwd, timeoutMs: opts.timeoutMs ?? 300_000, env: { ...cleanEnv(home), ...(opts.minimal && cfg.minimalEnv) }, tag: opts.tag ?? null,
     });
     const raw = {
       args: args.map((a) => (a.length > 200 ? a.slice(0, 200) + '...' : a)),

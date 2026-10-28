@@ -12,6 +12,7 @@
 // no usage of their own, so nothing can be counted twice (ledgerEntries, rollup).
 
 import { validateReply, validateVerdict } from './contract.js';
+import { filterReply } from './seats.js';
 import { round0Prompt, roundPrompt, repromptText, chairmanPrompt, statelessPrefix, statelessRoundPrompt, statelessRepromptText, verdictRepromptText } from './prompts.js';
 import { projectRound, projectChairman, budgetCheck } from './estimate.js';
 import { noteRecord, storedNote } from './notes.js';
@@ -23,6 +24,11 @@ const POOL_FATAL = new Set(['quota', 'auth', 'missing']);
 
 export const DEFAULTS = {
   critiqueRounds: 1,       // rounds after round 0; deeper reviews are an explicit choice
+  // Tokens one seat may use in one review (prompt, cache and output together), so a seat that
+  // produces unusually large replies sits out before another projected call exceeds its cap.
+  // A hidden mood gets enough for several rounds of fun, no more.
+  seatTokenCap: 400_000,
+  hiddenSeatTokenCap: 60_000,
   wallClockMs: 30 * 60_000,
   callTimeoutMs: 5 * 60_000,
   autoContinueMs: 60_000,
@@ -153,6 +159,17 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       if (crossing) return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false,
         error: budgetRefusal(crossing, action), kind: 'budget',
         fresh: !resumes || seat.sessionId == null, attemptId: null };
+      if (!isChairman) {
+        const cap = seatCap(seat), spent = seatSpent(seat), next = projection[seat.vendor]?.tokens || 0;
+        if (cap > 0 && (spent.unknown || spent.tokens + next > cap)) {
+          const info = { kind: spent.unknown ? 'seat-tokens-unknown' : 'seat-tokens', vendor: seat.vendor, seat: seat.id, spent: spent.tokens, projected: next, cap, what };
+          record({ type: 'budget', ...info }); fire('budget', info);
+          return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false, kind: 'budget',
+            error: spent.unknown ? `${action} was not run: ${seat.lens} token usage is unknown, so further calls under its seat cap are blocked`
+              : `${action} was not run: ${seat.lens} would pass its ${cap.toLocaleString('en')}-token cap for this review`,
+            fresh: !resumes || seat.sessionId == null, attemptId: null };
+        }
+      }
       const attemptId = newId();
       reserved.set(attemptId, projection);
       const res = await callOnce(seat, prompt);
@@ -190,7 +207,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       const usage = accounting(res);
       const cancelReason = cancellation();
       if (cancelReason) return { ok: false, text: '', usage, reported: !!res.usage, error: cancellationText(cancelReason), kind: 'killed', cancelReason, fresh: sessionId == null };
-      return { ok: true, text: res.text || '', usage, reported: !!res.usage, raw: res.raw, fresh: sessionId == null, usedTools: !!res.usedTools };
+      return { ok: true, text: filterReply(seat.mood, res.text || ''), usage, reported: !!res.usage, raw: res.raw, fresh: sessionId == null, usedTools: !!res.usedTools };
     } catch (e) {
       const cancelReason = cancellation();
       const error = cancelReason ? cancellationText(cancelReason) : e.message;
@@ -217,9 +234,11 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
   // One seat's turn in a round: call, validate, re-prompt once on violation. In stateless mode
   // the re-prompt carries the offending reply, since there is no thread to point back at.
   // Validate a call's result: the reply contract, plus the tool-use guard when strict.
-  function check(res, round) {
+  function check(res, round, seat) {
     if (!res.ok) return { ok: false, errors: [res.error], parsed: null, tools: false };
-    const v = validateReply(res.text, { options: fieldNotes.options, round });
+    // a hidden mood is in it for the joke: keep its whole rant, and read a missing AGREE_WITH line as
+    // agreeing with nobody instead of paying for a re-prompt
+    const v = validateReply(res.text, { options: fieldNotes.options, round, trim: !seat?.mood?.hidden, requireAgree: !seat?.mood?.hidden });
     const tools = opts.strictTools && res.usedTools;
     if (!tools) return { ...v, tools: false };
     return { ok: false, errors: [...v.errors, 'used tools or ran commands, which are not allowed at this table'], parsed: v.parsed, tools: true };
@@ -229,7 +248,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     fire('seat-start', { round, seat: pub(seat) });
     seatState(seat, round, 'thinking');
     let res = await callSeat(seat, prompt, round, 'reply', oneCall(seat, round));
-    let v = check(res, round);
+    let v = check(res, round, seat);
     let reprompted = false, toolFail = false;
     if (res.ok && !v.ok) {
       let crossing;
@@ -251,7 +270,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
           : statelessRepromptText({ prefix: prefixFor(seat), round, maxRound, text: res.text, errors: v.errors, extra, notes: allNotes(round) });
         const res2 = await callSeat(seat, again, round, 'reprompt', oneCall(seat, round));
         res = { ...res2, fresh: res.fresh, usedTools: res.usedTools || res2.usedTools };
-        v = check(res2, round);
+        v = check(res2, round, seat);
         // Tools twice: the seat fails for this round, whatever the text says.
         if (v.tools) { toolFail = true; res = { ...res, ok: false, error: 'used tools again after being told not to' }; v = { ok: false, errors: [res.error], parsed: null, tools: true }; }
       }
@@ -418,7 +437,11 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       if (!synthesisOnly && expired()) v = { ok: false, errors: ['the wall clock ran out before the re-prompt'] };
       else if ((crossing = budgetGate('re-prompt of the chairman', chairmanCall(seat)))) v = { ok: false, errors: [budgetRefusal(crossing, 're-prompt')] };
       else {
-        res = await callSeat(seat, verdictRepromptText({ options: fieldNotes.options, text: first.text, errors: v.errors, extra: v.tools ? [NO_TOOLS_LINE] : [] }), R, 'reprompt', chairmanCall(seat), { isChairman: true });
+        // nothing to reformat (not even a recommendation) and no session holding the first prompt:
+        // send the whole prompt again, or the chairman cannot know the question at all
+        const lost = v.errors.some((e) => /missing RECOMMENDATION/.test(e));
+        const context = lost && !resumes ? prompt : null;
+        res = await callSeat(seat, verdictRepromptText({ options: fieldNotes.options, text: first.text, errors: v.errors, extra: v.tools ? [NO_TOOLS_LINE] : [], context }), R, 'reprompt', chairmanCall(seat), { isChairman: true });
         v = res.ok ? checkVerdict(res) : { ok: false, errors: [res.error] };
         if (v.tools) v = { ok: false, errors: ['used tools again after being told not to'] };
       }
@@ -440,6 +463,8 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     fire('verdict', state.verdict);
   }
 
+  const usageUnknown = (usage) => !usage || (usage.tokenCoverage && usage.tokenCoverage.reported < usage.tokenCoverage.of);
+
   // Spend so far per vendor, in the units the budget speaks: tokens (prompt, cache and output
   // together) and the CLI's own dollar figure where it reports one; `costUnknown` when any
   // attempt's cost is not known. Calls in flight count at their reservation.
@@ -448,8 +473,8 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     const at = (vendor) => (out[vendor] ??= { tokens: 0, cost: 0, costUnknown: false, tokensUnknown: false });
     for (const e of ledger) {
       const v = at(e.seat.vendor);
-      if (!e.usage) v.tokensUnknown = true;
-      else v.tokens += (e.usage.input || 0) + (e.usage.cacheRead || 0) + (e.usage.cacheWrite || 0) + (e.usage.output || 0);
+      if (usageUnknown(e.usage)) v.tokensUnknown = true;
+      if (e.usage) v.tokens += (e.usage.input || 0) + (e.usage.cacheRead || 0) + (e.usage.cacheWrite || 0) + (e.usage.output || 0);
       const cost = e.usage?.cost ?? e.cost;
       if (cost == null) v.costUnknown = true; else v.cost += cost;
     }
@@ -459,6 +484,19 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       if (p.cost == null) v.costUnknown = true; else v.cost += p.cost;
     }
     return out;
+  }
+
+  // One seat's spend in this review, counted like the vendor budget counts it.
+  const seatCap = (seat) => (seat.mood?.hidden ? opts.hiddenSeatTokenCap : opts.seatTokenCap) ?? 0;
+  function seatSpent(seat) {
+    let tokens = 0, unknown = false;
+    for (const e of ledger) {
+      const same = e.seat?.id ? e.seat.id === seat.id : e.seat?.vendor === seat.vendor && e.seat?.lens === seat.lens;
+      if (!same) continue;
+      if (usageUnknown(e.usage)) unknown = true;
+      if (e.usage) tokens += (e.usage.input || 0) + (e.usage.cacheRead || 0) + (e.usage.cacheWrite || 0) + (e.usage.output || 0);
+    }
+    return { tokens, unknown };
   }
 
   // null when the next call fits every cap; otherwise the crossing, recorded and emitted.

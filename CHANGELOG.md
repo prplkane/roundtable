@@ -43,6 +43,16 @@
 
 ### Local operation and interface
 
+- Keep optional cat and alien personas in the public build, with their prompts and artwork in
+  a readable catalogue. The public-tree test checks the catalogue before publication.
+- Add preview status and clear feedback and support links to the README.
+
+- Seats and the chairman reply in the language of the decision; section headers stay English.
+- Add **Choose…** beside both export fields: it opens the system's own folder dialog, so the
+  folder no longer has to be typed.
+- Give a chairman whose first attempt held no recommendation the whole question again on its
+  retry. Before, a stateless retry carried only the format errors, so it could not know the
+  decision it was judging.
 - Use the same external data folder for live diagnostic workspaces and headless calibration
   reads as for saved reviews. Respect `ROUNDTABLE_DEBATES_DIR` in both commands.
 - Reduce the demo quick start to clone, enter the folder and start the board.
@@ -55,6 +65,12 @@
 - Give the JSON agent client a `board` link in every result with a review id, so an agent can
   hand a person the page to watch. Add a small-review recipe for lenses, moods, effort, model
   and context fields to `agent --help` and the workflow guide.
+- Redraw the grill, steelman, builder, contrarian and chairman icons, and the session gavel with them.
+- Add per-seat token limits. Missing or partial usage blocks further calls for that seat,
+  including retries and resumed reviews; other seats can continue.
+- Select Haiku 4.5 by its explicit model id instead of the `haiku` alias.
+- Keep the folder picker available while its dialog is open, and distinguish cancellation from
+  a timeout or launch failure. Errors are visible beside the export field.
 - Trim a reply with too many DISAGREE or NEW bullets to the limit instead of re-prompting the
   seat; the extra call cost more than the lost bullet. Show agents `gate.reopenCalls` when the
   seats already agree at round 0, so answering only reopens the table when it could change a

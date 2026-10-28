@@ -12,6 +12,8 @@ supports the same workflow for agents and scripts.
 **Requirements:** Node.js 22 or newer. No runtime dependencies. Live reviews use installed
 Claude, Codex or Antigravity CLIs, or an OpenAI-compatible endpoint for a local or hosted model.
 
+**Status:** early preview for developers. Feedback from real workflows is welcome.
+
 ## How a review works
 
 1. **Define the decision.** Add the alternatives, known facts and constraints. Choose two to
@@ -112,6 +114,16 @@ for request examples and response fields.
 - [Security](SECURITY.md): data handling and private vulnerability reporting
 - [Contributing](CONTRIBUTING.md): development and review requirements
 - [Changelog](CHANGELOG.md): changes by version
+
+## Feedback and support
+
+Ask questions, report bugs or suggest changes through [GitHub Issues](https://github.com/prplkane/roundtable/issues).
+For a bug, include your OS, Node and provider CLI versions, steps to reproduce, and the error
+reference if available. Exclude credentials and private review content. Support is best effort.
+Report security issues through the [private reporting channel](https://github.com/prplkane/roundtable/security/advisories/new).
+
+If Roundtable is useful to you, consider starring the repository.
+Maintained by [prplkane](https://github.com/prplkane).
 
 ## License
 

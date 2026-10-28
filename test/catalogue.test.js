@@ -35,7 +35,7 @@ test('vendorCatalogue merges config.toml and the agy list over the static hints'
   assert.deepEqual(cat.agy.models, [{ id: 'gemini-4-argon-medium', label: 'Gemini 4 Argon (Medium)' }]);
   assert.equal(cat.agy.effortInModel, true);
   // claude and codex come from the plan table (adapters/models.js); agy is grouped by model
-  assert.deepEqual(cat.claude.models.map((m) => m.id), ['opus', 'sonnet', 'haiku', 'fable']);
+  assert.deepEqual(cat.claude.models.map((m) => m.id), ['opus', 'sonnet', 'claude-haiku-4-5', 'fable']);
   assert.equal(cat.claude.defaultLabel, 'Opus 5.5');
   assert.deepEqual(cat.codex.models.map((m) => m.id), ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6-astra']);
   assert.deepEqual(cat.agy.families, [{ id: 'gemini-4-argon', label: 'Gemini 4 Argon', levels: ['medium'] }]);
