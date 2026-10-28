@@ -24,6 +24,7 @@ import { createDiagnostics, diagnosticAction, validateBrowserDiagnostics } from 
 import { answerMessage } from './review-view.js';
 import { noteRecord, storedNote } from './notes.js';
 import { reviewSnapshot } from './snapshot.js';
+import { pickFolder } from './folder-picker.js';
 import { dataDirectory, acquireDataLock, historyIds, checkedHistoryPath, removeHistory, createUsageStore } from './history.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -45,6 +46,9 @@ const PORT = Number(process.env.PORT) || (FAKE ? 4748 : 4747);
 // Per-launch capability: every request that changes something carries it. The page gets it in a
 // meta tag when it is served; scripts take it from the startup line (ROUNDTABLE_TOKEN).
 const TOKEN = randomBytes(16).toString('hex');
+// Set on the page as an HttpOnly cookie: the browser returns it on the page's own requests, and no
+// script, the agent client included, reads it from the page. Part of the board check (fromBoard).
+const BOARD_COOKIE = randomBytes(16).toString('hex');
 const HOSTS = new Set([`localhost:${PORT}`, `127.0.0.1:${PORT}`]);
 const ORIGINS = new Set([...HOSTS].map((h) => `http://${h}`));
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.md': 'text/plain; charset=utf-8' };
@@ -391,11 +395,17 @@ function answerGate(d, answer) {
   return true;
 }
 
-function prepareDebate(raw) {
+// Opt browser requests into hidden-mood shortcuts; ordinary agent requests keep custom text.
+// This is a UI distinction, not an authorization boundary: a custom client can obtain the cookie
+// and forge these headers. The launch token and Host/Origin checks still protect every write.
+const cookie = (req, name) => (req.headers.cookie || '').split(/;\s*/).find((c) => c.startsWith(`${name}=`))?.slice(name.length + 1);
+let pickingFolder = false;
+const fromBoard = (req) => cookie(req, 'rt_board') === BOARD_COOKIE && ORIGINS.has(req.headers.origin || '') && req.headers['sec-fetch-site'] === 'same-origin';
+function prepareDebate(raw, { board = false } = {}) {
   const body = validateDebateRequest(raw, { adapters: ADAPTERS });
   const fieldNotes = body.fieldNotes;
   if (fieldNotes.exportTo) fieldNotes.exportTo = validateTarget(fieldNotes.exportTo, { forbid: [DEBATES_DIR] }); // checked up front, not when the verdict lands
-  const seats = normaliseSeats(body.seats, { vendors: ADAPTERS, efforts: effortsByVendor() });
+  const seats = normaliseSeats(body.seats, { vendors: ADAPTERS, efforts: effortsByVendor(), hidden: board });
   // a retired model fails its first call: refuse it here, with what to use instead
   for (const s of [...seats, ...(body.chairman ? [body.chairman] : [])]) {
     const r = s?.model && retired(s.vendor, String(s.model).trim());
@@ -405,8 +415,8 @@ function prepareDebate(raw) {
   return { fieldNotes, seats, chairman, options: { ...DEFAULTS, ...body.options } };
 }
 
-function startDebate(raw) {
-  const { fieldNotes, seats, chairman, options } = prepareDebate(raw);
+function startDebate(raw, opts) {
+  const { fieldNotes, seats, chairman, options } = prepareDebate(raw, opts);
   const slug = slugFor(fieldNotes.decision, DEBATES_DIR);
   const store = openDebateDir(DEBATES_DIR, slug);
   const d = { slug, gen: Date.now(), events: [], clients: new Set(), pending: null, timer: null, store, qAtRound: {}, settled: new Set(), interrupted: false, finished: false };
@@ -455,6 +465,7 @@ function attachEngine(d, { fieldNotes, seats, chairman, options, resume = null, 
       cwd: store.seatDir(opts.seat?.id || 'chairman'), home: opts.seat?.account && ADAPTERS[vendor].home ? profileHome(vendor, opts.seat.account) : null,
       endpoint: opts.seat?.endpoint ? { url: opts.seat.endpoint, keyEnv: opts.seat.keyEnv || null } : null, // an API seat: where to send the round
       timeoutMs: opts.timeoutMs, prevCost: opts.prevCost, model: opts.model || undefined, effort: opts.effort || undefined, tag: d.slug,
+      minimal: !!opts.seat?.mood?.hidden, // a hidden mood runs as cheaply as its vendor allows
     });
   // Every reply either carries the vendor's quota or triggers a separate read (not awaited).
   const runner = async (vendor, ...rest) => {
@@ -572,7 +583,7 @@ const server = http.createServer(async (req, res) => {
     if (no) return requestError(res, no[0], no[1], diagnosticAction(p));
     if (p === '/') {
       const html = (await readFile(path.join(UI, 'index.html'), 'utf8')).replace('<meta name="roundtable-token" content="">', `<meta name="roundtable-token" content="${TOKEN}">`);
-      res.writeHead(200, { 'content-type': MIME['.html'], 'cache-control': 'no-store' });
+      res.writeHead(200, { 'content-type': MIME['.html'], 'cache-control': 'no-store', 'set-cookie': `rt_board=${BOARD_COOKIE}; HttpOnly; SameSite=Strict; Path=/` });
       return res.end(html);
     }
     if (req.method === 'GET' && p.startsWith('/ui/')) return serveFile(res, path.join(UI, path.normalize(p.slice(4))));
@@ -613,8 +624,17 @@ const server = http.createServer(async (req, res) => {
     }
     const deletion = p.match(/^\/api\/debates\/([^/]+)\/delete$/);
     if (req.method === 'POST' && deletion) { await readBody(req); return json(res, 200, deleteSessions([deletion[1]])); }
+    // Opens this machine's folder dialog for the export fields; one at a time. A POST, so it needs
+    // the launch token like every other action.
+    if (req.method === 'POST' && p === '/api/pick-folder') {
+      await readBody(req);
+      if (pickingFolder) return requestError(res, 409, 'A folder dialog is already open. Finish or cancel it first.', 'pick-folder');
+      pickingFolder = true;
+      try { const chosen = await pickFolder(); return json(res, 200, chosen ? { path: chosen } : { cancelled: true }); }
+      finally { pickingFolder = false; }
+    }
     if (req.method === 'POST' && p === '/api/preview') {
-      const plan = prepareDebate(await readBody(req));
+      const plan = prepareDebate(await readBody(req), { board: fromBoard(req) });
       return json(res, 200, { valid: true, mode: FAKE ? 'demo' : 'live',
         plannedCalls: plan.seats.length * (plan.options.critiqueRounds + 1) + 1,
         projection: project({ seats: plan.seats, chairman: plan.chairman || { vendor: plan.seats[0].vendor }, critiqueRounds: plan.options.critiqueRounds, memory: plan.options.memory, baselines }),
@@ -633,7 +653,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && p === '/api/debates') {
       const body = await readBody(req);
-      return json(res, 200, { slug: startDebate(body) });
+      return json(res, 200, { slug: startDebate(body, { board: fromBoard(req) }) });
     }
     const m = p.match(/^\/api\/debates\/([^/]+)\/(events|state|continue|finish|stop|hold|resume|export|synthesize|accept)$/);
     if (m) {

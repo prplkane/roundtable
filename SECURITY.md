@@ -19,8 +19,10 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
 - **Budget caps check admission, including retries.** Each provider attempt is checked against
   reported usage, calls already in flight, and the projected next call. Seat calls leave room
   for a projected verdict; a fallback chairman is checked against its own vendor's cap.
-  Missing or unusable token counts block further calls to that vendor under a token cap,
-  including after a restart; already dispatched calls may finish. No cap means no such block.
+  Missing or unusable token counts block further calls to that vendor under a vendor token cap,
+  including after a restart; already dispatched calls may finish. Discussion seats also have an
+  automatic cap of 400,000 tokens per review (60,000 for optional personas). Missing or partial
+  usage blocks further calls for that seat. The chairman follows the vendor budget.
   Unknown usage and partial totals are labelled, and reported dollar costs are kept separately.
   These checks use estimates and available usage reports, not a provider-enforced billing
   ceiling: a call already running can consume more than projected.

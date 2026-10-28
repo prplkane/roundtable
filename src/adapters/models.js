@@ -21,7 +21,8 @@ export const MODELS = {
   claude: [
     { id: 'opus', label: 'Opus 5.5', min: 'pro', note: 'the default' },
     { id: 'sonnet', label: 'Sonnet 5.5', min: 'pro' },
-    { id: 'haiku', label: 'Haiku 5.5', min: 'pro', note: 'lightest' },
+    // Pin the intended Haiku version instead of relying on the CLI alias.
+    { id: 'claude-haiku-4-5', label: 'Haiku 4.5', min: 'pro', note: 'lightest' },
     { id: 'fable', label: 'Fable 5.1', min: 'max', below: 'may bill usage credits' },
   ],
   codex: [

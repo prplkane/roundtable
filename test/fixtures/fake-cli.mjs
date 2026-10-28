@@ -23,7 +23,7 @@ if (process.stdin.isTTY) main();
 
 async function main() {
   if (process.env.FAKE_RECORD) {
-    const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => /^(CLAUDE|CODEX|ANTHROPIC|FAKE)/.test(k)));
+    const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => /^(CLAUDE|CODEX|ANTHROPIC|FAKE|MAX_THINKING)/.test(k)));
     writeFileSync(process.env.FAKE_RECORD, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), env, stdin }));
   }
   if (process.env.FAKE_SLEEP) await new Promise((r) => setTimeout(r, Number(process.env.FAKE_SLEEP)));

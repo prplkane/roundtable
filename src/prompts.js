@@ -3,12 +3,23 @@ import { moodLine } from './seats.js';
 import { optionIds } from './contract.js';
 import { noteRecord, noteAuthor } from './notes.js';
 
+// How a seat should approach the question. A hidden mood is a character the seat plays for fun, so
+// it is framed as the main instruction rather than a style hint the rest of the prompt can outweigh.
+function moodIntro(mood) {
+  if (mood?.hidden) return `YOUR CHARACTER, the most important instruction here: stay in it in every single line, even if the answer suffers. ${moodLine(mood)}`;
+  return `How you approach it: ${moodLine(mood)}`;
+}
+
 const NO_TOOLS = 'Answer from this prompt only. Do not use any tools, do not read files, do not run commands, do not ask for permissions.';
+// Replies follow the language the person wrote the decision in; the headers stay English so the
+// parser can read them. The instructions themselves stay English: shorter, and every model reads them.
+const LANGUAGE = 'Write in the language of the DECISION line (for example, Russian if it is written in Russian). Keep every section header exactly as shown, in English.';
 
 export function contractText(options) {
   return [
     'Reply with ONLY these lines, in this order, nothing before or after:',
     'Aim for 140 words total. Use short, specific bullets; do not repeat the field notes.',
+    LANGUAGE,
     '',
     `STANCE: <exactly one option id: ${optionIds(options).map((o) => o.id).join(' | ')}, or other: <short label>>`,
     'AGREE_WITH: [lens labels, comma separated; [] if none]',
@@ -40,7 +51,7 @@ export function fieldNotesText(fn) {
 export function round0Prompt({ fieldNotes, lens, mood, seatCount, notes = [] }) {
   return [
     `You are one of ${seatCount} seats at a roundtable deciding a question. You speak through the lens: ${lens}.`,
-    `How you approach it: ${moodLine(mood)}`,
+    moodIntro(mood),
     'This is round 0: you have not seen the other seats and must take a position blind. Be concrete and committal.',
     NO_TOOLS,
     '',
@@ -59,7 +70,7 @@ export function round0Prompt({ fieldNotes, lens, mood, seatCount, notes = [] }) 
 export function statelessPrefix({ fieldNotes, lens, mood, seatCount }) {
   return [
     `You are one of ${seatCount} seats at a roundtable deciding a question. You speak through the lens: ${lens}.`,
-    `How you approach it: ${moodLine(mood)}`,
+    moodIntro(mood),
     NO_TOOLS,
     '',
     '--- FIELD NOTES ---',
@@ -130,7 +141,7 @@ export function statelessRepromptText({ prefix, round, maxRound, text, errors, e
 export function roundPrompt({ round, maxRound, others, notes, options, mood }) {
   const parts = [
     `Round ${round} of ${maxRound}. The other seats replied as follows in round ${round - 1}, identified by lens only.`,
-    `How you approach it: ${moodLine(mood)}`,
+    moodIntro(mood),
     NO_TOOLS,
     '',
   ];
@@ -185,6 +196,7 @@ export function chairmanPrompt({ fieldNotes, rounds, humanNotes, initialNotes = 
     '',
     'Write the verdict with exactly these sections and headers:',
     'Aim for 220 words total. Keep the reasoning specific; do not repeat the field notes or whole seat replies.',
+    LANGUAGE,
     `RECOMMENDATION: <on this line only: one option id (${optionIds(fieldNotes.options).map((o) => o.id).join(' | ')}), or none if the evidence does not support a pick yet>`,
     'then the rationale on the lines below it, in at most four sentences.',
     'DISSENT: the strongest argument against the recommendation, stated fairly in at most two sentences, with the lens that made it. Never erase it.',
@@ -198,9 +210,20 @@ export function chairmanPrompt({ fieldNotes, rounds, humanNotes, initialNotes = 
 }
 
 // The chairman's re-prompt: its verdict travels back with what was wrong with it and the option
-// ids. The transcript does not: the content is already written, only the form needs fixing, and
-// the transcript is most of the chairman's prompt.
-export function verdictRepromptText({ options, text, errors, extra = [] }) {
+// ids. The transcript does not when the content is already written and only the form needs fixing,
+// since the transcript is most of the chairman's prompt. context: the whole first prompt, sent
+// when the first attempt has nothing to keep (not even a recommendation) and the call has no
+// memory of it; without it the chairman would not know the question at all.
+export function verdictRepromptText({ options, text, errors, extra = [], context = null }) {
+  if (context) return [
+    context,
+    '',
+    '--- YOUR FIRST ATTEMPT DID NOT FOLLOW THE FORMAT ---',
+    ...errors.map((e) => `- ${e}`),
+    ...extra,
+    NO_TOOLS,
+    'Write the verdict for the field notes and transcript above now, in exactly the sections asked for. Nothing before or after.',
+  ].join('\n');
   return [
     'You are the chairman of a roundtable. Your verdict below did not follow the required format:',
     ...errors.map((e) => `- ${e}`),

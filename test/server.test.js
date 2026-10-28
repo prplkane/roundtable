@@ -236,6 +236,36 @@ test('a board that reconnects gets what it missed as new events; a fresh board g
   } finally { srv.child.kill(); }
 });
 
+test('only the board can unlock a hidden mood; an agent request gets plain custom text', { timeout: 30_000 }, async () => {
+  const { HIDDEN_MOODS, LIGHTEST } = await import('../src/seats.js');
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rt-hidden-'));
+  const srv = await startFakeServer(root);
+  const headers = { 'content-type': 'application/json', 'x-roundtable-token': srv.token };
+  const code = HIDDEN_MOODS[0].codes[0];
+  const body = (n) => ({ fieldNotes: { decision: `Synthetic hidden mood check ${n}`, options: ['Trial', 'Wait'] },
+    seats: [{ vendor: 'claude', lens: 'risk', model: 'opus', effort: 'high', mood: { preset: 'custom', text: code } }, { vendor: 'codex', lens: 'cost' }],
+    chairman: { vendor: 'claude', effort: 'low' }, options: { critiqueRounds: 0 } });
+  const seatsOf = async (extra, n) => {
+    const { slug } = await fetch(`${srv.base}/api/debates`, { method: 'POST', headers: { ...headers, ...extra }, body: JSON.stringify(body(n)) }).then((r) => r.json());
+    const events = await readEvents(await fetch(`${srv.base}/api/debates/${slug}/events`), (e) => e.type === 'started');
+    return events.find((e) => e.type === 'started').seats;
+  };
+  try {
+    const [agentSeat] = await seatsOf({}, 1);
+    assert.deepEqual([agentSeat.mood.hidden, agentSeat.model, agentSeat.effort], [undefined, 'opus', 'high'], 'no Origin: the agent client and scripts never unlock one');
+    const browserHeaders = { origin: srv.base, 'sec-fetch-site': 'same-origin' };
+    const [headersOnly] = await seatsOf(browserHeaders, 2);
+    assert.equal(headersOnly.mood.hidden, undefined, 'browser-like headers without the page cookie are not the board');
+    const page = await fetch(`${srv.base}/`);
+    const boardCookie = /rt_board=[0-9a-f]{32}/.exec(page.headers.get('set-cookie') || '')?.[0];
+    assert.match(page.headers.get('set-cookie') || '', /HttpOnly/i, 'scripts on the page cannot read it');
+    const [wrongCookie] = await seatsOf({ ...browserHeaders, cookie: 'rt_board=0000' }, 3);
+    assert.equal(wrongCookie.mood.hidden, undefined);
+    const [boardSeat] = await seatsOf({ ...browserHeaders, cookie: boardCookie }, 4);
+    assert.deepEqual([boardSeat.mood.hidden, boardSeat.model, boardSeat.effort], [HIDDEN_MOODS[0].art, LIGHTEST.claude, 'low'], 'the board page does, locked to the cheapest model');
+  } finally { srv.child.kill(); }
+});
+
 test('history and replay preserve unknown usage; a restart cannot bypass its token cap', { timeout: 30_000 }, async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'rt-unknown-server-'));
   const slug = '2026-10-26-unknown';

@@ -182,3 +182,28 @@ test('HTTP endpoint validation preserves canonical private IPs and intentional l
     assert.throws(() => checkEndpointUrl(`http://${host}/v1`), /plain http only/, host);
   }
 });
+
+test('a hidden mood unlocks only for the board, then runs on the lightest model at the lowest effort', async () => {
+  const { HIDDEN_MOODS, hiddenMood, LIGHTEST } = await import('../src/seats.js');
+  const { PERSONA_EDITION } = await import('../src/personas.js');
+  assert.equal(HIDDEN_MOODS.length, PERSONA_EDITION === 'development' ? 5 : 2);
+  for (const h of HIDDEN_MOODS) {
+    const code = h.codes[0];
+    assert.equal(hiddenMood(`  ${code.toUpperCase()} `)?.art, h.art, 'the code word is matched alone, in any case');
+    assert.equal(hiddenMood(`${code} please`), null, 'a sentence that only contains it is an ordinary custom mood');
+    const raw = [{ vendor: 'claude', lens: 'risk', model: 'opus', effort: 'high', mood: { preset: 'custom', text: code } },
+      { vendor: 'codex', lens: 'cost', model: 'gpt-6-sol', effort: 'high', mood: { preset: 'custom', text: code } }];
+    const board = normaliseSeats(raw, { vendors: V, hidden: true });
+    assert.deepEqual(board.map((s) => [s.mood.hidden, s.model, s.effort]), [[h.art, LIGHTEST.claude, 'low'], [h.art, LIGHTEST.codex, 'low']]);
+    assert.equal(moodLine(board[0].mood), h.text, 'the seat is prompted with the persona, not the code word');
+    assert.match(h.text, /STANCE/, 'the persona still keeps the reply format, so the review can parse it');
+    const agent = normaliseSeats(raw, { vendors: V });
+    assert.deepEqual(agent.map((s) => [s.mood.hidden, s.model, s.effort]), [[undefined, 'opus', 'high'], [undefined, 'gpt-6-sol', 'high']], 'without the board the word is plain custom text');
+    assert.equal(moodLine(agent[0].mood), code);
+  }
+  const { filterReply } = await import('../src/seats.js');
+  const stripping = HIDDEN_MOODS.find((h) => h.strip);
+  assert.ok(stripping, 'one hidden mood cleans its replies in code');
+  assert.equal(filterReply({ hidden: stripping.art }, 'AGREE_WITH: []\n- Mrrp mew (a translation)\n- Meow'), 'AGREE_WITH: []\n- Mrrp mew\n- Meow', 'bracketed asides go, the header stays');
+  assert.equal(filterReply({ preset: 'grill' }, '- keep (this)'), '- keep (this)', 'every other seat is untouched');
+});

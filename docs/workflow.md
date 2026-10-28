@@ -194,6 +194,12 @@ and writes the verdict, sceptically (agreement between seats is not evidence; it
 none when every option rests on assumptions). It does not decide: you accept an option after the
 verdict. It can have its own vendor, model and effort.
 
+For a playful board session, choose a custom mood and enter `cat` (or `meow`) or `alien`
+(or `ufo`). These optional personas use the lightest configured model and low effort, with a
+60,000-token seat cap. They keep the reply format but prioritize the character over useful
+analysis. Use the ordinary moods for decision reviews. API clients treat these words as plain
+custom text.
+
 ### How seats stay independent
 
 - Every CLI seat has its own session and working folder, `debates/<slug>/seats/<id>/`.
@@ -231,7 +237,13 @@ verdict. It can have its own vendor, model and effort.
   If a call omits usable token counts, further calls to that vendor are blocked when it has a
   token cap, including retries, re-prompts and the chairman. This also applies after a restart.
   Calls already in flight can finish. A chairman on another vendor can still write the verdict
-  if its own checks pass. Without a token cap, unknown usage does not stop further calls.
+  if its own checks pass.
+  Every discussion seat also has an automatic limit of 400,000 tokens per review. If its reported
+  spend plus the next projected call exceeds the limit, or any earlier call has missing or partial
+  usage, that seat sits out. The board says **seat cap**, and other seats can continue. This check
+  applies to retries and resumed reviews too. An in-flight call can exceed its projection; the cap
+  blocks subsequent calls. The chairman is governed by the vendor budget, not a discussion seat's
+  cap. Without a vendor token cap, unknown usage does not block the chairman.
   The board, history and exports label missing counts **unknown** and mixed totals **partial**;
   reported dollar costs remain available even when token counts are missing. Explicit zero
   counts remain zero. Older transcripts that already saved fabricated zeros cannot be repaired
@@ -358,8 +370,11 @@ repository, export the debate as a decision record:
 
 - In the board, press **Export record** on the verdict panel and give a folder, for example
   `C:\code\my-app\docs\decisions` or `~/code/my-app/docs/decisions`. The folder is remembered
-  next time.
-- Or set **Export to** in the field notes before the debate.
+  next time. **Choose…** beside the field opens your system's folder dialog instead of typing:
+  the Windows folder browser, the macOS folder chooser, or zenity or kdialog on Linux. Without
+  one of those on Linux, type the path. The dialog waits up to ten minutes; if it cannot open or
+  times out, the board shows an error and you can still enter the path manually.
+- Or set **Export to** in the field notes before the debate; it has the same **Choose…** button.
 - Or from a terminal:
 
   ```bash

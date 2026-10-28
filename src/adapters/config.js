@@ -74,7 +74,9 @@ export const ADAPTERS = {
     model: (m) => ['--model', m],
     effort: (e) => ['--effort', e],
     effortLevels: ['low', 'medium', 'high'], // `claude --help`: "--effort <level>"
-    modelHints: ['opus', 'sonnet', 'haiku'],  // aliases `--model` accepts
+    // Request no extended-thinking budget for hidden-mood seats, which select Haiku 4.5.
+    minimalEnv: { MAX_THINKING_TOKENS: '0' },
+    modelHints: ['opus', 'sonnet', 'claude-haiku-4-5'],  // use the explicit Haiku model id
     pool: 'Anthropic subscription',
     promptVia: 'stdin',
     output: 'jsonl',

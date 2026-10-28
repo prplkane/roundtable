@@ -10,6 +10,25 @@ export const MOODS = {
 };
 export const DEFAULT_MOOD = 'grill';
 
+// A custom mood matching a persona code uses its prompt, avatar and light model settings.
+// The server opts board requests into these shortcuts; ordinary API requests keep custom text.
+import { HIDDEN_MOODS } from './personas.js';
+export { HIDDEN_MOODS } from './personas.js';
+export function hiddenMood(text) {
+  const word = String(text || '').trim().toLowerCase();
+  return word ? HIDDEN_MOODS.find((h) => h.codes.includes(word)) || null : null;
+}
+// A hidden mood may also clean its replies in code (strip: a pattern to delete), for what a
+// cheap model will not leave out however it is asked.
+export function filterReply(mood, text) {
+  const h = mood?.hidden && HIDDEN_MOODS.find((x) => x.art === mood.hidden);
+  return h?.strip ? String(text).replace(new RegExp(h.strip, 'g'), '') : text;
+}
+// The cheapest model each CLI offers (adapters/models.js marks claude's and codex's lightest).
+// agy: Flash-low over gpt-oss-120b-medium, measured on a hidden-mood prompt: the same input,
+// but gpt-oss wrote 1.7k-4k output tokens to Flash-low's ~190, and took two to four times longer.
+export const LIGHTEST = { claude: 'claude-haiku-4-5', codex: 'gpt-6-luna', agy: 'gemini-3.8-flash-low' };
+
 const STARTER_LENSES = ['risk and failure modes', 'cost and effort', 'evidence and assumptions',
   'long-term effects', 'practical steps', 'alternatives', 'people affected', 'opportunities'];
 export function nextSeatLens(seats) {
@@ -86,17 +105,20 @@ export function normaliseAccount(raw) {
 export function moodLine(mood) {
   if (!mood) return MOODS[DEFAULT_MOOD];
   if (typeof mood === 'string') return MOODS[mood] || MOODS[DEFAULT_MOOD];
+  if (mood.hidden) { const h = HIDDEN_MOODS.find((x) => x.art === mood.hidden); if (h) return h.text; }
   if (mood.preset === 'custom' && mood.text) return String(mood.text).trim();
   return MOODS[mood.preset] || MOODS[DEFAULT_MOOD];
 }
 
-function normaliseMood(m) {
+// hidden: whether this request may unlock a hidden mood (only the board's own requests may).
+function normaliseMood(m, { hidden = false } = {}) {
   if (!m) return { preset: DEFAULT_MOOD };
   if (typeof m === 'string') return MOODS[m] ? { preset: m } : { preset: DEFAULT_MOOD };
   if (m.preset === 'custom') {
     const text = String(m.text || '').trim();
     if (!text) throw new Error('A custom mood needs its sentence.');
-    return { preset: 'custom', text: text.slice(0, 400) };
+    const h = hidden ? hiddenMood(text) : null;
+    return { preset: 'custom', text: text.slice(0, 400), ...(h ? { hidden: h.art } : {}) };
   }
   return { preset: MOODS[m.preset] ? m.preset : DEFAULT_MOOD };
 }
@@ -168,7 +190,7 @@ function normaliseEndpoint(raw, label) {
 
 // vendors: { [vendor]: { label, effortLevels } } (the adapter table). efforts may widen a
 // vendor's levels from the catalogue (codex reads its list from config.toml).
-export function normaliseSeats(input, { vendors, efforts = {} }) {
+export function normaliseSeats(input, { vendors, efforts = {}, hidden = false }) {
   const issue = seatSetupIssue((input || []).map((raw) => raw && vendors[raw.vendor] ? raw : null));
   if (issue) throw Object.assign(new Error(issue.message), issue, { status: 400 });
   const seats = [];
@@ -182,14 +204,17 @@ export function normaliseSeats(input, { vendors, efforts = {} }) {
     perVendor[raw.vendor] = (perVendor[raw.vendor] || 0) + 1;
     // an endpoint seat: URL, model and key variable checked; its account is its host
     const ep = vendors[raw.vendor].kind === 'api' ? normaliseEndpoint(raw, `Seat "${lens}"`) : null;
+    const mood = normaliseMood(raw.mood, { hidden });
+    // a hidden mood always runs as cheaply as the seat's vendor allows
+    const locked = mood.hidden ? { model: ep ? ep.model : LIGHTEST[raw.vendor] || (raw.model ? String(raw.model).trim() : undefined), effort: allowed[0] || undefined } : null;
     seats.push({
       id: `seat-${seats.length}`,
       vendor: raw.vendor,
       n: perVendor[raw.vendor],
       lens,
-      mood: normaliseMood(raw.mood),
-      model: ep ? ep.model : raw.model ? String(raw.model).trim() : undefined,
-      effort: effort || undefined,
+      mood,
+      model: locked ? locked.model : ep ? ep.model : raw.model ? String(raw.model).trim() : undefined,
+      effort: locked ? locked.effort : effort || undefined,
       account: ep ? ep.account : normaliseAccount(raw.account),
       ...(ep ? { endpoint: ep.endpoint, keyEnv: ep.keyEnv } : {}),
       // the vendor's colour (adapters config) unless the board sent one; positions as a fallback

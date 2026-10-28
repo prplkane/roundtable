@@ -76,7 +76,7 @@
               <div class="field"><label class="label" for="assumed">Assumed</label><textarea id="assumed" name="assumed" rows="2" placeholder="Believed, not measured"></textarea></div>
               <div class="field"><label class="label" for="reversibility">Reversibility</label><input id="reversibility" name="reversibility" placeholder="Can it be undone, at what cost"></div>
               <div class="field"><label class="label" for="deadline">Deadline</label><input id="deadline" name="deadline"></div>
-              <div class="field wide"><label class="label" for="exportTo">Export to</label><input id="exportTo" name="exportTo" placeholder="A decisions folder in a codebase; the record is written there when the verdict lands"></div>
+              <div class="field wide"><label class="label" for="exportTo">Export to</label><span class="pick-row"><input id="exportTo" name="exportTo" placeholder="A decisions folder in a codebase; the record is written there when the verdict lands"><button class="btn btn-small pick-folder" type="button" data-for="exportTo">Choose…</button></span><span id="export-folder-status" class="error" role="status"></span></div>
             </div>
           </details>
         </div>
@@ -170,6 +170,7 @@
         </details>
         <form class="export-bar" id="export-form">
           <input id="export-target" placeholder="Export to: an existing directory in a codebase" aria-label="Export target directory">
+          <button class="btn btn-small pick-folder" type="button" data-for="export-target">Choose…</button>
           <button class="btn btn-small" id="export" type="submit">Export record</button>
           <span id="export-status" class="hint" role="status"></span>
         </form>

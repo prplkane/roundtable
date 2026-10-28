@@ -69,7 +69,7 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); font: v
 .session-ceremony[data-phase="ended"] { --cue: var(--color-border-strong); }
 .session-ceremony[data-phase="failed"] { --cue: var(--color-danger); }
 .ceremony-card { display: flex; align-items: center; gap: 14px; padding: 12px 16px; background: var(--color-surface-raised); border: 2px solid var(--color-border-strong); border-top: 4px solid var(--cue); border-radius: 2px; box-shadow: var(--shadow-overlay); }
-.ceremony-art { width: 60px; height: 67.5px; flex: none; overflow: visible; }
+.ceremony-art { width: 60px; height: 72.5px; flex: none; overflow: visible; }
 .ceremony-block { fill: var(--color-text-muted); }
 .ceremony-gavel { fill: var(--color-action); }
 .session-ceremony[data-phase="failed"] .ceremony-gavel { fill: var(--color-text-muted); }
@@ -297,6 +297,8 @@ td .seat-dot { margin-right: var(--space-2); vertical-align: -2px; }
 .seat-card .mood-text { margin-top: var(--space-1); }
 /* effort as pips: one per level the CLI accepts; none filled is the CLI's default */
 .pips { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.pips.locked { pointer-events: none; opacity: 0.55; }
+.card-avatar { width: 22px; height: 22px; color: var(--seat); } .card-avatar svg { width: 16px; height: 16px; }
 .pip { display: inline-grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; background: transparent; cursor: pointer; }
 .pip::before { content: ''; width: 12px; height: 12px; border: var(--border-width) solid var(--v); }
 .pip.on::before { background: var(--v); }
@@ -455,3 +457,5 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 /* the model picker reads as the model line under the vendor */
 .seat-card .flat.model-pick { font: var(--text-xs) var(--font-mono); color: var(--color-text-muted); border-bottom-color: transparent; padding-left: 0; }
 .seat-card .flat.model-pick:hover, .seat-card .flat.model-pick:focus { border-bottom-color: var(--color-border-strong); color: var(--color-text); }
+.pick-row { display: flex; gap: var(--space-2); align-items: center; }
+.pick-row input { flex: 1; min-width: 0; }

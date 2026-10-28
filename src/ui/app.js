@@ -1,6 +1,6 @@
 import { rollup, hasUsableRound } from '/src/engine.js';
 import { optionLabel } from '/src/contract.js';
-import { poolKey, poolVendor, poolAccount, hostKey, seatKind, initialSeatVendors, nextSeatLens, fillMissingSeatLenses, seatSetupIssue } from '/src/seats.js';
+import { poolKey, poolVendor, poolAccount, hostKey, seatKind, initialSeatVendors, nextSeatLens, fillMissingSeatLenses, seatSetupIssue, hiddenMood, LIGHTEST, HIDDEN_MOODS } from '/src/seats.js';
 import { avatar } from '/ui/avatars.js';
 import { modelsForPlan, retired } from '/src/adapters/models.js';
 import { project, projectedWindows } from '/src/estimate.js';
@@ -49,15 +49,15 @@ window.addEventListener('online', () => void clientDiagnostics.flush());
 setInterval(() => void clientDiagnostics.flush(), 15_000);
 void clientDiagnostics.flush();
 // A failed or timed-out write can already have reached the server. Never retry it automatically.
-async function requestJson(url, body) {
+async function requestJson(url, body, timeoutMs = 15_000) {
   const action = requestAction(url, body !== undefined);
   let res;
   try {
-    res = await fetch(url, { ...(body === undefined ? {} : { method: 'POST', headers: SEND, body: JSON.stringify(body) }), signal: AbortSignal.timeout(15_000) });
+    res = await fetch(url, { ...(body === undefined ? {} : { method: 'POST', headers: SEND, body: JSON.stringify(body) }), signal: AbortSignal.timeout(timeoutMs) });
   } catch (e) {
     const timeout = ['TimeoutError', 'AbortError'].includes(e.name);
     throw browserFailure(timeout ? 'browser-timeout' : 'browser-network', action,
-      `${timeout ? 'The server did not respond within 15 seconds.' : 'Could not reach the local server.'} ${body === undefined ? 'Check that it is running, then reload.' : 'The action may already have happened. Keep your note and check the review before retrying.'}`);
+      `${timeout ? `The server did not respond within ${Math.round(timeoutMs / 1000)} seconds.` : 'Could not reach the local server.'} ${body === undefined ? 'Check that it is running, then reload.' : 'The action may already have happened. Keep your note and check the review before retrying.'}`);
   }
   let out;
   try { out = await res.json(); } catch { throw browserFailure('browser-response', action, 'The server returned an unreadable response. Check the current state before retrying.', { status: res.status }); }
@@ -343,8 +343,17 @@ function poolLamp(vendor, account) {
   return { cls: 'ok', note: `ready · ${text}` };
 }
 
+// A custom mood that is a hidden mood's code word: its avatar, and the cheapest model and effort.
+const seatHidden = (s) => (s.mood === 'custom' ? hiddenMood(s.moodText) : null);
+function lockHidden(s) {
+  if (!seatHidden(s)) return;
+  if (LIGHTEST[s.vendor]) s.model = LIGHTEST[s.vendor];
+  s.effort = 'low';
+}
+
 function seatRow(s, i) {
   const colour = vendorColour(s.vendor);
+  const hidden = seatHidden(s);
   const api = isApi(s.vendor);
   const same = S.draft.filter((x) => x.vendor === s.vendor);
   const n = same.length > 1 ? ` ${same.indexOf(s) + 1}` : '';
@@ -356,10 +365,10 @@ function seatRow(s, i) {
   const invalid = (field) => issue?.field === field ? 'aria-invalid="true"' : '';
   return `<article class="seat seat-card ${issue ? 'seat-invalid' : ''}" role="listitem" data-i="${i}" style="--seat: var(--seat-${colour})">
     <div class="seat-hd">
-      <span class="avatar" title="${esc(s.mood === 'custom' ? 'custom mood' : s.mood)}">${avatar(s.mood === 'custom' ? 'custom' : s.mood)}</span>
+      <span class="avatar" title="${esc(s.mood === 'custom' ? 'custom mood' : s.mood)}">${avatar(hidden ? hidden.art : s.mood === 'custom' ? 'custom' : s.mood, hidden?.sprite)}</span>
       <div class="seat-id">
         <span class="chair-title"><select class="flat vendor" aria-label="Vendor">${Object.keys(VENDOR_META).map((v) => `<option value="${v}" ${v === s.vendor ? 'selected' : ''}>${esc(VENDOR_LABEL[v])}</option>`).join('')}</select>${n ? `<span class="seat-note">${n.trim()}</span>` : ''}<span class="kind-tag ${api ? 'api' : ''}" title="${api ? 'Billed by the endpoint, not a subscription' : 'The vendor CLI on your subscription'}">${esc(seatKind(VENDOR_META[s.vendor], s.endpoint))}</span></span>
-        ${picker.html}<input class="flat model" aria-label="Model id" list="models-${s.vendor}" value="${esc(s.model)}" placeholder="${api ? 'model id (required)' : 'model id'}" ${picker.other ? '' : 'hidden'}>
+        ${hidden && !api ? picker.html.replace('<select', '<select disabled title="Locked to the lightest model"') : picker.html}<input class="flat model" aria-label="Model id" list="models-${s.vendor}" value="${esc(s.model)}" placeholder="${api ? 'model id (required)' : 'model id'}" ${picker.other ? '' : 'hidden'}>
       </div>
       <span class="lamp ${lamp.cls}" title="${esc(lamp.note)}"></span>
     </div>
@@ -373,7 +382,7 @@ function seatRow(s, i) {
       ${gone ? `<span class="seat-note danger">${esc(s.model)} was retired (${esc(gone.date)}); use ${esc(gone.instead)}.</span>` : ''}
       ${api ? `<label class="f"><span class="label">Endpoint</span><input class="flat endpoint" aria-label="Endpoint base URL" list="endpoints" value="${esc(s.endpoint || '')}" placeholder="http://localhost:11434/v1" title="The base URL of an OpenAI-compatible server, ending in /v1. Plain http only on this machine or a private network."></label>
       <label class="f"><span class="label">Key var</span><input class="flat keyenv" aria-label="Key environment variable" value="${esc(s.keyEnv || '')}" placeholder="none (local server)" title="The NAME of the environment variable that holds the key, set in the shell roundtable was started from. Never the key itself."></label>` : ''}
-      <div class="f"><span class="label help-label" data-help="effort" tabindex="0" aria-describedby="help-effort">Effort</span><span class="pips">${pipsHtml(s.vendor, s.effort, s.model)}</span><select class="effort" hidden>${effortOptions(s.vendor, s.effort)}</select></div>
+      <div class="f"><span class="label help-label" data-help="effort" tabindex="0" aria-describedby="help-effort">Effort</span><span class="pips ${hidden ? 'locked' : ''}">${pipsHtml(s.vendor, s.effort, s.model)}</span><select class="effort" hidden>${effortOptions(s.vendor, s.effort)}</select></div>
       <span class="seat-note lamp-note ${lamp.cls === 'danger' || lamp.cls === 'warn' ? lamp.cls : ''}">${esc(lamp.note)}</span>
       ${api ? '' : `<details class="seat-more" ${s.account ? 'open' : ''}><summary>Login profile</summary><input class="flat account" aria-label="Login profile" value="${esc(s.account || '')}" placeholder="none: your usual login" title="A second login of this CLI, for example a work subscription; node src/doctor.js shows how to log a profile in"></details>`}
     </div>
@@ -559,7 +568,9 @@ function onSeatEdit(ev) {
     const pre = ev.type === 'change' && ev.target.classList.contains('endpoint') && ENDPOINT_PRESETS.find((e) => e.url === s.endpoint.trim());
     if (pre?.keyEnv && !s.keyEnv.trim()) s.keyEnv = pre.keyEnv;
   }
-  if (s.vendor !== vendorBefore) { s.model = ''; s.effort = ''; renderSeats(); return; } // the catalogue changed
+  if (s.vendor !== vendorBefore) { s.model = ''; s.effort = ''; lockHidden(s); renderSeats(); return; } // the catalogue changed
+  if (ev.type === 'change' && (ev.target.classList.contains('mood-text') || ev.target.classList.contains('mood'))) lockHidden(s);
+  if (ev.type === 'change' && ev.target.classList.contains('mood-text')) { renderSeats(); renderProjection(); return; }
   // the avatar follows the mood, the lamp the login profile or the endpoint: redraw the cards (not while typing)
   if (['account', 'endpoint', 'keyenv'].some((c) => ev.target.classList.contains(c))) requestPreflight();
   if (ev.type === 'change' && ['mood', 'account', 'endpoint', 'keyenv'].some((c) => ev.target.classList.contains(c))) { renderSeats(); if (s.mood === 'custom') $('seats').querySelectorAll('.seat')[S.draft.indexOf(s)]?.querySelector('.mood-text')?.focus(); return; }
@@ -984,7 +995,7 @@ function card(r) {
   const conn = cancelled ? 'cancelled' : current ? (S.conn[seat.id] || r.state) : (r.state || (r.failed ? 'failed' : 'replied'));
   const position = S.positions[r.round]?.[seat.id] || null;
   return `<article class="card" style="--seat: var(--seat-${esc(seat.colour)})" data-position="${esc(position || 'none')}" title="${esc(position ? POSITION_LABEL[position] : '')}">
-    <div class="card-head"><span class="vendor" title="${esc(meta)}">${esc(seatName(seat))}</span><span class="lens">${esc(seat.lens)}</span>${led(conn)}${seat.mood?.preset && seat.mood.preset !== 'grill' ? `<span class="muted">${esc(seat.mood.preset)}</span>` : ''}<span class="flags">${flags.join('')}</span></div>
+    <div class="card-head"><span class="vendor" title="${esc(meta)}">${esc(seatName(seat))}</span><span class="lens">${esc(seat.lens)}</span>${led(conn)}${seat.mood?.hidden ? `<span class="avatar card-avatar">${avatar(seat.mood.hidden, HIDDEN_MOODS.find((h) => h.art === seat.mood.hidden)?.sprite)}</span>` : seat.mood?.preset && seat.mood.preset !== 'grill' ? `<span class="muted">${esc(seat.mood.preset)}</span>` : ''}<span class="flags">${flags.join('')}</span></div>
     <div class="reply-text" data-reveal="${esc(replyKey(r))}">${body}</div>
   </article>`;
 }
@@ -1216,6 +1227,9 @@ function budgetLine() {
   const name = esc(VENDOR_LABEL[b.vendor] || b.vendor);
   if (b.kind === 'usd-unknown') return `<span class="status danger">budget</span> ${name} has a dollar cap, but its cost is not reported, so the ${esc(b.what)} was not run. `;
   if (b.kind === 'tokens-unknown') return `<span class="status danger">budget</span> ${name} did not report token usage. Further calls to this vendor are blocked under its token cap; ${esc(b.what)} was not run. `;
+  if (b.kind === 'seat-tokens-unknown') return `<span class="status warn">seat cap</span> That seat did not report complete token usage, so ${esc(b.what)} was not run. Its further calls are blocked under the seat cap; other seats can continue. `;
+  // one seat reached its own cap for this review: that seat sits out, the others go on
+  if (b.kind === 'seat-tokens') return `<span class="status warn">seat cap</span> the ${esc(b.what)} was not made: that seat has used ${esc(k(b.spent || 0))} of its ${esc(k(b.cap || 0))}-token cap for this review. The others go on. `;
   const unit = b.kind === 'usd' ? (n) => `$${(n || 0).toFixed(2)}` : (n) => `${k(n || 0)} tokens`;
   const figures = `${esc(unit(b.spent))} spent plus about ${esc(unit(b.projected))} projected, cap ${esc(unit(b.cap))}`;
   // a refused re-prompt fails one seat for one round; the debate goes on
@@ -1338,6 +1352,28 @@ $('answer-questions').addEventListener('click', () => {
 
 // ---------- export ----------
 try { $('export-target').value = localStorage.getItem('roundtable.exportTarget') || ''; } catch {}
+
+// Choose… beside an export field: the server opens this machine's own folder dialog (a page cannot
+// read a real path from the browser's picker) and the chosen folder fills the field. Typing still works.
+document.addEventListener('click', async (ev) => {
+  const button = ev.target.closest('.pick-folder');
+  if (!button) return;
+  const field = $(button.dataset.for), label = button.textContent;
+  const status = field.id === 'exportTo' ? $('export-folder-status') : $('export-status');
+  status.textContent = ''; field.removeAttribute('aria-invalid');
+  button.disabled = true; button.textContent = 'Opening…';
+  try {
+    // Allow the native dialog's ten-minute wait plus time for its result to reach the browser.
+    const out = await requestJson('/api/pick-folder', {}, 610_000);
+    if (out.path) {
+      field.value = out.path;
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+      if (field.id === 'export-target') try { localStorage.setItem('roundtable.exportTarget', out.path); } catch {}
+    }
+  } catch (e) {
+    status.textContent = e.message; field.setAttribute('aria-invalid', 'true');
+  } finally { button.disabled = false; button.textContent = label; }
+});
 // A verdict skipped (budget, wall clock), failed or never written: run the chairman alone.
 $('gate-status').addEventListener('click', async (ev) => {
   if (ev.target.id !== 'synthesize') return;

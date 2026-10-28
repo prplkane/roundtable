@@ -110,7 +110,9 @@ export const BULLET_LIMITS = { disagree: 3, new: 2 };
 
 // Returns {ok, errors[], parsed}. A violation list feeds the single re-prompt; parsed.trimmed
 // names the sections cut back to their limit.
-export function validateReply(text, { options, round }) {
+// trim: false keeps every bullet (a hidden mood's rant is the point, not a list to keep short).
+// requireAgree: false reads a missing AGREE_WITH line in a later round as agreeing with nobody.
+export function validateReply(text, { options, round, trim = true, requireAgree = true }) {
   const parsed = parseReply(text);
   const errors = [];
   if (parsed.pass) return { ok: true, errors, parsed: { ...parsed, stanceKey: 'PASS' } };
@@ -120,9 +122,9 @@ export function validateReply(text, { options, round }) {
   for (const h of ['DISAGREE', 'NEW', 'ASSUMPTIONS']) {
     if (!(parsed.sections || []).includes(h)) errors.push(`missing ${h} section`);
   }
-  if (round > 0 && !(parsed.sections || []).includes('AGREE_WITH')) errors.push('missing AGREE_WITH line (use [] if none)');
+  if (requireAgree && round > 0 && !(parsed.sections || []).includes('AGREE_WITH')) errors.push('missing AGREE_WITH line (use [] if none)');
   const trimmed = [];
-  for (const [key, limit] of Object.entries(BULLET_LIMITS)) {
+  for (const [key, limit] of trim ? Object.entries(BULLET_LIMITS) : []) {
     if (parsed[key].length > limit) { parsed[key] = parsed[key].slice(0, limit); trimmed.push(key.toUpperCase()); }
   }
   return { ok: errors.length === 0, errors, parsed: { ...parsed, stanceKey, ...(trimmed.length ? { trimmed } : {}) } };
