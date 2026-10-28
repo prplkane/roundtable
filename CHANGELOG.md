@@ -61,8 +61,8 @@
 - Show one banner with a **Reload** button when the board belongs to an earlier server
   session, and stop retrying from that page. Before, a board left open across a restart
   reported a page error and retried its diagnostics every 15 seconds, refused each time.
-- Tell the chairman of an unattended review that every seat question is still open, so they
-  land under its open questions instead of reading as agreement.
+- Tell the chairman of an unattended review that any seat question is still open, so it lands
+  under its open questions instead of reading as agreement.
 - Recommend the chairman one effort step above the seats, in the agent recipe and the guide:
   the verdict is the call that decides, and a low-effort chairman dismisses the hardest
   objection in a word.
@@ -70,8 +70,10 @@
   seat's question), so a review left in another tab can call you back. The gavel sounds stay
   for opening and ending.
 - Add an **Unattended** switch to the round settings, off by default: the review skips every
-  pause and seats' questions stay unanswered, for a review nobody will watch. The JSON client
-  takes it as `options.unattended`.
+  pause, and the seats are told to state what they would have asked as assumptions instead of
+  asking, since nobody answers; the question line leaves their contract, so its tokens leave
+  every call too. For a review nobody will watch. The JSON client takes it as
+  `options.unattended`.
 - Explain each mood on hover: the mood list, the mood on a reply card and the mood of a seat
   that asked a question all carry its one-line description.
 - Add a **Compact** switch in the header: every card folds to its seat and stance, so a round

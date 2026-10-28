@@ -229,7 +229,8 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
   const initialNotes = () => state.initialNotes.map((note) => ({ round: -1, ...noteRecord(note) }));
   const allNotes = (round) => [...initialNotes(), ...state.humanNotes.slice(0, round).flatMap((ns, r) => (ns || []).map((note) => ({ round: r, ...noteRecord(note) })))];
 
-  const prefixFor = (seat) => statelessPrefix({ fieldNotes, lens: seat.lens, mood: seat.mood, seatCount: state.seats.length });
+  const unattended = !!opts.unattended;
+  const prefixFor = (seat) => statelessPrefix({ fieldNotes, lens: seat.lens, mood: seat.mood, seatCount: state.seats.length, unattended });
 
   // One seat's turn in a round: call, validate, re-prompt once on violation. In stateless mode
   // the re-prompt carries the offending reply, since there is no thread to point back at.
@@ -266,7 +267,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       } else {
         seatState(seat, round, 'reprompted');
         const extra = v.tools ? [NO_TOOLS_LINE] : [];
-        const again = resumes ? repromptText(v.errors, fieldNotes.options, extra)
+        const again = resumes ? repromptText(v.errors, fieldNotes.options, extra, unattended)
           : statelessRepromptText({ prefix: prefixFor(seat), round, maxRound, text: res.text, errors: v.errors, extra, notes: allNotes(round) });
         const res2 = await callSeat(seat, again, round, 'reprompt', oneCall(seat, round));
         res = { ...res2, fresh: res.fresh, usedTools: res.usedTools || res2.usedTools };
@@ -304,9 +305,9 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     const replies = await Promise.all(state.seats.map((seat) => {
       const others = prev.filter((r) => r.seat.index !== seat.index).map((r) => ({ lens: r.seat.lens, text: r.text || '(no reply)' }));
       const prompt = round === 0
-        ? round0Prompt({ fieldNotes, lens: seat.lens, mood: seat.mood, seatCount: state.seats.length, notes: initialNotes() })
+        ? round0Prompt({ fieldNotes, lens: seat.lens, mood: seat.mood, seatCount: state.seats.length, notes: initialNotes(), unattended })
         : resumes
-          ? roundPrompt({ round, maxRound, others, notes, options: fieldNotes.options, mood: seat.mood })
+          ? roundPrompt({ round, maxRound, others, notes, options: fieldNotes.options, mood: seat.mood, unattended })
           : statelessRoundPrompt({ prefix: prefixFor(seat), round, maxRound, own: prev.find((r) => r.seat.index === seat.index)?.text, others, notes });
       return seatTurn(seat, prompt, round);
     }));
@@ -368,8 +369,9 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     const blocking = round === 0 || questions.length > 0;
     const reopenable = round === 0 && stop === 'consensus' && round < maxRound;
     const info = { round, mode: blocking ? 'blocking' : 'countdown', reason: round === 0 ? 'round0' : (questions.length ? 'question' : 'auto'), questions, autoContinueMs: opts.autoContinueMs, stop, reopenable };
-    // Nobody is at the table: no pause, no answers. The questions stay on the cards, unanswered.
-    if (opts.unattended) { fire('gate-skipped', { round, questions }); return null; }
+    // Nobody is at the table: no pause, no answers. The seats were told to assume instead of ask;
+    // a question a seat wrote anyway stays on its card, unanswered.
+    if (unattended) { fire('gate-skipped', { round, questions }); return null; }
     state.status = 'waiting';
     fire('gate', { ...info, deadlineAt });
     // A gate nobody answers ends at the deadline (the server then closes its own side).
@@ -420,7 +422,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     const prompt = chairmanPrompt({
       fieldNotes,
       rounds: state.rounds.map((r) => r.map((x) => ({ lens: x.seat.lens, text: x.text || '(no reply)' }))),
-      humanNotes: state.humanNotes, initialNotes: state.initialNotes, unattended: !!opts.unattended,
+      humanNotes: state.humanNotes, initialNotes: state.initialNotes, unattended,
     });
     const R = state.rounds.length;
     // The verdict is checked like a reply: the tool guard and its grammar (contract.validateVerdict).

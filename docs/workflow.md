@@ -227,9 +227,10 @@ custom text.
   token use and cost still vary. `resume` retains a conversation and can grow the context each
   round. Neither setting controls the provider's logging or retention policy.
 - **Unattended**, off by default: the table never waits for you. The pause after the blind
-  round and every pause for a seat's question are skipped, and those questions stay
-  unanswered. Turn it on only for a review nobody will watch; otherwise leave it off, so the
-  board can stop for you and play its waiting sound.
+  round is skipped, and the seats are told that nobody answers questions, so they state what
+  they would have asked as an assumption instead; the question line leaves their contract, which
+  also keeps its tokens out of every call. Turn it on only for a review nobody will watch;
+  otherwise leave it off, so the board can stop for you and play its waiting sound.
 - **Budget caps**, in the quota panel: an optional token or dollar ceiling per vendor. The
   engine checks projected usage before each round and every provider attempt, including network
   retries, re-prompts and a fallback chairman. It counts reported usage and calls still in
@@ -524,7 +525,7 @@ is already running; start one only when `status` cannot reach it.
 
 `wait` returns at a question or completion, or after 25 seconds (configurable from 1 to 30 with
 `--seconds`). It does not continue a round. With `"unattended": true` in `options` the review
-never pauses: `wait` only ever returns at completion, and seats' questions stay unanswered. Read `status`, answer only from supplied facts, and
+never pauses: `wait` only ever returns at completion, and the seats assume instead of asking. Read `status`, answer only from supplied facts, and
 ask the user for missing facts. Empty answers leave questions open. Stale-round answers fail
 without being sent. Writes are never retried automatically. Use `stop` to abort all calls,
 `resume` for an interrupted review, or `verdict` to request a missing verdict. Acceptance and

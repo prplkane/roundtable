@@ -231,6 +231,8 @@ test('unattended: no gate opens, every pause and question is skipped, and the bo
   const s = await d.run();
   assert.equal(gates, 0, 'the gate callback is never consulted');
   assert.match(fr.calls.find((c) => c.round === 'verdict').prompt, /Nobody answered during this review/, 'the chairman is told the questions are still open');
+  const seatCalls = fr.calls.filter((c) => c.round !== 'verdict');
+  assert.ok(seatCalls.length > 0 && seatCalls.every((c) => c.prompt.includes('never write QUESTION_FOR_HUMAN') && !c.prompt.includes('QUESTION_FOR_HUMAN: <optional')), 'seats are told to assume instead of ask, and the question line leaves the contract');
   assert.equal(events.filter((e) => e.type === 'gate' || e.type === 'countdown').length, 0);
   assert.deepEqual(events.filter((e) => e.type === 'gate-skipped').map((e) => [e.round, e.questions.length]), [[0, 0], [1, 1], [2, 0]], 'the last round goes straight to the verdict, as without the switch');
   assert.ok(s.verdict, 'the review still ends in a verdict');
