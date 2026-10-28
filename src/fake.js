@@ -1,7 +1,11 @@
 // A scripted runner for trying the board without spending tokens: `node src/server.js --fake`.
 // With `--fake-consensus` every seat takes the first option in rounds 0 and 1, so the board shows
 // the unanimous round-0 gate and, after a note, the reopened round 1 stopping on consensus.
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+import { setTimeout as delay } from 'node:timers/promises';
+const sleep = (ms, signal) => delay(ms, undefined, { signal }).catch((error) => {
+  if (signal?.aborted) throw Object.assign(new Error('scripted call cancelled'), { code: 'KILLED', kind: 'killed' });
+  throw error;
+});
 const pick = (arr, i) => arr[i % arr.length];
 
 // A plausible quota snapshot so the strip can be seen without real seats.
@@ -27,7 +31,7 @@ export function fakeRunner({ consensus = false } = {}) {
     // Behaviour follows the seat's position at the table, so two seats of one vendor still differ.
     const idx = opts.seat?.index ?? (/chairman/i.test(prompt) ? -1 : n % 3);
     const who = idx === 0 ? 'claude' : idx === 1 ? 'codex' : 'agy'; // the v1 script's three roles
-    await sleep(800 + Math.random() * 1500);
+    await sleep(800 + Math.random() * 1500, opts.signal);
     const round = Number((prompt.match(/^Round (\d+) of/m) || [])[1] ?? (/chairman/i.test(prompt) ? -1 : 0));
     // OPTIONS: opt-1 = Ship now | opt-2 = Wait a sprint (the chairman sees the same line)
     const options = (prompt.match(/^OPTIONS: (.+)$/m)?.[1] || '').split(' | ').map((o) => o.replace(/^opt-\d+ = /, '')).slice(0, 4);
@@ -37,7 +41,7 @@ export function fakeRunner({ consensus = false } = {}) {
       text = `RECOMMENDATION: opt-1\n${pick(options, 0)}, on the balance of risk and cost; the customer lens did not overturn it.\nDISSENT: The customer lens argued that ${pick(options, 1)} protects adoption; that risk is real and should be watched.\nKILL_CRITERIA:\n- Support tickets about the change exceed 5% of weekly volume\n- The migration takes more than two sprints\nOPEN_QUESTIONS:\n- Is the deadline movable by a week?`;
     } else if (!consensus && round >= 2 && who === 'codex') {
       text = 'PASS';
-    } else if (!consensus && round === 0 && who === 'agy') {
+    } else if (!consensus && round === 0 && who === 'agy' && !/did not follow the contract/.test(prompt)) {
       text = `I think ${pick(options, 1)} is right because customers hate surprises.`; // off contract, forces a re-prompt
     } else {
       // claude answers with the id, the others with the exact label: the contract accepts both
@@ -49,7 +53,8 @@ export function fakeRunner({ consensus = false } = {}) {
         'DISAGREE:', `- The ${who === 'agy' ? 'cost' : 'customer'} argument assumes a traffic pattern we have not measured`,
         'NEW:', round === 1 ? '- A staged rollout to 10% of accounts gives both sides their evidence' : '- none',
         'ASSUMPTIONS:', '- The team stays at two developers', '- No regulatory change before the deadline',
-        !consensus && round === 1 && who === 'agy' ? 'QUESTION_FOR_HUMAN: Is the deadline movable by one week?' : null,
+        !consensus && round === 0 ? `QUESTION_FOR_HUMAN: ${who === 'agy' ? 'What evidence would make you stop the trial?' : 'Is the deadline movable by one week?'}`
+          : !consensus && round === 1 && who === 'agy' && !/Answer:/.test(prompt) ? 'QUESTION_FOR_HUMAN: Is the deadline movable by one week?' : null,
       ].filter(Boolean).join('\n');
     }
     const quota = vendor === 'claude' ? fakeQuota(vendor, n) : null; // claude's rides on each reply

@@ -6,8 +6,6 @@
 <meta name="roundtable-token" content="">
 <title>Roundtable</title>
 <link rel="icon" href="/ui/logo.svg" type="image/svg+xml">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/ui/design/tokens.css">
 <link rel="stylesheet" href="/ui/design/preset-dusk.css">
 <link rel="stylesheet" href="/ui/design/app.css">
@@ -25,20 +23,36 @@
         <rect x="4" y="11" width="2" height="1"/><rect x="10" y="11" width="2" height="1"/><rect x="6" y="12" width="4" height="1"/>
       </g>
     </svg>
-    ROUNDTABLE<span class="cursor" aria-hidden="true"></span>
+    <span class="wordmark">ROUNDTABLE<span class="cursor" aria-hidden="true"></span></span>
+    <span class="run-mode" id="run-mode">Connecting</span>
     <span class="meta">
       <a class="btn btn-small" id="nav-debates" href="#" hidden>Debates</a>
+      <button class="btn btn-small" id="save-diagnostics" type="button">Save error log</button>
+      <button class="btn btn-small" id="sound" type="button" aria-pressed="true">Sound: on</button>
       <button class="btn btn-small" id="theme" type="button">Night</button>
     </span>
   </header>
 
   <main id="main">
+    <p class="mode-note" id="mode-note" role="status">Reading the server mode…</p>
+    <p class="mode-note" id="diagnostics-status" role="status" hidden></p>
+    <p class="error" id="page-error" role="alert" hidden></p>
     <!-- Setup screen -->
     <section id="setup" class="screen">
       <section class="panel" id="recent" aria-label="Debates">
-        <div class="panel-title"><span>Debates</span><span class="hint" id="recent-count"></span></div>
+        <div class="panel-title"><span>Debates</span><span class="hint" id="recent-count"></span><button class="btn btn-small" id="clear-finished" type="button" disabled>Clear finished</button></div>
+        <p class="history-notice" id="history-notice" role="status" hidden></p>
         <div id="recent-list" class="debates"></div>
       </section>
+      <details class="local-data" id="local-data">
+        <summary>Local data and backups</summary>
+        <p>Records for this server are saved in <code id="data-dir"></code>.</p>
+        <p id="legacy-data" hidden></p>
+        <p>Delete removes a session's local transcript and working files. Exported decision records, numeric usage statistics and quota calibration are kept. Running sessions cannot be deleted.</p>
+        <p>Stop the server before copying this folder. Keep the complete copy, including transcripts and recovery backups. Browser preferences and provider logins are stored separately.</p>
+        <p>Error logs stay in <code>_diagnostics/</code> inside this folder (up to 512 KiB). They contain error categories, reference IDs and code locations, not review text, credentials or personal paths. <b>Save error log</b> downloads a copy for review; nothing is uploaded automatically.</p>
+        <a href="/docs/workflow.md" target="_blank" rel="noopener">Full user guide, including startup and backups (text)</a>
+      </details>
       <div>
         <h1>New debate</h1>
         <p class="lede">Round 0 is blind: the seats see only these notes.</p>
@@ -70,10 +84,13 @@
 
       <section class="panel">
         <div class="panel-title"><span>Seats</span><span class="hint">Seats know each other by lens only, never by vendor.</span></div>
+        <p class="hint seats-hint" id="seat-setup-note" role="status" hidden></p>
         <div id="seats" class="seats" role="list"></div>
         <div id="datalists"></div>
         <div class="row seats-actions">
           <span class="error" id="seats-error" role="alert"></span>
+          <span class="hint" id="preflight-status" role="status"></span>
+          <button class="btn btn-small" id="refresh-status" type="button">Refresh status</button>
           <button class="btn btn-small" id="add-seat" type="button">+ Add seat</button>
         </div>
         <div class="chair-wrap">
@@ -99,10 +116,10 @@
           </article>
         </div>
         <div class="fields fields-row rules">
-          <div class="field"><label class="label" for="critique-rounds">Critique rounds</label><input id="critique-rounds" type="number" min="0" max="8" value="3"></div>
-          <div class="field"><label class="label" for="auto">Auto-continue (s)</label><input id="auto" type="number" min="5" max="600" value="60"></div>
-          <div class="field"><label class="label" for="wall">Wall clock (min)</label><input id="wall" type="number" min="1" max="180" value="30"></div>
-          <div class="field"><label class="label" for="memory">Memory</label><select id="memory"><option value="stateless">stateless: fresh call per round</option><option value="resume">resume: re-send the thread</option></select></div>
+          <div class="field"><label class="label help-label" data-help="critique" tabindex="0" for="critique-rounds" aria-describedby="help-critique">Critique rounds</label><input id="critique-rounds" type="number" min="0" max="8" value="1" aria-describedby="help-critique"></div>
+          <div class="field"><label class="label help-label" data-help="auto" tabindex="0" for="auto" aria-describedby="help-auto">Auto-continue (s)</label><input id="auto" type="number" min="0.1" step="0.1" max="600" value="60" aria-describedby="help-auto"></div>
+          <div class="field"><label class="label help-label" data-help="wall" tabindex="0" for="wall" aria-describedby="help-wall">Wall clock (min)</label><input id="wall" type="number" min="1" max="180" value="30" aria-describedby="help-wall"></div>
+          <div class="field"><label class="label help-label" data-help="memory" tabindex="0" for="memory" aria-describedby="help-memory">Memory</label><select id="memory" aria-describedby="help-memory"><option value="stateless">stateless: fresh call per round</option><option value="resume">resume: re-send the thread</option></select></div>
         </div>
       </section>
 
@@ -124,39 +141,56 @@
       <div id="banners" class="banners" role="status" aria-live="polite"></div>
       <section class="panel strip" aria-label="Usage">
         <div class="panel-title"><span id="board-title"></span></div>
+        <div id="review-state" class="review-state" role="status"></div>
+        <div id="usage-summary" class="usage-summary" aria-label="Reported quota remaining"></div>
+        <details id="usage-details" class="usage-details"><summary>Usage details</summary>
         <table id="usage"><thead><tr><th class="label">Pool / seat</th><th class="label">In</th><th class="label">Cache</th><th class="label">Out</th><th class="label">Cost</th><th class="label">Time</th><th class="label" title="Input tokens, cache included, that this seat sent in the latest round">Round in</th></tr></thead><tbody></tbody></table>
+        </details>
+      </section>
+
+      <section id="questions-panel" class="panel questions-panel" hidden aria-labelledby="questions-heading">
+        <div class="panel-title"><span id="questions-heading">Questions for you</span><span id="questions-count" class="hint"></span></div>
+        <p class="hint">Answer here once. Identical questions share an answer; each answer goes to every seat with its question. Leave anything you do not know blank.</p>
+        <div id="question-inputs"></div>
+        <div class="row question-actions"><span id="answer-count" class="hint" role="status"></span><button class="btn btn-primary" id="send-answers" type="button">Send answers and continue</button></div>
       </section>
 
       <section id="verdict" class="panel verdict" hidden>
         <div class="panel-title"><span>Verdict</span></div>
         <div class="verdict-body" id="verdict-body"></div>
+        <details id="decision-actions" class="decision-actions"><summary>Record your decision</summary>
+        <p class="hint">The discussion is finished. This note records your decision; it is not sent to the agents.</p>
         <form class="export-bar accept-bar" id="accept-form">
           <label class="label" for="accept-option">Your decision</label>
           <select id="accept-option"></select>
           <input id="accept-note" placeholder="Why, in one line (optional)" aria-label="Note on your decision">
-          <button class="btn btn-small" type="submit">Accept</button>
-          <span id="accept-status" class="hint"></span>
+          <button class="btn btn-small" id="accept" type="submit">Accept</button>
+          <span id="accept-status" class="hint" role="status"></span>
         </form>
+        </details>
         <form class="export-bar" id="export-form">
           <input id="export-target" placeholder="Export to: an existing directory in a codebase" aria-label="Export target directory">
           <button class="btn btn-small" id="export" type="submit">Export record</button>
-          <span id="export-status" class="hint"></span>
+          <span id="export-status" class="hint" role="status"></span>
         </form>
       </section>
 
       <div id="rounds" class="rounds"></div>
 
       <div class="empty" id="board-empty">
-        <span><span class="prompt">&gt;</span> waiting for round 0<br>&nbsp;&nbsp;three blind positions arrive together_</span>
+        <span><span class="prompt">&gt;</span> waiting for round 0<br>&nbsp;&nbsp;blind positions arrive together_</span>
       </div>
     </section>
   </main>
 
   <div id="humanbar" class="humanbar" hidden>
     <div class="humanbar-status" id="gate-status"></div>
+    <div class="error" id="human-error" role="alert" hidden></div>
     <form id="human-form" class="humanbar-form">
-      <input id="human-msg" placeholder="Say something to every seat, or /stop" autocomplete="off">
+      <input id="human-msg" aria-label="Note to every seat" placeholder="Say something to every seat, or /stop" autocomplete="off" maxlength="4000">
+      <button class="btn" id="answer-questions" type="button" hidden>Answer questions</button>
       <button class="btn btn-primary" id="continue" type="submit">Continue</button>
+      <button class="btn" id="finish" type="button" hidden>Finish with verdict</button>
       <button class="btn btn-danger" id="stop" type="button">Stop</button>
     </form>
   </div>
@@ -169,6 +203,15 @@
     <span class="end">v0.3.0</span>
   </footer>
 </div>
+<dialog id="delete-history" aria-labelledby="delete-history-title" aria-describedby="delete-history-detail">
+  <form method="dialog">
+    <h2 id="delete-history-title">Delete session?</h2>
+    <p id="delete-history-detail"></p>
+    <p>Local transcripts and working files will be removed permanently. Exported files and usage statistics are kept.</p>
+    <p class="error" id="delete-history-error" role="alert" hidden></p>
+    <div class="row"><button class="btn" id="delete-history-cancel" value="cancel" autofocus>Cancel</button><button class="btn btn-danger" id="delete-history-confirm" type="button">Delete</button></div>
+  </form>
+</dialog>
 <script type="module" src="/ui/app.js"></script>
 </body>
 </html>

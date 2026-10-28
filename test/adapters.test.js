@@ -62,6 +62,47 @@ test('pickJson reads the agy shape', () => {
   assert.deepEqual(p, { text: 'pong', sessionId: 'C', usage: { input: 2, cacheRead: 10, cacheWrite: 0, output: 4, thinking: 1 }, cost: null, quota: null, isError: false });
 });
 
+test('CLI parsers distinguish unknown token counters from measured zeros', () => {
+  for (const usage of [undefined, {}, { input_tokens: 2 }, { input_tokens: '2', output_tokens: 4 },
+    { input_tokens: 2, output_tokens: -1 }, { input_tokens: 2, output_tokens: Infinity },
+    { input_tokens: 2, output_tokens: 4, cache_read_tokens: -1, cache_read_input_tokens: -1 }]) {
+    assert.equal(pickJson({ usage }, ADAPTERS.agy.paths).usage, null);
+    assert.equal(pickJsonl(JSON.stringify({ type: 'result', usage }), ADAPTERS.claude.paths).usage, null);
+  }
+  assert.equal(pickJson({ usage: { input_tokens: 0, output_tokens: 0 } }, ADAPTERS.agy.paths).usage.input, 0);
+  assert.equal(pickJsonl('{"type":"turn.completed","usage":{"input_tokens":0,"output_tokens":0}}', ADAPTERS.codex.paths).usage.output, 0);
+});
+
+test('CLI adapters preserve unknown usage and known costs, including error results and resumed cost deltas', async () => {
+  const fixture = path.resolve('test/fixtures/fake-cli.mjs');
+  try {
+    for (const name of ['claude', 'codex', 'agy']) {
+      process.env.FAKE_SHAPE = name;
+      const run = makeAdapter(name, { bin: { file: process.execPath, prefix: [fixture] } });
+      for (const mode of ['missing', 'empty', 'partial', 'zero']) {
+        process.env.FAKE_USAGE = mode;
+        const r = await run('hello', null, { timeoutMs: 20_000 });
+        if (mode === 'zero') assert.equal(r.usage.input, 0, name);
+        else {
+          assert.equal(r.usage, null, `${name}: ${mode}`);
+          assert.equal(r.cost, name === 'claude' ? 0.01 : null);
+        }
+      }
+      if (name === 'claude') {
+        process.env.FAKE_USAGE = 'missing';
+        const resumed = await run('again', 'S1', { prevCost: 0.004, timeoutMs: 20_000 });
+        assert.equal(resumed.rawCost, 0.01);
+        assert.equal(resumed.cost, 0.006);
+        process.env.FAKE_IS_ERROR = '1';
+        await assert.rejects(run('error', 'S1', { prevCost: 0.004, timeoutMs: 20_000 }), (e) => e.usage === null && e.cost === 0.006 && e.rawCost === 0.01);
+        delete process.env.FAKE_IS_ERROR;
+      }
+    }
+  } finally {
+    for (const key of ['FAKE_SHAPE', 'FAKE_USAGE', 'FAKE_IS_ERROR']) delete process.env[key];
+  }
+});
+
 test('pickJsonl reads the claude stream: result line plus the rate_limit_event', () => {
   // Shapes as the CLIs print them (values trimmed).
   const lines = [

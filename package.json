@@ -1,7 +1,7 @@
 {
   "name": "@prplkane/roundtable",
   "version": "0.3.0",
-  "description": "Bounded debates between CLI coding agents on their subscriptions, with the human kept in a seat.",
+  "description": "Local decision reviews with coding-agent CLIs, human input, budget checks and Markdown records.",
   "keywords": [
     "claude",
     "codex",

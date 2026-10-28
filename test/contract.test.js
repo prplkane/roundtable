@@ -23,6 +23,22 @@ test('parses a well-formed reply', () => {
   assert.equal(r.parsed.question, 'Is the deadline movable?');
 });
 
+test('extra bullets are trimmed to the limit, not sent back for a re-prompt', () => {
+  const r = validateReply([
+    'STANCE: opt-1',
+    'AGREE_WITH: []',
+    'DISAGREE:', '- a', '- b', '- c', '- d',
+    'NEW:', '- one', '- two', '- three',
+    'ASSUMPTIONS:', '- x',
+  ].join('\n'), { options: OPTS, round: 1 });
+  assert.equal(r.ok, true, 'a bullet count alone never costs a re-prompt');
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual(r.parsed.disagree, ['a', 'b', 'c']);
+  assert.deepEqual(r.parsed.new, ['one', 'two']);
+  assert.deepEqual(r.parsed.trimmed, ['DISAGREE', 'NEW']);
+  assert.equal(validateReply('STANCE: opt-1\nDISAGREE:\n- a\nNEW: none\nASSUMPTIONS:\n- x', { options: OPTS, round: 0 }).parsed.trimmed, undefined);
+});
+
 test('tolerates markdown bold headers and a code fence', () => {
   const r = validateReply('```\n**STANCE:** wait a sprint\nAGREE_WITH: []\nDISAGREE:\n- x\nNEW: none\nASSUMPTIONS:\n- y\n```', { options: OPTS, round: 1 });
   assert.equal(r.ok, true, r.errors.join(', '));

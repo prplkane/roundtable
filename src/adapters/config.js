@@ -198,7 +198,7 @@ export const ADAPTERS = {
     label: 'API endpoint',
     binary: null, args: [], resume: null, model: null,
     home: null,
-    isolation: 'stateless HTTP: the whole round travels in each request; nothing is kept at the vendor',
+    isolation: 'stateless HTTP requests; Roundtable does not manage a remote thread or control provider retention',
     effort: null, // reasoning_effort in the request body, sent only when the seat sets a level
     effortLevels: ['low', 'medium', 'high'], // OpenAI reasoning_effort values; a server that lacks the field answers 400
     modelHints: [], // the user names the model; the board offers no list for an arbitrary endpoint

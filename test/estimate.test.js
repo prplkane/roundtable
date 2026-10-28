@@ -183,6 +183,22 @@ test('projectRound prices one round per vendor: fresh at round 0 and stateless, 
   assert.equal(budgetCheck({}, { codex: { tokens: 1e9 } }, {}), null);
 });
 
+test('a call to another vendor adds no unknown cost to a dollar-capped vendor', () => {
+  const budget = { claude: { usd: 1 } };
+  const next = { codex: { tokens: 20, cost: null } };
+  assert.equal(budgetCheck(budget, {}, next), null);
+  assert.equal(budgetCheck(budget, { claude: { tokens: 20, cost: 0.8 } }, next), null);
+  assert.equal(budgetCheck(budget, { claude: { tokens: 20, cost: 1.2 } }, next).kind, 'usd');
+  assert.equal(budgetCheck(budget, { claude: { tokens: 20, cost: 0, costUnknown: true } }, next).kind, 'usd-unknown');
+});
+
+test('unknown tokens refuse further calls to a token-capped vendor without blocking an unrelated chairman', () => {
+  const spent = { codex: { tokens: 10, cost: 0, tokensUnknown: true } };
+  assert.equal(budgetCheck({ codex: { tokens: 1000 } }, spent, { codex: { tokens: 10, cost: null } }).kind, 'tokens-unknown');
+  assert.equal(budgetCheck({ codex: { tokens: 1000 } }, spent, { claude: { tokens: 10, cost: 0.1 } }), null);
+  assert.equal(budgetCheck({}, spent, { codex: { tokens: 10, cost: null } }), null);
+});
+
 test('baselines never learn from scripted seats: fake- session ids are skipped row by row, and whole fake transcripts are left out', async () => {
   const seat = { vendor: 'claude', id: 'seat-0' };
   const real = { type: 'reply', round: 0, seat, sessionId: 'S1', usage: { input: 100, output: 10 } };

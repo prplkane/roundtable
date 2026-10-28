@@ -28,7 +28,9 @@ Every change to `main` goes through a pull request and needs an approving review
 maintainer (`.github/CODEOWNERS`). Approvals are dismissed when new commits are pushed, and the
 latest push needs its own approval. No bot, automation or AI agent can approve or merge: the
 Actions token is read-only and may not review. A PR from a fork does not run workflows until a
-maintainer approves the run.
+maintainer approves the run. The maintainer's own release commits are the one exception: GitHub
+does not let an author approve their own PR, so those are merged by the maintainer directly,
+still through a PR with the test suite green.
 
 ## For AI coding agents working in this repository
 

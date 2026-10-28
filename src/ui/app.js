@@ -1,14 +1,89 @@
-import { rollup } from '/src/engine.js';
+import { rollup, hasUsableRound } from '/src/engine.js';
 import { optionLabel } from '/src/contract.js';
-import { poolKey, poolVendor, poolAccount, hostKey, seatKind } from '/src/seats.js';
+import { poolKey, poolVendor, poolAccount, hostKey, seatKind, initialSeatVendors, nextSeatLens, fillMissingSeatLenses, seatSetupIssue } from '/src/seats.js';
 import { avatar } from '/ui/avatars.js';
 import { modelsForPlan, retired } from '/src/adapters/models.js';
 import { project, projectedWindows } from '/src/estimate.js';
+import { PREFLIGHT_TTL_MS } from '/src/preflight.js';
+import { createBrowserDiagnostics, requestAction } from '/ui/diagnostics.js';
+import { installHelp, revealText, MOOD_HELP } from '/ui/help.js';
+import { installCeremony } from '/ui/ceremony.js';
+import { noteRecord, noteLabel } from '/src/notes.js';
+import { unlock as unlockSound, setSound, soundEnabled, playCue } from '/ui/sound.js';
+import { groupQuestions, answerMessage, stopExplanation, cancellationReason, remainingWindow, argumentHtml, ceremonyOutcome } from '/src/review-view.js';
 
 const $ = (id) => document.getElementById(id);
+const helpNotes = installHelp();
+const ceremony = installCeremony();
+let openingSlug = null;
+const replyReveals = new Map();
+const replyKey = (r) => `${r.type}:${r.attemptId || `${r.seat?.id || 'chairman'}:${r.round ?? -1}`}`;
 // The launch token the server put in the page; every POST carries it (server.js refuse()).
 const SEND = { 'content-type': 'application/json', 'x-roundtable-token': document.querySelector('meta[name="roundtable-token"]')?.content || '' };
-const LENSES = { claude: 'risk and failure modes', codex: 'cost and effort', agy: 'customer and adoption' };
+let diagnosticStorage;
+try { diagnosticStorage = sessionStorage; } catch { /* private browsing may disable storage */ }
+const clientDiagnostics = createBrowserDiagnostics({ storage: diagnosticStorage,
+  send: async (events) => {
+    const res = await fetch('/api/diagnostics/report', { method: 'POST', headers: SEND, body: JSON.stringify({ events }), signal: AbortSignal.timeout(5000) });
+    if (!res.ok) throw new Error('Diagnostic log unavailable.');
+    return res.json();
+  },
+  onPending: (count) => {
+    if (count) { $('diagnostics-status').textContent = 'Some error details have not reached the local log. Keep this tab open; they will retry when the server is available. Save error log includes pending details.'; $('diagnostics-status').hidden = false; }
+    else if ($('diagnostics-status').textContent.startsWith('Some error details')) $('diagnostics-status').hidden = true;
+  },
+});
+const errorReference = (diagnostic) => diagnostic?.id ? ` Reference ${diagnostic.id}.${diagnostic.saved === false ? ' The local log could not save this entry.' : ''}` : '';
+function browserFailure(code, action, message, details) {
+  const id = clientDiagnostics.report(code, action, details);
+  return new Error(`${message}${errorReference({ id })}`);
+}
+function pageFailure(code, event) {
+  const id = clientDiagnostics.report(code, 'unknown', { line: event?.lineno, column: event?.colno });
+  $('page-error').textContent = `A page error interrupted an action. Copy any unsent note, reload, then check the review before retrying.${errorReference({ id })}`;
+  $('page-error').hidden = false;
+}
+window.addEventListener('error', (e) => pageFailure('browser-error', e));
+window.addEventListener('unhandledrejection', () => pageFailure('browser-rejection'));
+window.addEventListener('online', () => void clientDiagnostics.flush());
+setInterval(() => void clientDiagnostics.flush(), 15_000);
+void clientDiagnostics.flush();
+// A failed or timed-out write can already have reached the server. Never retry it automatically.
+async function requestJson(url, body) {
+  const action = requestAction(url, body !== undefined);
+  let res;
+  try {
+    res = await fetch(url, { ...(body === undefined ? {} : { method: 'POST', headers: SEND, body: JSON.stringify(body) }), signal: AbortSignal.timeout(15_000) });
+  } catch (e) {
+    const timeout = ['TimeoutError', 'AbortError'].includes(e.name);
+    throw browserFailure(timeout ? 'browser-timeout' : 'browser-network', action,
+      `${timeout ? 'The server did not respond within 15 seconds.' : 'Could not reach the local server.'} ${body === undefined ? 'Check that it is running, then reload.' : 'The action may already have happened. Keep your note and check the review before retrying.'}`);
+  }
+  let out;
+  try { out = await res.json(); } catch { throw browserFailure('browser-response', action, 'The server returned an unreadable response. Check the current state before retrying.', { status: res.status }); }
+  if (!out || typeof out !== 'object') throw browserFailure('browser-response', action, 'The server returned an unreadable response. Check the current state before retrying.', { status: res.status });
+  if (!res.ok || out.ok === false) {
+    const message = res.status === 401 ? 'This page is out of date. Copy any unsent note, reload, then check the review before retrying.' : out.error || 'This action is no longer available. Check the current state before retrying.';
+    if (out.diagnostic) throw Object.assign(new Error(message + errorReference(out.diagnostic)), { field: out.field, seatIndex: out.seatIndex });
+    throw browserFailure('browser-response', action, message, { status: res.status });
+  }
+  void clientDiagnostics.flush();
+  return out;
+}
+$('save-diagnostics').addEventListener('click', async () => {
+  const button = $('save-diagnostics'); button.disabled = true;
+  try {
+    await clientDiagnostics.flush();
+    const out = await requestJson('/api/diagnostics', {});
+    const blob = new Blob([JSON.stringify({ ...out, pendingBrowserEvents: clientDiagnostics.pending() }, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob), link = document.createElement('a');
+    link.href = url; link.download = `roundtable-errors-${new Date().toISOString().slice(0, 10)}.json`; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    $('diagnostics-status').textContent = `Error log saved. Nothing was uploaded.${!out.available ? ' The server could not read or write part of the log; check disk space and data-folder permissions.' : ''}${out.dropped ? ' Repeated errors exceeded the logging rate limit; some entries were omitted.' : ''}`;
+  } catch (e) { $('diagnostics-status').textContent = `Could not save the error log. ${e.message}`; }
+  finally { button.disabled = false; $('diagnostics-status').hidden = false; }
+});
+const initialDraft = (vendors) => vendors.map((vendor, i) => ({ vendor, lens: ['risk and failure modes', 'cost and effort'][i], mood: 'grill', moodText: '', model: '', effort: '' }));
 const VENDOR_LABEL = {};
 const VENDOR_META = {}; // vendor -> { kind, usageUrl, pool, catalogue, colour, profiles } from /api/seats
 let MOODS = {}, COLOURS = ['rust', 'olive', 'teal', 'dusk', 'steel'], BASELINES = {};
@@ -32,25 +107,39 @@ const chairAccount = () => (isApi($('chairman').value) ? hostKey($('chairman-end
 const S = {
   down: {}, // board: logins out for this debate (pool-down events)
   preflight: {}, preflighting: false, startConfirm: null, // setup screen: the lamps' answers per pool key
-  slug: null, seats: [], fieldNotes: null, rows: [], rounds: [], humanNotes: [], gate: null, deadline: null, held: false,
-  verdict: null, status: 'idle', startedAt: null, stopReason: null, pending: new Set(), quota: {}, calib: {}, pools: {}, chairman: null,
+  preflightError: null, preflightCheckedAt: null,
+  slug: null, seats: [], fieldNotes: null, rows: [], rounds: [], humanNotes: [], initialNotes: [], gate: null, deadline: null, held: false,
+  verdict: null, status: 'idle', startedAt: null, stopReason: null, pending: new Set(), quota: {}, calib: {}, pools: {}, chairman: null, configuredChairman: null,
   conn: {}, // seat id -> connection state (idle, thinking, replied, reprompted, failed, timed-out), from seat-state events
   positions: [], // per round: seat id -> agreed | disagreed | neutral | passed | null, from round-done
   draft: [], // setup screen: the seat rows being edited
   budget: {}, // setup screen: vendor -> { tokens, usd } caps
 };
-const CONN_LABEL = { idle: 'idle', thinking: 'thinking', replied: 'replied', reprompted: 're-prompted', failed: 'failed', 'timed-out': 'timed out', down: 'out for this debate' };
+const CONN_LABEL = { idle: 'idle', thinking: 'thinking', replied: 'replied', reprompted: 're-prompted', failed: 'failed', cancelled: 'cancelled', 'timed-out': 'timed out', down: 'out for this debate' };
 // What a failed call's kind means for the human, in one line (adapters/errors.js classifies).
 const ERROR_LINE = {
-  quota: 'Out of quota.', auth: 'Not logged in.', missing: 'CLI not installed.', network: 'Could not reach the service (retried once).',
-  timeout: 'Did not answer in time.', killed: 'Stopped before it answered.', format: 'The reply did not follow the verdict format.',
+  quota: 'Provider usage limit reached. Wait for the reset or choose another provider.',
+  auth: 'Provider login needs attention. Sign in with its CLI, then refresh status.',
+  missing: 'Provider CLI not found. Install it and restart Roundtable.',
+  network: 'Could not reach the provider. Check your connection and its service status.',
+  timeout: 'This provider reached its per-call time limit. Other replies are kept. Try a smaller review or another model.',
+  killed: 'Stopped before it answered.', format: 'The reply did not follow the required format. Try another model.',
+  budget: 'The budget blocked this call. Check the cap and reported usage before continuing.',
 };
 const POSITION_LABEL = { agreed: 'with the majority', disagreed: 'against the majority', neutral: 'own stance', passed: 'passed' };
 const led = (state) => `<span class="led led-${esc(state || 'idle')}" title="${esc(CONN_LABEL[state] || 'idle')}" aria-label="${esc(CONN_LABEL[state] || 'idle')}"></span>`;
 
 // ---------- setup screen ----------
 async function setup() {
-  const { vendors, moods, colours, defaults, baselines, calibration, pools } = await (await fetch('/api/seats')).json();
+  const { vendors, moods, colours, defaults, baselines, calibration, pools, runtime } = await requestJson('/api/seats');
+  const demo = runtime?.mode === 'demo';
+  $('run-mode').textContent = demo ? 'Demo' : 'Live';
+  $('run-mode').className = `run-mode ${demo ? 'demo' : 'live'}`;
+  $('mode-note').textContent = demo ? 'Demo: replies and usage are scripted. No model calls are made.' : 'Live: debates send your field notes to the providers you select and use their quota or billing.';
+  $('data-dir').textContent = runtime?.dataDir || 'unavailable — check the server terminal';
+  $('legacy-data').hidden = !runtime?.legacyDataDir;
+  $('legacy-data').textContent = runtime?.legacyDataDir ? `Older history remains at ${runtime.legacyDataDir}. Stop that server before moving its data; see the user guide.` : '';
+  if (runtime?.diagnostics?.available === false) { $('diagnostics-status').textContent = 'The local error log is unavailable. Check disk space and data-folder permissions.'; $('diagnostics-status').hidden = false; }
   MOODS = moods; COLOURS = colours; BASELINES = baselines || {}; S.calib = calibration || {}; S.pools = pools || {};
   const chair = $('chairman');
   for (const v of vendors) {
@@ -65,22 +154,44 @@ async function setup() {
   $('critique-rounds').value = defaults.critiqueRounds;
   $('auto').value = defaults.autoContinueMs / 1000;
   $('wall').value = defaults.wallClockMs / 60000;
+  $('memory').value = defaults.memory || 'stateless';
   try { const saved = JSON.parse(localStorage.getItem('roundtable.notes') || 'null'); if (saved) for (const [k, v] of Object.entries(saved)) if (k !== 'options' && $(k)) $(k).value = v; S.options = String(saved?.options || '').split('\n').map((o) => o.trim()).filter(Boolean); } catch {}
   if (!S.options || S.options.length < 2) S.options = [...(S.options || []), '', ''].slice(0, Math.max(2, S.options?.length || 0));
   renderOptions();
   setupMoreContext();
-  let saved = null;
+  let saved = null, settings = {};
   try { saved = JSON.parse(localStorage.getItem('roundtable.seats') || 'null'); } catch {}
-  S.draft = Array.isArray(saved) && saved.length >= 2 ? saved.filter((s) => VENDOR_META[s.vendor]) : vendors.filter((v) => v.kind !== 'api').map((v) => ({ vendor: v.vendor, lens: LENSES[v.vendor] || '', mood: 'grill', moodText: '', model: '', effort: '' }));
-  renderSeats();
+  try { settings = JSON.parse(localStorage.getItem('roundtable.settings') || '{}') || {}; } catch {}
+  const retained = Array.isArray(saved) ? saved.filter((s) => s && VENDOR_META[s.vendor]) : [];
+  S.draft = retained.length >= 2 ? fillMissingSeatLenses(retained) : initialDraft(initialSeatVendors(vendors));
+  const filled = retained.length >= 2 ? retained.filter((s) => !String(s.lens || '').trim()).length : 0;
+  $('seat-setup-note').hidden = !filled;
+  $('seat-setup-note').textContent = filled ? `Added starter lenses to ${filled} unfinished seat${filled === 1 ? '' : 's'}. Review or edit them before opening the table.` : '';
+  S.initialDraft = retained.length >= 2 ? null : JSON.stringify(S.draft);
+  S.initialChair = !settings.chairman;
+  for (const [key, id, scale, min, max] of [
+    ['critiqueRounds', 'critique-rounds', 1, 0, 8], ['autoContinueMs', 'auto', 1000, 100, 600_000], ['wallClockMs', 'wall', 60_000, 60_000, 10_800_000],
+  ]) {
+    const value = settings.options?.[key];
+    if (Number.isInteger(value) && value >= min && value <= max) $(id).value = value / scale;
+  }
+  if (['stateless', 'resume'].includes(settings.options?.memory)) $('memory').value = settings.options.memory;
+  const ch = settings.chairman;
+  if (ch && VENDOR_META[ch.vendor]) {
+    chair.value = ch.vendor;
+    for (const field of ['model', 'account', 'endpoint', 'keyEnv']) if (typeof ch[field] === 'string') $(`chairman-${field === 'keyEnv' ? 'keyenv' : field}`).value = ch[field];
+  }
   chairEffortOptions();
+  if (ch?.effort && [...$('chairman-effort').options].some((o) => o.value === ch.effort)) $('chairman-effort').value = ch.effort;
+  renderSeats();
 
-  $('add-seat').addEventListener('click', () => { S.draft.push({ vendor: vendors[0].vendor, lens: '', mood: 'grill', moodText: '', model: '', effort: '' }); renderSeats(); });
+  $('add-seat').addEventListener('click', () => { S.initialDraft = null; clearSetupValidation(); S.draft.push({ vendor: vendors[0].vendor, lens: nextSeatLens(S.draft), mood: 'grill', moodText: '', model: '', effort: '' }); renderSeats(); });
   $('seats').addEventListener('input', onSeatEdit);
   $('seats').addEventListener('change', onSeatEdit);
   $('seats').addEventListener('click', (ev) => {
     const pip = ev.target.closest('.pip');
     if (pip) {
+      S.initialDraft = null;
       const s = S.draft[Number(pip.closest('.seat').dataset.i)];
       const fam = s.vendor === 'agy' && familyOf('agy', s.model);
       if (fam) Object.assign(s, pickedModel('agy', fam.id, pip.dataset.level)); // a variant is always one level
@@ -88,12 +199,16 @@ async function setup() {
       renderSeats(); return;
     }
     const btn = ev.target.closest('.remove'); if (!btn) return;
+    S.initialDraft = null;
     if (S.draft.length <= 2) { $('seats-error').textContent = 'A table needs at least two seats.'; return; }
     S.draft.splice(Number(btn.closest('.seat').dataset.i), 1); renderSeats();
   });
   chair.addEventListener('change', () => { $('chairman-model').value = ''; chairEffortOptions(); renderChair(); renderProjection(); });
+  $('chair-card').addEventListener('input', () => { S.initialChair = false; });
+  $('chair-card').addEventListener('change', () => { S.initialChair = false; });
   $('chair-pips').addEventListener('click', (ev) => {
     const pip = ev.target.closest('.pip'); if (!pip) return;
+    S.initialChair = false;
     const sel = $('chairman-effort');
     const fam = $('chairman').value === 'agy' && familyOf('agy', $('chairman-model').value.trim());
     if (fam) { const p = pickedModel('agy', fam.id, pip.dataset.level); $('chairman-model').value = p.model; sel.value = p.effort; }
@@ -110,27 +225,33 @@ async function setup() {
   });
   $('chairman-account').addEventListener('input', () => { renderChair(); requestPreflight(); });
   $('chairman').addEventListener('change', () => requestPreflight());
+  $('refresh-status').addEventListener('click', () => requestPreflight({ fresh: true }));
   // an endpoint chairman: a preset URL prefills the key variable's usual name (never a key)
   $('chairman-endpoint').addEventListener('change', () => { const pre = ENDPOINT_PRESETS.find((e) => e.url === $('chairman-endpoint').value.trim()); if (pre?.keyEnv && !$('chairman-keyenv').value.trim()) $('chairman-keyenv').value = pre.keyEnv; renderChair(); requestPreflight(); });
   for (const id of ['chairman-endpoint', 'chairman-keyenv']) $(id).addEventListener('input', () => { renderChair(); requestPreflight(); });
   renderChair();
   for (const id of ['chairman-model', 'chairman-effort', 'critique-rounds', 'memory']) $(id).addEventListener('input', renderProjection);
-  $('memory').value = defaults.memory || 'stateless';
   $('start').addEventListener('click', start);
   try { S.budget = JSON.parse(localStorage.getItem('roundtable.budget') || '{}') || {}; } catch {}
+  renderProjection();
   $('projection').addEventListener('input', (ev) => {
     const inp = ev.target.closest('.pool-cap input'); if (!inp) return;
     const v = inp.closest('.pool-cap').dataset.vendor;
     const b = (S.budget[v] ??= {});
     b[inp.name] = inp.value === '' ? undefined : Number(inp.value);
+    const warning = inp.closest('.pool').querySelector('[data-dollar-warning]');
+    if (warning) warning.hidden = !(b.usd > 0);
   });
   $('projection').addEventListener('submit', async (ev) => {
     const form = ev.target.closest('form.pool-entry'); if (!form) return;
     ev.preventDefault();
     const body = Object.fromEntries(new FormData(form).entries());
-    const res = await fetch(`/api/pools/${form.dataset.vendor}`, { method: 'POST', headers: SEND, body: JSON.stringify(body) });
-    const out = await res.json();
-    if (res.ok) { S.pools[form.dataset.vendor] = out.pool; renderProjection(); } else form.querySelector('.error').textContent = out.error;
+    const button = form.querySelector('button');
+    if (button.disabled) return;
+    button.disabled = true;
+    try { const out = await requestJson(`/api/pools/${form.dataset.vendor}`, body); S.pools[form.dataset.vendor] = out.pool; renderProjection(); }
+    catch (e) { form.querySelector('.error').textContent = e.message; }
+    finally { button.disabled = false; }
   });
 }
 
@@ -203,12 +324,16 @@ function pipsHtml(vendor, chosen, model = '') {
 }
 
 // The lamp: the pre-flight answer for the seat's pool when there is one (installed, logged in,
-// quota; GET /api/preflight), else what the quota alone says.
+// quota; authenticated POST /api/preflight), else what the quota alone says.
 function poolLamp(vendor, account) {
   const key = poolKey(vendor, account, !!VENDOR_META[vendor]?.profiles);
   const pf = S.preflight[key];
-  if (pf) return { cls: pf.state, note: pf.note, kind: pf.kind };
   if (S.preflighting) return { cls: 'idle', note: 'checking…' };
+  if (pf) {
+    const stale = pf.stale || pf.checkedAt != null && Date.now() - pf.checkedAt >= PREFLIGHT_TTL_MS;
+    return { cls: stale && pf.state === 'ok' ? 'warn' : pf.state,
+      note: pf.note + (stale && pf.checkedAt != null ? ' · last check is old; use Refresh status' : ''), kind: pf.kind };
+  }
   const q = S.quota[key];
   if (!q?.windows?.length) return { cls: 'idle', note: vendor === 'agy' ? 'quota not reported by this CLI' : 'not checked yet' };
   const worst = q.windows.reduce((a, w) => (w.used > a.used ? w : a));
@@ -227,7 +352,9 @@ function seatRow(s, i) {
   // an endpoint seat has no catalogue: the model id is typed, and the card says it is required
   const picker = api ? { html: '', other: true } : modelPicker(s.vendor, s.account, s.model || '');
   const gone = retired(s.vendor, (s.model || '').trim());
-  return `<article class="seat seat-card" role="listitem" data-i="${i}" style="--seat: var(--seat-${colour})">
+  const issue = S.seatIssue?.seatIndex === i ? S.seatIssue : null;
+  const invalid = (field) => issue?.field === field ? 'aria-invalid="true"' : '';
+  return `<article class="seat seat-card ${issue ? 'seat-invalid' : ''}" role="listitem" data-i="${i}" style="--seat: var(--seat-${colour})">
     <div class="seat-hd">
       <span class="avatar" title="${esc(s.mood === 'custom' ? 'custom mood' : s.mood)}">${avatar(s.mood === 'custom' ? 'custom' : s.mood)}</span>
       <div class="seat-id">
@@ -238,13 +365,15 @@ function seatRow(s, i) {
     </div>
     <button class="btn remove" type="button" aria-label="Remove seat" title="Remove seat">×</button>
     <div class="seat-bd">
-      <label class="f"><span class="label">Lens</span><input class="flat lens" value="${esc(s.lens)}" placeholder="risk and failure modes"></label>
-      <label class="f"><span class="label">Mood</span><select class="flat mood">${Object.keys(MOODS).map((m) => `<option value="${m}" ${m === s.mood ? 'selected' : ''}>${m}</option>`).join('')}<option value="custom" ${s.mood === 'custom' ? 'selected' : ''}>custom…</option></select></label>
-      <input class="flat mood-text" aria-label="Custom mood" value="${esc(s.moodText)}" placeholder="One sentence: how this seat approaches the question" ${s.mood === 'custom' ? '' : 'hidden'}>
+      <div class="f"><label class="label help-label" data-help="lens" tabindex="0" for="seat-lens-${i}" aria-describedby="help-lens">Lens</label><input id="seat-lens-${i}" class="flat lens" value="${esc(s.lens)}" placeholder="e.g. long-term effects" aria-describedby="help-lens seat-error-${i}" ${invalid('lens')}></div>
+      <div class="f"><label class="label help-label" data-help="mood" tabindex="0" for="seat-mood-${i}" aria-describedby="help-mood seat-mood-help-${i}">Mood</label><select id="seat-mood-${i}" class="flat mood" aria-describedby="help-mood seat-mood-help-${i}">${Object.keys(MOODS).map((m) => `<option value="${m}" ${m === s.mood ? 'selected' : ''}>${m}</option>`).join('')}<option value="custom" ${s.mood === 'custom' ? 'selected' : ''}>custom…</option></select></div>
+      <span class="sr-only" id="seat-mood-help-${i}">${esc(MOOD_HELP[s.mood] || '')}</span>
+      <input class="flat mood-text" aria-label="Custom mood" aria-describedby="seat-error-${i}" ${invalid('moodText')} value="${esc(s.moodText)}" placeholder="One sentence: how this seat approaches the question" ${s.mood === 'custom' ? '' : 'hidden'}>
+      <p class="seat-field-error error" id="seat-error-${i}" ${issue ? '' : 'hidden'}>${esc(issue?.message || '')}</p>
       ${gone ? `<span class="seat-note danger">${esc(s.model)} was retired (${esc(gone.date)}); use ${esc(gone.instead)}.</span>` : ''}
       ${api ? `<label class="f"><span class="label">Endpoint</span><input class="flat endpoint" aria-label="Endpoint base URL" list="endpoints" value="${esc(s.endpoint || '')}" placeholder="http://localhost:11434/v1" title="The base URL of an OpenAI-compatible server, ending in /v1. Plain http only on this machine or a private network."></label>
       <label class="f"><span class="label">Key var</span><input class="flat keyenv" aria-label="Key environment variable" value="${esc(s.keyEnv || '')}" placeholder="none (local server)" title="The NAME of the environment variable that holds the key, set in the shell roundtable was started from. Never the key itself."></label>` : ''}
-      <div class="f"><span class="label">Effort</span><span class="pips">${pipsHtml(s.vendor, s.effort, s.model)}</span><select class="effort" hidden>${effortOptions(s.vendor, s.effort)}</select></div>
+      <div class="f"><span class="label help-label" data-help="effort" tabindex="0" aria-describedby="help-effort">Effort</span><span class="pips">${pipsHtml(s.vendor, s.effort, s.model)}</span><select class="effort" hidden>${effortOptions(s.vendor, s.effort)}</select></div>
       <span class="seat-note lamp-note ${lamp.cls === 'danger' || lamp.cls === 'warn' ? lamp.cls : ''}">${esc(lamp.note)}</span>
       ${api ? '' : `<details class="seat-more" ${s.account ? 'open' : ''}><summary>Login profile</summary><input class="flat account" aria-label="Login profile" value="${esc(s.account || '')}" placeholder="none: your usual login" title="A second login of this CLI, for example a work subscription; node src/doctor.js shows how to log a profile in"></details>`}
     </div>
@@ -254,30 +383,58 @@ function seatRow(s, i) {
 // Ask the server for every pool on the table (seats and chairman), then relight the lamps in
 // place, so a field being typed in keeps its focus. Debounced: one request per pause.
 let preflightTimer = null;
+let preflightRevision = 0;
 function requestPreflight({ fresh = false } = {}) {
+  const revision = ++preflightRevision;
   clearTimeout(preflightTimer);
   preflightTimer = setTimeout(async () => {
     const seats = [...S.draft, { vendor: $('chairman').value, account: $('chairman-account').value.trim(), endpoint: $('chairman-endpoint').value, keyEnv: $('chairman-keyenv').value }];
-    const keys = [...new Set(seats.map((s) => poolKey(s.vendor, seatAccount(s), !!VENDOR_META[s.vendor]?.profiles)))];
+    const keys = [...new Set([...seats.map((s) => poolKey(s.vendor, seatAccount(s), !!VENDOR_META[s.vendor]?.profiles)),
+      ...(S.initialDraft ? Object.keys(VENDOR_META).filter((v) => !isApi(v)) : [])])];
     // an API pool is checked from its URL and key-variable NAME (no request leaves the server);
     // those travel in the body, so its lamp follows every edit
     const endpoints = {};
     for (const s of seats) if (isApi(s.vendor)) endpoints[poolKey(s.vendor, seatAccount(s), true)] = { url: (s.endpoint || '').trim(), keyEnv: (s.keyEnv || '').trim() || null };
     const epSig = JSON.stringify(endpoints);
-    if (!keys.some((k2) => !S.preflight[k2]) && !fresh && epSig === S.preflightEndpoints) { updateLamps(); return; }
-    S.preflighting = true; updateLamps();
+    const needsCheck = keys.some((k2) => !S.preflight[k2] || S.preflight[k2].stale ||
+      S.preflight[k2].checkedAt != null && Date.now() - S.preflight[k2].checkedAt >= PREFLIGHT_TTL_MS);
+    if (!needsCheck && !fresh && epSig === S.preflightEndpoints) { S.preflighting = false; updateLamps(); return; }
+    S.preflighting = true; S.preflightError = null; updateLamps();
     try {
-      const { pools } = await (await fetch('/api/preflight', { method: 'POST', headers: SEND, body: JSON.stringify({ pools: keys, endpoints, fresh }) })).json();
+      const { pools } = await requestJson('/api/preflight', { pools: keys, endpoints, fresh });
+      if (revision !== preflightRevision) return; // a slow answer cannot overwrite a later edit
+      S.preflightError = pools.some((p) => ['busy', 'check-failed'].includes(p.kind)) ? 'Some checks could not finish. Try Refresh status again.' : null;
+      const times = pools.map((p) => p.checkedAt).filter((t) => t != null);
+      S.preflightCheckedAt = times.length ? Math.min(...times) : Date.now();
       S.preflightEndpoints = epSig;
       const newPlan = pools.some((p) => p.plan && S.preflight[p.key]?.plan !== p.plan);
       for (const p of pools) { S.preflight[p.key] = p; if (p.quota) S.quota[p.key] = p.quota; }
+      if (S.initialDraft) {
+        const unchanged = JSON.stringify(S.draft) === S.initialDraft;
+        S.initialDraft = null; // choose once; a refresh never replaces an existing table
+        if (unchanged) {
+          const chosen = initialDraft(initialSeatVendors(Object.entries(VENDOR_META).map(([vendor, meta]) => ({ vendor, ...meta })), pools));
+          if (JSON.stringify(chosen) !== JSON.stringify(S.draft)) {
+            S.draft = chosen;
+            if (S.initialChair && chosen.length) { $('chairman').value = chosen[0].vendor; chairEffortOptions(); }
+            S.preflighting = false; renderSeats(); renderChair(); return;
+          }
+        }
+      }
       // the model pickers group by plan: redraw them once a plan is known (not while typing)
       if (newPlan && !$('seats').contains(document.activeElement)) { S.preflighting = false; renderSeats(); renderChair(); return; }
-    } catch { /* the lamps keep what they had */ }
-    S.preflighting = false; updateLamps();
+    } catch (e) {
+      if (revision === preflightRevision) S.preflightError = e.message || 'Could not refresh status. Try Refresh status again.';
+    } finally {
+      if (revision === preflightRevision) { S.preflighting = false; updateLamps(); }
+    }
   }, 400);
 }
 function updateLamps() {
+  $('refresh-status').disabled = S.preflighting;
+  $('refresh-status').textContent = S.preflighting ? 'Checking…' : 'Refresh status';
+  $('preflight-status').textContent = S.preflighting ? 'Checking provider status…' : S.preflightError ||
+    (S.preflightCheckedAt != null ? `Last check ${new Date(S.preflightCheckedAt).toLocaleTimeString()}` : '');
   $('seats').querySelectorAll('.seat').forEach((card) => {
     const s = S.draft[Number(card.dataset.i)]; if (!s) return;
     const l = poolLamp(s.vendor, seatAccount(s));
@@ -288,11 +445,12 @@ function updateLamps() {
   const c = poolLamp($('chairman').value, chairAccount());
   $('chair-lamp').className = `lamp ${c.cls}`; $('chair-lamp').title = c.note;
   $('chair-note').textContent = c.note; $('chair-note').className = `seat-note ${c.cls === 'danger' || c.cls === 'warn' ? c.cls : ''}`;
-  S.startConfirm = null; $('start').textContent = 'Open the table';
+  S.startConfirm = null; $('start').disabled = !!S.startPending; $('start').textContent = S.startPending ? 'Opening…' : 'Open the table';
 }
 
 // The chairman card: vendor colour, the gavel, effort pips; its controls keep their ids.
 function renderChair() {
+  const restoreFocus = rememberFocus($('chair-card'));
   const v = $('chairman').value;
   const card = $('chair-card');
   card.style.setProperty('--seat', `var(--seat-${vendorColour(v)})`);
@@ -307,6 +465,7 @@ function renderChair() {
   $('chairman-model').placeholder = api ? 'model id (required)' : 'model id';
   $('chair-pips').innerHTML = pipsHtml(v, $('chairman-effort').value, $('chairman-model').value.trim());
   updateLamps();
+  restoreFocus();
 }
 
 // Options as chips: opt-1, opt-2 ... as the seats will see them. Enter adds the next one,
@@ -351,14 +510,32 @@ function setupMoreContext() {
   wireOptions();
 }
 
+// Replacing a card must keep keyboard users on the same control, including effort pips.
+function rememberFocus(root) {
+  const active = document.activeElement;
+  if (!root.contains(active)) return () => {};
+  const index = active.closest('.seat')?.dataset.i;
+  const control = ['vendor', 'model-pick', 'lens', 'mood', 'mood-text', 'model', 'account', 'endpoint', 'keyenv', 'remove'].find((c) => active.classList.contains(c));
+  const selector = active.id ? `#${CSS.escape(active.id)}` : active.matches('.pip') ? `.pip[data-level="${CSS.escape(active.dataset.level)}"]` : control ? `.${control}` : null;
+  return () => {
+    if (!selector || active.isConnected) return;
+    const row = index === undefined ? root : root.querySelectorAll('.seat')[Math.min(Number(index), S.draft.length - 1)];
+    row?.querySelector(selector)?.focus({ preventScroll: true });
+  };
+}
 function renderSeats() {
+  helpNotes.close();
+  const restoreFocus = rememberFocus($('seats'));
   $('seats').innerHTML = S.draft.map(seatRow).join('');
   requestPreflight();
   renderProjection();
+  restoreFocus();
 }
 
 function onSeatEdit(ev) {
   const row = ev.target.closest('.seat'); if (!row) return;
+  clearSetupValidation();
+  S.initialDraft = null;
   const s = S.draft[Number(row.dataset.i)];
   if (ev.target.classList.contains('model-pick')) {
     if (ev.type !== 'change') return;
@@ -490,7 +667,7 @@ function renderProjection() {
     const projected = q ? '' : pw.length ? pw.map((w) => (w.upperBound
       ? `No movement of the ${esc(w.label)} window seen over ${k(w.pending)} tokens yet.`
       : `About +${pct(w.pct)} of the ${esc(w.label)} window (${w.samples} measured move${w.samples === 1 ? '' : 's'}).`)).join(' ')
-      : (v.vendor === 'agy' ? 'The CLI reports no remaining credits; tokens per seat are exact.' : 'Window share is unmeasured until a debate runs.');
+      : (v.vendor === 'agy' ? 'The CLI reports no remaining credits. Usage is shown when the CLI reports it.' : 'Window share is unmeasured until a debate runs.');
     const cap = S.budget[v.vendor];
     return `<div class="pool">
       <div class="pool-top">${poolId(pool)}<div class="pool-total"><b>≈ ${k(v.total)}</b><span>tokens${v.cost != null ? ` · ≈ $${v.cost.toFixed(2)}` : ''}</span></div></div>
@@ -501,27 +678,39 @@ function renderProjection() {
       }).join('')}</div>
       ${v.weighted !== v.total ? `<p class="pool-note">≈ ${k(v.weighted)} pool units after model weight.</p>` : ''}
       ${windows.length ? `<div class="readouts">${readouts(pool, windows)}</div>` : `<p class="pool-note">${projected}</p>`}
-      <div class="pool-cap" data-vendor="${esc(v.vendor)}"><label for="cap-${esc(v.vendor)}" title="Projected before each call, with the calls in flight and the verdict reserved. The vendor does not enforce it.">Cap</label><input id="cap-${esc(v.vendor)}" name="tokens" type="number" min="0" step="1000" placeholder="tokens" value="${cap?.tokens ?? ''}" aria-label="Token cap for ${esc(VENDOR_LABEL[v.vendor] || v.vendor)}">${v.cost != null ? `<input name="usd" type="number" min="0" step="0.05" placeholder="$" value="${cap?.usd ?? ''}" aria-label="Dollar cap for ${esc(VENDOR_LABEL[v.vendor] || v.vendor)}">` : ''}${cap?.tokens > 0 && v.total > cap.tokens ? '<span class="warn">the projection is over this cap</span>' : ''}${usageLink(v.vendor)}</div>
+      <div class="pool-cap" data-vendor="${esc(v.vendor)}"><label for="cap-${esc(v.vendor)}" title="Projected before each call, with the calls in flight and the verdict reserved. The vendor does not enforce it.">Cap</label><input id="cap-${esc(v.vendor)}" name="tokens" type="number" min="0" step="1000" placeholder="tokens" value="${cap?.tokens ?? ''}" aria-label="Token cap for ${esc(VENDOR_LABEL[v.vendor] || v.vendor)}">${v.cost != null || cap?.usd > 0 ? `<input name="usd" type="number" min="0" step="0.05" placeholder="$" value="${cap?.usd ?? ''}" aria-label="Dollar cap for ${esc(VENDOR_LABEL[v.vendor] || v.vendor)}">` : ''}${cap?.tokens > 0 && v.total > cap.tokens ? '<span class="warn">the projection is over this cap</span>' : ''}${usageLink(v.vendor)}</div>
+      ${cap?.usd > 0 && v.cost == null ? '<p class="pool-note warn" data-dollar-warning>No dollar estimate is available. This dollar cap blocks calls; clear it to proceed with a token cap instead.</p>' : ''}
       ${q ? '' : poolEntry(v.vendor, v.weighted)}
     </div>`;
   }).join('') || '<span class="muted">Seat at least one instance.</span>';
   const vs = Object.values(p.byVendor);
   const rounds = Number($('critique-rounds').value) || 0;
   const priced = vs.filter((v) => v.cost != null);
-  $('start-summary').innerHTML = seats.length ? `<b>${seats.length} seats</b> · up to ${seats.length * (rounds + 1) + 1} calls · ≈ ${k(vs.reduce((n, v) => n + v.total, 0))} tokens${priced.length ? ` · ≈ $${priced.reduce((n, v) => n + v.cost, 0).toFixed(2)} for ${priced.map((v) => esc(VENDOR_LABEL[v.vendor] || v.vendor)).join(', ')}` : ''}` : '';
+  $('start-summary').innerHTML = seats.length ? `<b>${seats.length} seats</b> · ${seats.length * (rounds + 1) + 1} planned calls before retries · ≈ ${k(vs.reduce((n, v) => n + v.total, 0))} tokens${priced.length ? ` · ≈ $${priced.reduce((n, v) => n + v.cost, 0).toFixed(2)} for ${priced.map((v) => esc(VENDOR_LABEL[v.vendor] || v.vendor)).join(', ')}` : ''}` : '';
+}
+
+function clearSetupValidation() {
+  S.seatIssue = null;
+  $('setup-error').textContent = ''; $('seats-error').textContent = '';
+  for (const el of $('seats').querySelectorAll('[aria-invalid]')) el.removeAttribute('aria-invalid');
+  for (const el of $('seats').querySelectorAll('.seat-invalid')) el.classList.remove('seat-invalid');
+  for (const el of $('seats').querySelectorAll('.seat-field-error')) { el.textContent = ''; el.hidden = true; }
+}
+
+function showSetupError(error) {
+  $('setup-error').textContent = error.message;
+  if (!['lens', 'moodText'].includes(error.field) || !Number.isInteger(error.seatIndex) || !S.draft[error.seatIndex]) return;
+  S.seatIssue = error; renderSeats();
+  const row = $('seats').querySelectorAll('.seat')[error.seatIndex];
+  const field = row.querySelector(error.field === 'lens' ? '.lens' : '.mood-text');
+  field.focus({ preventScroll: true });
+  row.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
 }
 
 async function start() {
-  // a seat whose lamp is red would fail its first call: say which, and open only on a second click
-  const red = [...S.draft.map((s) => ({ name: `${VENDOR_LABEL[s.vendor]} (${s.lens || 'no lens'})`, l: poolLamp(s.vendor, seatAccount(s)) })),
-    { name: `the chairman (${VENDOR_LABEL[$('chairman').value]})`, l: poolLamp($('chairman').value, chairAccount()) }].filter((x) => x.l.cls === 'danger');
-  const sig = red.map((x) => `${x.name}:${x.l.note}`).join('|');
-  if (red.length && S.startConfirm !== sig) {
-    S.startConfirm = sig;
-    $('setup-error').textContent = `${red.map((x) => `${x.name}: ${x.l.note}`).join('; ')}. Those calls will fail.`;
-    $('start').textContent = 'Open anyway';
-    return;
-  }
+  if (S.startPending) return;
+  unlockSound(); // inside the click, so the opening cue may play once the board is up
+  clearSetupValidation();
   const f = $('notes');
   const notes = {};
   for (const el of f.querySelectorAll('input[name], textarea[name]')) notes[el.name] = el.value.trim();
@@ -532,12 +721,40 @@ async function start() {
     chairman: draftChairman(),
     options: { critiqueRounds: Number($('critique-rounds').value), autoContinueMs: Number($('auto').value) * 1000, wallClockMs: Number($('wall').value) * 60000, memory: $('memory').value, budget: budgetBody() },
   };
-  try { localStorage.setItem('roundtable.notes', JSON.stringify(notes)); localStorage.setItem('roundtable.seats', JSON.stringify(S.draft)); localStorage.setItem('roundtable.budget', JSON.stringify(S.budget)); } catch {}
-  $('setup-error').textContent = ''; $('seats-error').textContent = '';
-  const res = await fetch('/api/debates', { method: 'POST', headers: SEND, body: JSON.stringify(body) });
-  const out = await res.json();
-  if (!res.ok) { (/lens|seat|effort|mood|Chairman/i.test(out.error) ? $('seats-error') : $('setup-error')).textContent = out.error; return; }
-  location.hash = out.slug; // route() opens the board
+  try {
+    localStorage.setItem('roundtable.notes', JSON.stringify(notes));
+    localStorage.setItem('roundtable.seats', JSON.stringify(S.draft));
+    localStorage.setItem('roundtable.budget', JSON.stringify(S.budget));
+    localStorage.setItem('roundtable.settings', JSON.stringify({ options: body.options, chairman: {
+      vendor: $('chairman').value, model: $('chairman-model').value, effort: $('chairman-effort').value,
+      account: $('chairman-account').value, endpoint: $('chairman-endpoint').value, keyEnv: $('chairman-keyenv').value,
+    } }));
+  } catch {}
+  const issue = seatSetupIssue(S.draft);
+  if (issue) {
+    const id = clientDiagnostics.report('browser-validation', 'create', { field: issue.field, seatIndex: issue.seatIndex });
+    showSetupError({ ...issue, message: issue.message + errorReference({ id }) });
+    return;
+  }
+  // Confirm a known unavailable provider only after the form itself is valid.
+  const red = [...S.draft.map((s) => ({ name: `${VENDOR_LABEL[s.vendor]} (${s.lens})`, l: poolLamp(s.vendor, seatAccount(s)) })),
+    { name: `the chairman (${VENDOR_LABEL[$('chairman').value]})`, l: poolLamp($('chairman').value, chairAccount()) }].filter((x) => x.l.cls === 'danger');
+  const sig = red.map((x) => `${x.name}:${x.l.note}`).join('|');
+  if (red.length && S.startConfirm !== sig) {
+    S.startConfirm = sig;
+    showSetupError({ message: `${red.map((x) => `${x.name}: ${x.l.note}`).join('; ')}. Those calls will fail.` });
+    $('start').textContent = 'Open anyway';
+    return;
+  }
+  const revision = viewRevision;
+  S.startPending = true; updateLamps();
+  try {
+    const out = await requestJson('/api/debates', body);
+    if (revision === viewRevision) { openingSlug = out.slug; location.hash = out.slug; } // route() opens the board
+  } catch (e) {
+    showSetupError(e);
+    loadRecent();
+  } finally { S.startPending = false; updateLamps(); }
 }
 
 // Only vendors with a positive cap are sent; an empty field is no cap.
@@ -556,14 +773,16 @@ function budgetBody() {
 // The hash decides the screen: '#<slug>' is that debate's board, no hash is the setup screen with
 // the list of debates. Back and forward work, and a board link can be shared or bookmarked.
 let live = null; // the open board's { es, timer }
-function closeBoard() { if (live) { live.es.close(); clearInterval(live.timer); live = null; } }
+let viewRevision = 0;
+function closeBoard() { ceremony.cancel(); if (live) { live.es.close(); clearInterval(live.timer); live = null; } }
 function route() {
+  viewRevision++;
   closeBoard();
   const slug = decodeURIComponent(location.hash.slice(1));
   if (/^[a-z0-9-]+$/.test(slug)) openBoard(slug); else showSetup();
 }
 function showSetup() {
-  S.slug = null; resetBoard();
+  S.slug = null; resetBoard({ clearDrafts: true });
   $('setup').hidden = false; $('board').hidden = true; $('humanbar').hidden = true; $('nav-debates').hidden = true;
   $('sys').className = 'status ok'; $('sys').textContent = 'idle';
   for (const id of ['st-round', 'st-seats', 'st-elapsed']) $(id).textContent = '';
@@ -572,11 +791,25 @@ function showSetup() {
 }
 
 // The debates on disk, newest first: status, the pick, size, and a link to each board.
-const STATE_CLASS = { running: 'warn', interrupted: 'warn', accepted: 'ok', recommended: 'info', 'no verdict': 'danger' };
-const STATE_LABEL = { running: 'live', interrupted: 'interrupted', accepted: 'accepted', recommended: 'recommended', split: 'split', stopped: 'stopped', 'no verdict': 'no verdict' };
+const STATE_CLASS = { running: 'warn', interrupted: 'warn', accepted: 'ok', recommended: 'info', 'no verdict': 'danger', corrupt: 'danger' };
+const STATE_LABEL = { running: 'live', interrupted: 'interrupted', accepted: 'accepted', recommended: 'recommended', split: 'split', stopped: 'stopped', 'no verdict': 'no verdict', corrupt: 'needs repair' };
+let recentRevision = 0;
+let historyEntries = [], historySelection = null, historyBusy = false;
+function historyNotice(message) { $('history-notice').textContent = message; $('history-notice').hidden = !message; }
 async function loadRecent() {
-  let list = [];
-  try { list = (await (await fetch('/api/debates')).json()).debates || []; } catch { /* the list is optional */ }
+  const revision = ++recentRevision;
+  let list;
+  try { list = (await requestJson('/api/debates')).debates || []; }
+  catch (e) {
+    if (revision !== recentRevision) return;
+    $('recent-count').textContent = 'unavailable';
+    historyEntries = []; $('clear-finished').disabled = true;
+    $('recent-list').innerHTML = `<div class="empty"><span role="alert">Could not load history. ${esc(e.message)}</span><button class="btn btn-small" id="retry-recent" type="button">Retry history</button></div>`;
+    return;
+  }
+  if (revision !== recentRevision) return;
+  historyEntries = list;
+  $('clear-finished').disabled = historyBusy || !list.some((d) => d.state === 'finished');
   $('recent-count').textContent = list.length ? `${list.length} on this machine` : '';
   if (!list.length) {
     $('recent-list').innerHTML = '<div class="empty"><span><span class="prompt">&gt;</span> no debates yet<br>&nbsp;&nbsp;write the field notes below and open the table_</span></div>';
@@ -586,42 +819,92 @@ async function loadRecent() {
     // the human's choice once accepted, otherwise the recommendation when there is a real one
     const pick = d.status === 'accepted' ? d.accepted : ['no consensus', 'no pick', 'no verdict'].includes(d.recommended) ? '' : d.recommended;
     const cost = d.cost != null ? ` · $${d.cost.toFixed(2)}${d.costPartial ? '+' : ''}` : '';
-    return `<a class="debate-row" href="#${esc(d.slug)}" title="${esc(d.decision)}">
+    const tag = d.state === 'corrupt' ? 'div' : 'a';
+    const deletable = ['finished', 'interrupted'].includes(d.state);
+    return `<div class="history-row"><${tag} class="debate-row" ${tag === 'a' ? `href="#${esc(d.slug)}"` : ''} title="${esc(d.decision)}">
       <span class="data">${esc(d.date)}</span>
       <span class="debate-title">${esc(d.decision)}</span>
       <span class="status ${STATE_CLASS[d.status] || 'muted'}">${esc(STATE_LABEL[d.status] || d.status)}</span>
       <span class="debate-pick">${esc(pick || '')}</span>
-      <span class="data">${d.rounds} rd · ${k(d.tokens)}${cost}</span>
-    </a>`;
+      <span class="data">${d.state === 'corrupt' ? 'unavailable' : `${d.rounds} rd · ${d.tokens == null ? 'tokens unknown' : `${k(d.tokens)}${d.tokensPartial ? ' (partial)' : ''}`}${cost}`}</span>
+      ${d.warning ? `<span class="debate-warning">${esc(d.warning)}</span>` : ''}
+    </${tag}><button class="btn btn-small history-delete" type="button" data-delete="${esc(d.slug)}" aria-label="Delete ${esc(d.decision)}" ${historyBusy || !deletable ? 'disabled' : ''} title="${deletable ? 'Delete this saved session' : d.state === 'running' ? 'Stop this session before deleting it' : 'Repair this record before deleting it to preserve usage statistics'}">Delete</button></div>`;
   };
   const shown = S.showAllDebates ? list : list.slice(0, 5);
   $('recent-list').innerHTML = shown.map(row).join('') + (list.length > 5 ? `<button class="btn btn-small debates-more" id="debates-more" type="button">${S.showAllDebates ? 'Show the latest 5' : `Show all ${list.length}`}</button>` : '');
 }
 
+function confirmHistoryDeletion(id = null) {
+  if (historyBusy) return;
+  const selected = id ? historyEntries.filter((d) => d.slug === id && ['finished', 'interrupted'].includes(d.state))
+    : historyEntries.filter((d) => d.state === 'finished').slice(0, 1000);
+  if (!selected.length) return;
+  historySelection = { ids: selected.map((d) => d.slug), bulk: !id };
+  $('delete-history-title').textContent = id ? 'Delete session?' : `Clear ${selected.length} finished session${selected.length === 1 ? '' : 's'}?`;
+  $('delete-history-detail').textContent = id ? selected[0].decision : 'Only these finished sessions will be removed. Running and interrupted sessions are kept.';
+  $('delete-history-error').hidden = true;
+  $('delete-history-confirm').textContent = id ? 'Delete session' : 'Clear finished';
+  $('delete-history').showModal();
+}
+$('clear-finished').addEventListener('click', () => confirmHistoryDeletion());
+$('delete-history').addEventListener('cancel', (event) => { if (historyBusy) event.preventDefault(); });
+$('delete-history-confirm').addEventListener('click', async () => {
+  if (!historySelection || historyBusy) return;
+  const { ids, bulk } = historySelection;
+  historyBusy = true; $('delete-history-confirm').disabled = $('delete-history-cancel').disabled = true;
+  $('delete-history-error').hidden = true;
+  try {
+    const result = await requestJson(bulk ? '/api/debates/clear-finished' : `/api/debates/${ids[0]}/delete`, bulk ? { ids } : {});
+    historyNotice(`Deleted ${result.deleted.length} session${result.deleted.length === 1 ? '' : 's'}. Exported files and usage statistics were kept.`);
+    $('delete-history').close(); historySelection = null;
+  } catch (error) {
+    $('delete-history-error').textContent = error.message; $('delete-history-error').hidden = false;
+  } finally {
+    historyBusy = false; $('delete-history-confirm').disabled = $('delete-history-cancel').disabled = false;
+    await loadRecent();
+  }
+});
+
 function openBoard(slug) {
-  resetBoard();
+  resetBoard({ clearDrafts: true });
   S.slug = slug;
   $('setup').hidden = true; $('board').hidden = false; $('humanbar').hidden = false; $('nav-debates').hidden = false;
   // EventSource reconnects by itself and sends Last-Event-ID, so a dropped connection costs
   // nothing. After a server restart the stream begins again with `started`, which resets the
   // board; a slug with no transcript keeps retrying and says so.
   const es = new EventSource(`/api/debates/${slug}/events`);
-  es.onmessage = (m) => { S.connected = true; handle(JSON.parse(m.data)); };
-  es.onerror = () => { S.connected = false; renderGate(); renderBanners(); };
-  es.onopen = () => { S.connected = true; renderGate(); renderBanners(); };
+  es.onmessage = (m) => {
+    const event = JSON.parse(m.data);
+    if (event.type === 'deleted') { closeBoard(); historyNotice('This session was deleted in another tab. Exported files and usage statistics were kept.'); location.hash = ''; return; }
+    S.connected = true; handle(event);
+  };
+  es.onerror = () => { if (S.connected !== false) clientDiagnostics.report('browser-stream', 'events'); S.connected = false; renderGate(); renderBanners(); };
+  es.onopen = () => { S.connected = true; void clientDiagnostics.flush(); renderGate(); renderBanners(); };
   live = { es, timer: setInterval(tick, 1000) };
   render(); // clear what the last board showed, before this one's first event (or a 404)
+  if (openingSlug === slug) ceremony.play('open');
+  openingSlug = null;
 }
 
-function resetBoard() {
-  Object.assign(S, { seats: [], fieldNotes: null, rows: [], rounds: [], humanNotes: [], gate: null, deadline: null, held: false, verdict: null, status: 'idle', startedAt: null, stopReason: null, pending: new Set(), chairman: null, interrupted: null, stopQueued: false, error: null, conn: {}, positions: [], accepted: null, synthesis: null, down: {},
-    budgetStop: null, exported: null, exportError: null, replayed: false, connected: null, chairmanFallback: null }); // hash routing reuses S: nothing from the last board
+function resetBoard({ clearDrafts = false } = {}) {
+  replyReveals.clear();
+  Object.assign(S, { seats: [], fieldNotes: null, rows: [], rounds: [], humanNotes: [], initialNotes: [], gate: null, deadline: null, held: false, verdict: null, status: 'idle', startedAt: null, stopReason: null, pending: new Set(), chairman: null, configuredChairman: null, interrupted: null, stopQueued: false, finishQueued: false, error: null, conn: {}, positions: [], accepted: null, synthesis: null, down: {},
+    budgetStop: null, exported: null, exportError: null, replayed: false, connected: null, chairmanFallback: null, transcriptWarning: null,
+    actionPending: null, actionError: null, holdPending: false, synthChoice: null, stopContext: null, reviewDeadline: null }); // hash routing reuses S: nothing from the last board
+  if (clearDrafts || !S.questionDrafts) S.questionDrafts = {};
+  if (clearDrafts) { $('question-inputs').replaceChildren(); delete $('question-inputs').dataset.signature; $('usage-details').open = false; $('decision-actions').open = false; }
+  if (clearDrafts) {
+    $('human-msg').value = ''; $('accept-note').value = ''; $('export-status').textContent = '';
+    delete $('accept-option').dataset.applied;
+    S.acceptEdited = false; S.acceptNoteEdited = false;
+  }
 }
 
 function handle(e) {
+  if (!e.replayed && !e.failed && !e.skipped && ['reply', 'verdict'].includes(e.type)) replyReveals.set(replyKey(e), performance.now());
   switch (e.type) {
-    case 'started': resetBoard(); S.seats = e.seats; S.fieldNotes = e.fieldNotes; S.status = 'running'; S.startedAt = Date.now(); $('board-title').textContent = e.fieldNotes.decision; document.title = `${e.fieldNotes.decision} · Roundtable`; $('board-empty').hidden = false; break;
-    case 'resumed': S.status = 'running'; S.interrupted = null; S.startedAt = Date.now(); S.pending.clear(); break;
+    case 'started': resetBoard(); S.seats = e.seats; S.fieldNotes = e.fieldNotes; S.configuredChairman = e.chairman || null; S.reviewDeadline = e.deadlineAt; S.status = 'running'; S.startedAt = Date.now(); $('board-title').textContent = e.fieldNotes.decision; document.title = `${e.fieldNotes.decision} · Roundtable`; $('board-empty').hidden = false; break;
+    case 'resumed': S.status = 'running'; S.interrupted = null; S.reviewDeadline = e.deadlineAt; S.startedAt = Date.now(); S.pending.clear(); break;
     case 'interrupted': S.status = 'interrupted'; S.interrupted = e; S.pending.clear(); break;
     case 'round-start': S.rounds[e.round] = []; S.pending = new Set(S.seats.map((s) => s.index)); $('board-empty').hidden = true; break;
     case 'seat-start': break;
@@ -629,29 +912,37 @@ function handle(e) {
     case 'reprompt': S.pending.add(e.seat.index); break;
     case 'reply': S.rows.push(e); S.rounds[e.round] = S.rounds[e.round] || []; S.rounds[e.round].push(e); S.pending.delete(e.seat.index); break;
     case 'round-done': S.pending.clear(); if (e.positions) S.positions[e.round] = e.positions; break;
-    case 'gate': S.gate = e; S.deadline = null; S.held = false; S.status = 'waiting'; break;
+    case 'gate': S.gate = e; S.reviewDeadline = e.deadlineAt; S.deadline = null; S.held = false; S.status = 'waiting'; break;
+    case 'gate-expired': S.stopContext = 'waiting'; S.gate = null; S.deadline = null; break;
     case 'countdown': S.deadline = e.deadline; break;
     case 'held': S.held = true; S.deadline = null; break;
     case 'gate-closed': S.gate = null; S.deadline = null; S.status = 'running'; break;
-    case 'stop-queued': S.stopQueued = true; break;
-    case 'human': (S.humanNotes[e.round] ??= []).push(e.text); break;
+    case 'stop-queued': S.stopQueued = true; S.finishQueued = false; break;
+    case 'finish-queued': S.finishQueued = true; break;
+    case 'human': (e.round === -1 ? S.initialNotes : (S.humanNotes[e.round] ??= [])).push(noteRecord(e)); break;
     case 'quota': S.quota[e.vendor] = e.quota; break;
     case 'calibration': S.calib[e.key || e.vendor] = e.windows; break;
     case 'pool': S.pools[e.vendor] = e.pool; break;
     case 'pool-down': S.down[e.key] = e; break;
     case 'budget': S.budgetStop = e; break;
-    case 'stopped': S.stopReason = e.reason; S.status = 'verdict'; break;
-    case 'chairman-start': S.chairman = e.seat; break;
+    case 'stopped': S.stopReason = e.reason; S.stopContext = e.context || S.stopContext; S.gate = null; S.deadline = null; S.pending.clear(); S.status = 'verdict'; break;
+    case 'chairman-start': S.chairman = e.seat; S.finishQueued = false; break;
     case 'chairman-fallback': S.chairmanFallback = e; break;
     case 'attempt': S.rows.push(e); break;
     case 'verdict': S.rows.push(e); S.verdict = e; break;
-    case 'done': S.status = 'done'; S.replayed = !!e.replayed; S.synthesis = e.synthesis || (S.verdict ? (S.verdict.skipped ? 'skipped' : S.verdict.failed ? 'failed' : 'done') : 'missing'); break;
-    case 'synthesize': S.status = 'verdict'; S.verdict = null; break;
+    case 'done': S.status = 'done'; S.gate = null; S.deadline = null; S.pending.clear(); S.stopReason = e.reason || S.stopReason; S.replayed = !!e.replayed; S.synthesis = e.synthesis || (S.verdict ? (S.verdict.skipped ? 'skipped' : S.verdict.failed ? 'failed' : 'done') : 'missing'); break;
+    case 'synthesize': S.status = 'verdict'; S.verdict = null; S.stopQueued = false; S.finishQueued = false; break;
     case 'accepted': S.accepted = e; break;
     case 'exported': S.exported = e; S.exportError = null; break;
-    case 'export-failed': S.exportError = e.error; break;
-    case 'error': S.status = 'error'; S.error = e.message; break;
+    case 'export-failed': S.exportError = e.error + errorReference(e.diagnostic); break;
+    case 'transcript-warning': S.transcriptWarning = e; break;
+    case 'error':
+      S.status = 'error'; S.gate = null; S.deadline = null; S.pending.clear(); S.error = e.message + errorReference(e.diagnostic);
+      if (e.fatal) { closeBoard(); $('board-title').textContent = 'Transcript needs repair'; document.title = 'Transcript needs repair · Roundtable'; }
+      break;
   }
+  const cue = ceremonyOutcome(e);
+  if (cue) ceremony.play(cue);
   render();
 }
 
@@ -662,32 +953,39 @@ const seatMeta = (seat) => [seat.endpoint ? 'API' : 'CLI', seat.model, seat.effo
 
 function card(r) {
   const seat = r.seat;
+  const cancelled = cancellationReason(r, S.stopReason, S.rounds.length - 1);
   const flags = [];
   if (r.reprompted) flags.push('<span class="status warn">re-prompted</span>');
   if (r.usedTools) flags.push(`<span class="status ${r.toolFail ? 'danger' : 'warn'}">used tools</span>`);
-  if (r.failed) flags.push('<span class="status danger">no reply</span>');
+  if (r.failed) flags.push(`<span class="status ${cancelled ? 'warn' : 'danger'}">${cancelled ? 'cancelled' : r.timedOut ? 'call timed out' : 'no reply'}</span>`);
   else if (!r.valid) flags.push('<span class="status warn">off contract</span>');
   let body;
   if (r.failed) {
-    const line = r.skipped ? `Skipped: ${VENDOR_LABEL[seat.vendor] || seat.vendor} is out for this debate.` : (ERROR_LINE[r.errorKind] || 'No reply.');
-    body = `<p class="fail-line danger">${esc(line)}${r.resetsAt ? ` Resets ${esc(new Date(r.resetsAt).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}.` : ''}</p><details class="fail-detail"><summary>details</summary><pre>${esc(r.errors.join('\n'))}</pre></details>`;
+    const line = cancelled === 'human' ? 'Cancelled when you pressed Stop. Earlier replies are kept; this seat did not finish this round.'
+      : cancelled === 'finish' ? 'Discussion ended for the verdict. Earlier replies are kept; this seat did not finish this round.'
+      : cancelled === 'wall-clock' ? 'Cancelled because the review time limit expired. Earlier replies are kept.'
+      : (r.skipped ? `Skipped: ${VENDOR_LABEL[seat.vendor] || seat.vendor} is out for this debate.` : (ERROR_LINE[r.errorKind] || 'The provider call failed. Check the details and save the error log.')) + errorReference(r.diagnostic);
+    body = `<p class="fail-line ${cancelled ? 'muted' : 'danger'}">${esc(line)}${r.resetsAt ? ` Resets ${esc(new Date(r.resetsAt).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}.` : ''}</p><details class="fail-detail"><summary>Details</summary><pre>${esc((r.errors || []).join('\n') + (cancelled ? errorReference(r.diagnostic) : ''))}</pre></details>`;
   }
   else if (r.parsed.pass) body = '<span class="muted">Nothing new to add.</span>';
   else if (!r.valid) body = `<pre>${esc(r.text)}</pre>`;
-  else body = `<dl>
-      ${r.round > 0 ? `<dt>agrees with</dt><dd>${r.parsed.agreeWith.length ? esc(r.parsed.agreeWith.join(', ')) : '<span class="muted">no one</span>'}</dd>` : ''}
-      <dt>disagree</dt><dd>${list(r.parsed.disagree)}</dd>
-      <dt>new</dt><dd>${list(r.parsed.new)}</dd>
-      <dt>assumes</dt><dd>${list(r.parsed.assumptions)}</dd>
-    </dl>${r.question ? `<div class="question"><b>QUESTION FOR YOU</b> ${esc(r.question)}</div>` : ''}`;
+  else {
+    const section = (title, items, tone) => `<section class="argument-section argument-${tone}"><h4>${title}</h4>${items.length ? `<ul>${items.map((text) => `<li>${argumentHtml(text, tone)}</li>`).join('')}</ul>` : '<span class="muted">None stated.</span>'}</section>`;
+    body = `<div class="seat-stance"><span class="label">Position</span><strong>${esc(optionLabel(r.stanceKey, S.fieldNotes?.options))}</strong></div>
+      ${r.parsed.agreeWith.length ? section('Agrees with', r.parsed.agreeWith, 'agree') : ''}
+      ${section('Disagrees with · why', r.parsed.disagree, 'disagree')}
+      ${section('New points', r.parsed.new, 'new')}
+      ${section('Assumptions', r.parsed.assumptions, 'assumptions')}
+      ${r.question ? `<details class="question"><summary>Question for you${S.gate?.round === r.round ? ' · answer above' : ''}</summary><p>${esc(r.question)}</p></details>` : ''}`;
+  }
   const meta = seatMeta(seat);
   // the dot is the live connection state in the current round, the recorded one in older rounds
   const current = r.round === S.rounds.length - 1;
-  const conn = current ? (S.conn[seat.id] || r.state) : (r.state || (r.failed ? 'failed' : 'replied'));
+  const conn = cancelled ? 'cancelled' : current ? (S.conn[seat.id] || r.state) : (r.state || (r.failed ? 'failed' : 'replied'));
   const position = S.positions[r.round]?.[seat.id] || null;
   return `<article class="card" style="--seat: var(--seat-${esc(seat.colour)})" data-position="${esc(position || 'none')}" title="${esc(position ? POSITION_LABEL[position] : '')}">
     <div class="card-head"><span class="vendor" title="${esc(meta)}">${esc(seatName(seat))}</span><span class="lens">${esc(seat.lens)}</span>${led(conn)}${seat.mood?.preset && seat.mood.preset !== 'grill' ? `<span class="muted">${esc(seat.mood.preset)}</span>` : ''}<span class="flags">${flags.join('')}</span></div>
-    ${body}
+    <div class="reply-text" data-reveal="${esc(replyKey(r))}">${body}</div>
   </article>`;
 }
 
@@ -697,14 +995,14 @@ function pendingCard(seat) {
 
 function renderRound(i, replies, isCurrent) {
   const groups = new Map();
-  for (const r of replies) { const k = optionLabel(r.stanceKey || 'other: unparsed', S.fieldNotes?.options); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); }
+  for (const r of replies) { const k = r.failed ? cancellationReason(r, S.stopReason, S.rounds.length - 1) ? 'Cancelled calls' : r.timedOut ? 'Calls that timed out' : 'No reply' : optionLabel(r.stanceKey || 'Unformatted reply', S.fieldNotes?.options); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); }
   const pendingSeats = isCurrent ? S.seats.filter((s) => S.pending.has(s.index) && !replies.some((r) => r.seat.index === s.index)) : [];
   const tally = [...groups.entries()].map(([k, v]) => `${k} (${v.length})`).join(' · ') || (pendingSeats.length ? 'in progress' : '');
   const groupHtml = [...groups.entries()].map(([k, v]) => `<section class="group ${v.length > 1 ? 'span' : ''}">
       <div class="group-title"><span>${esc(k)}</span><span class="count">${v.length} seat${v.length > 1 ? 's' : ''}</span></div>
       <div class="cards">${v.map(card).join('')}</div></section>`).join('');
   const pendingHtml = pendingSeats.map((s) => `<section class="group"><div class="group-title"><span class="muted">thinking</span></div><div class="cards">${pendingCard(s)}</div></section>`).join('');
-  const note = (S.humanNotes[i] || []).map((n) => `<div class="human-note"><b>You said</b>${esc(n)}</div>`).join('');
+  const note = (S.humanNotes[i] || []).map((n) => `<div class="human-note"><b>${noteLabel(n)}</b>${esc(noteRecord(n).text)}</div>`).join('');
   return `<details class="round" ${isCurrent ? 'open' : ''} data-round="${i}">
     <summary><span>${i === 0 ? 'Round 0 · blind' : `Round ${i}`}</span><span class="tally">${esc(tally)}</span></summary>
     <div class="groups">${groupHtml}${pendingHtml}${note}</div>
@@ -716,12 +1014,14 @@ function renderRound(i, replies, isCurrent) {
 function renderUsage() {
   const u = rollup(S.rows);
   const fmt = (n) => (n || 0).toLocaleString();
+  const tokens = (n, x) => x.tokenCoverage?.reported === 0 ? '<span class="muted">unknown</span>'
+    : `${fmt(n)}${x.tokenCoverage && x.tokenCoverage.reported < x.tokenCoverage.of ? `<span class="seat-meta" title="${x.tokenCoverage.reported} of ${x.tokenCoverage.of} calls report token usage">partial</span>` : ''}`;
   // a sum of reported costs over calls of which some reported none is marked partial
   const cost = (c, x) => (c == null ? '<span class="muted">n/a</span>' : `$${c.toFixed(2)}${x?.costCoverage && x.costCoverage.reported < x.costCoverage.of ? `<span class="seat-meta" title="${x.costCoverage.reported} of ${x.costCoverage.of} calls report a cost">partial</span>` : ''}`);
   const secs = (ms) => `${Math.round((ms || 0) / 1000)}s`;
   // last: the seat's input in the latest round it took part in (cache included), the figure that
   // says whether rounds stay flat (stateless) or grow (resume)
-  const row = (name, x, cls = '', last = null, position = null) => `<tr class="${cls}" data-position="${esc(position || 'none')}"><td>${name}</td><td class="data">${fmt(x.input)}</td><td class="data">${fmt(x.cacheRead + x.cacheWrite)}</td><td class="data">${fmt(x.output)}</td><td class="data">${cost(x.cost, x)}</td><td class="data">${secs(x.ms)}</td><td class="data">${last ? `${fmt(last.usage.input + last.usage.cacheRead + last.usage.cacheWrite)}<span class="seat-meta">r${esc(last.round)}</span>` : ''}</td></tr>`;
+  const row = (name, x, cls = '', last = null, position = null) => `<tr class="${cls}" data-position="${esc(position || 'none')}"><td>${name}</td><td class="data">${tokens(x.input, x)}</td><td class="data">${tokens(x.cacheRead + x.cacheWrite, x)}</td><td class="data">${tokens(x.output, x)}</td><td class="data">${cost(x.cost, x)}</td><td class="data">${secs(x.ms)}</td><td class="data">${last ? `${tokens(last.usage.input + last.usage.cacheRead + last.usage.cacheWrite, last.usage)}<span class="seat-meta">r${esc(last.round)}</span>` : ''}</td></tr>`;
   const pools = [...new Set([...S.seats.map(seatPool), ...(S.chairman ? [seatPool(S.chairman)] : [])])];
   const rows = [];
   for (const pool of pools) {
@@ -743,6 +1043,15 @@ function renderUsage() {
   if (cur != null && u.byRound[String(cur)]) rows.push(row(`Round ${cur}`, u.byRound[String(cur)], 'muted'));
   rows.push(row('Debate', u.total, 'total'));
   $('usage').querySelector('tbody').innerHTML = rows.join('');
+  const keys = [...new Set([...S.seats, ...(S.chairman || S.configuredChairman ? [S.chairman || S.configuredChairman] : [])].map((seat) => poolKey(seat.vendor, seat.account, !!VENDOR_META[seat.vendor]?.profiles)))];
+  $('usage-summary').innerHTML = keys.map((key) => {
+    const window = remainingWindow(S.quota[key]);
+    const name = `${VENDOR_LABEL[poolVendor(key)] || poolVendor(key)}${poolAccount(key) ? ` · ${poolAccount(key)}` : ''}`;
+    const remaining = window && Math.floor(window.remaining);
+    const manual = S.pools[poolVendor(key)];
+    return `<div class="quota-compact"><div><b>${esc(name)}</b><span>${window ? `${remaining}% left` : manual ? `${esc(manual.remaining.toLocaleString())} ${esc(manual.unit)} left` : 'not reported'}</span></div>
+      ${window ? `<div class="quota-track ${remaining < 10 ? 'danger' : remaining < 25 ? 'warn' : 'ok'}" role="meter" aria-label="${esc(name)} quota remaining" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${remaining}"><span style="width:${remaining}%"></span></div><small>${esc(window.label)} · reported ${esc(agoText(window.at))}</small>` : '<small>Open details for available figures.</small>'}</div>`;
+  }).join('');
 }
 
 // The pool row on the board: name, one readout per live window, then freshness and the usage link.
@@ -773,7 +1082,7 @@ function renderVerdict() {
   if (!v) return;
   if (v.skipped) { $('verdict-body').innerHTML = `<p class="wide">${esc(v.text)}</p><div class="verdict-meta">${S.rounds.length} rounds · stopped: ${esc(S.stopReason)} · debates/${esc(S.slug)}/</div>`; return; }
   // the chairman's reply never met the verdict format: show it as diagnostic text, not a verdict
-  if (v.failed) { $('verdict-body').innerHTML = `<p class="wide danger">The chairman's reply did not follow the verdict format${v.errors?.length ? `: ${esc(v.errors.join('; '))}` : ''}. Write the verdict again from the bar below.</p><pre class="wide">${esc(v.text)}</pre>`; return; }
+  if (v.failed) { $('verdict-body').innerHTML = `<p class="wide danger">${esc(ERROR_LINE[v.errorKind] || 'The chairman could not write a verdict. Check the details and save the error log.')} After resolving the problem, write the verdict again from the bar below.${esc(errorReference(v.diagnostic))}</p><details class="wide"><summary>Details</summary><pre>${esc(v.errors?.join('\n') || v.text)}</pre></details>`; return; }
   const sections = {};
   let cur = null;
   for (const line of v.text.split(/\r?\n/)) {
@@ -815,9 +1124,19 @@ function renderGate() {
   const g = S.gate;
   const st = $('gate-status');
   const interrupted = S.status === 'interrupted';
-  $('continue').disabled = !g && !interrupted; $('stop').disabled = S.status === 'done' || interrupted;
-  $('human-form').hidden = S.status === 'done'; // a finished debate takes no note; its bar keeps the status
-  $('continue').textContent = interrupted ? 'Resume' : 'Continue';
+  renderQuestions();
+  renderReviewState();
+  $('continue').disabled = !!S.actionPending || !g && !interrupted; $('stop').disabled = !!S.actionPending || S.stopQueued || ['done', 'error'].includes(S.status) || interrupted;
+  $('human-form').hidden = ['done', 'error', 'idle'].includes(S.status);
+  $('human-msg').hidden = $('continue').hidden = S.status === 'verdict';
+  const canFinish = hasUsableRound(S.rounds, S.seats.length);
+  $('finish').hidden = !canFinish || S.stopQueued || S.finishQueued || ['verdict', 'done', 'error', 'idle', 'interrupted'].includes(S.status);
+  $('finish').disabled = !!S.actionPending;
+  if (S.finishQueued) { $('human-msg').hidden = $('continue').hidden = true; }
+  $('continue').textContent = ['continue', 'resume'].includes(S.actionPending) ? 'Sending…' : interrupted ? 'Resume' : 'Continue';
+  $('stop').textContent = S.actionPending === 'stop' || S.stopQueued ? 'Stopping…' : 'Stop';
+  const actionError = S.actionError && !['accept', 'export'].includes(S.actionError.action) ? S.actionError.message : '';
+  $('human-error').textContent = actionError; $('human-error').hidden = !actionError;
   const link = (S.connected === false ? '<span class="status danger">reconnecting</span> ' : '') + budgetLine();
   if (!g) {
     // a verdict skipped, failed or never written: write it, with this chairman or another vendor
@@ -827,27 +1146,68 @@ function renderGate() {
     // variable and model are the seat's), since the endpoint vendor alone names no server
     const pickable = Object.keys(VENDOR_LABEL).filter((v) => !isApi(v) && !Object.values(S.down).some((x) => x.vendor === v && !x.account));
     const apiSeats = S.seats.filter((s) => s.endpoint && !S.down[`${s.vendor}@${s.account || ''}`]).map((s) => ({ value: `seat:${s.id}`, label: `${s.label} (${s.model})` }));
-    const first = chairDown || ['quota', 'auth', 'missing'].includes(S.verdict?.errorKind) ? pickable.find((v) => v !== S.verdict?.seat?.vendor) || pickable[0] : (S.chairman?.vendor || pickable[0]);
-    const synth = S.status === 'done' && S.synthesis && S.synthesis !== 'done' && S.rounds.length
-      ? ` <span class="synth">Write the verdict with <select id="synth-chair" aria-label="Chairman for the verdict">${pickable.map((v) => `<option value="${v}" ${v === first ? 'selected' : ''}>${esc(VENDOR_LABEL[v])}</option>`).join('')}${apiSeats.map((o) => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join('')}</select> <button class="btn btn-small" id="synthesize" type="button">Write</button></span>` : '';
-    st.innerHTML = link + (S.status === 'done' ? `<span class="status ok">done</span>${synth} stopped: ${esc(S.stopReason)}. Field notes and verdict are in debates/${esc(S.slug)}/.${S.exported ? ` Decision record written to ${esc(S.exported.path)}.` : ''}${S.exportError ? ` <span class="danger">Export failed: ${esc(S.exportError)}</span>` : ''}${S.replayed ? ' <span class="muted">replayed from the transcript, read-only</span>' : ''}`
+    const savedChair = S.configuredChairman || S.chairman;
+    const first = chairDown || ['quota', 'auth', 'missing'].includes(S.verdict?.errorKind) ? pickable.find((v) => v !== S.verdict?.seat?.vendor) || pickable[0] : (savedChair?.vendor || pickable[0]);
+    const synth = S.status === 'done' && S.synthesis && S.synthesis !== 'done' && canFinish
+      ? ` <span class="synth">Write the verdict with <select id="synth-chair" aria-label="Chairman for the verdict">${pickable.map((v) => `<option value="${v}" ${v === first ? 'selected' : ''}>${esc(VENDOR_LABEL[v])}${v === savedChair?.vendor ? esc([savedChair.model, savedChair.effort, savedChair.account].filter(Boolean).map((s) => ` · ${s}`).join('')) : ''}</option>`).join('')}${apiSeats.map((o) => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join('')}</select> <button class="btn btn-small" id="synthesize" type="button" ${S.actionPending ? 'disabled' : ''}>${S.actionPending === 'synthesize' ? 'Starting…' : 'Write'}</button></span>` : '';
+    const focused = st.contains(document.activeElement) ? document.activeElement.id : null;
+    st.innerHTML = link + (S.status === 'done' ? `<span class="status ${S.synthesis === 'done' ? 'ok' : 'warn'}">${S.synthesis === 'done' ? 'Review finished' : S.stopReason === 'human' ? 'Review stopped' : 'Review ended without a verdict'}</span> ${esc(stopExplanation(S.stopReason, S.stopContext))}${synth} Record saved locally.${S.exported ? ' Decision record exported.' : ''}${S.exportError ? ` <span class="danger">Export failed: ${esc(S.exportError)}</span>` : ''}${S.replayed ? ' <span class="muted">saved review</span>' : ''}`
       : interrupted ? `<span class="status warn">interrupted</span> ${S.interrupted?.round ? `after round ${S.interrupted.round - 1}` : 'before round 0 finished'}${S.interrupted?.partialRound != null ? `, round ${S.interrupted.partialRound} will be re-run` : ''}. Add a note or resume.`
       : S.status === 'idle' ? '<span class="status warn">loading</span> waiting for the transcript'
-      : S.status === 'verdict' ? '<span class="status warn">chairman writing the verdict</span>'
+      : S.stopQueued ? '<span class="status warn">Stopping review</span> Cancelling calls and saving their status. No further calls will start.'
+      : S.status === 'verdict' ? '<span class="status warn">Discussion finished</span> The chairman is writing the verdict. Stop cancels this call too.'
+      : S.finishQueued ? '<span class="status warn">Finishing discussion</span> Cancelling unfinished seat calls, then writing the verdict from collected replies.'
       : S.status === 'error' ? `<span class="status danger">error</span> ${esc(S.error)}`
-      : S.stopQueued ? '<span class="status warn">stop queued</span> the seats still thinking were cut off; the round closes, then the chairman writes the verdict'
       : `<span class="status warn">round ${S.rounds.length - 1} in flight</span> ${S.pending.size} seat${S.pending.size === 1 ? '' : 's'} still thinking`);
+    const select = $('synth-chair');
+    if (select && S.synthChoice && [...select.options].some((o) => o.value === S.synthChoice)) select.value = S.synthChoice;
+    if (focused) $(focused)?.focus({ preventScroll: true });
     return;
   }
   const parts = [];
-  if (g.reason === 'round0') parts.push(`<span class="status warn">waiting for you</span> ${S.seats.length} blind positions are on the table. Add a note or continue.`);
-  if (g.reason === 'question') parts.push(`<span class="status warn">question</span> ${g.questions.map((q) => `<b>${esc(q.lens)}</b>: ${esc(q.question)}`).join(' · ')}`);
-  if (g.stop) parts.push(`<span class="status ok">${esc(g.stop)}</span> ${g.reopenable ? 'Continue goes straight to the verdict; a note runs one more round.' : 'Continue goes straight to the verdict.'}`);
+  if (g.questions.length) parts.push(`<span class="status warn">${groupQuestions(g.questions).length} question${groupQuestions(g.questions).length === 1 ? '' : 's'} for you</span> Answer above, or continue without answers.`);
+  else if (g.reason === 'round0') parts.push(`<span class="status warn">waiting for you</span> ${S.seats.length} blind positions are on the table. Add a note or continue.`);
+  if (g.stop) parts.push(`<span class="hint">${g.reopenable ? 'Next: the verdict, or one more round if you add a note.' : 'Next: the verdict.'}</span>`);
   if (g.mode === 'countdown') {
     if (S.held) parts.push('<span class="status muted">countdown held</span> waiting for you');
     else if (S.deadline) parts.push(`<span class="countdown">auto-continue in <span id="cd">${Math.max(0, Math.ceil((S.deadline - Date.now()) / 1000))}</span> s</span>`);
   }
+  if (S.reviewDeadline) parts.push(`<span class="hint">Review time left: <span id="review-time-left"></span>. Reading and answering count toward this limit.</span>`);
   st.innerHTML = link + parts.join(' ');
+  updateReviewTime();
+}
+
+function updateReviewTime() {
+  const el = $('review-time-left');
+  if (el && S.reviewDeadline) { const seconds = Math.max(0, Math.ceil((S.reviewDeadline - Date.now()) / 1000)); el.textContent = `${Math.floor(seconds / 60)}m ${seconds % 60}s`; }
+}
+
+function renderReviewState() {
+  const terminal = ['done', 'error'].includes(S.status);
+  const title = S.status === 'done' ? S.synthesis === 'done' ? 'Review finished' : S.stopReason === 'human' ? 'Review stopped' : 'Review ended · no verdict' : S.stopQueued ? 'Stopping review' : S.status === 'verdict' ? 'Discussion finished · writing verdict' : S.finishQueued ? 'Finishing discussion' : S.status === 'waiting' ? 'Waiting for your input' : S.status === 'interrupted' ? 'Review interrupted' : S.status === 'error' ? 'Review stopped unexpectedly' : 'Discussion in progress';
+  const text = S.status === 'done' ? `${stopExplanation(S.stopReason, S.stopContext)} ${S.synthesis === 'done' ? 'Read the verdict below, then record your decision if ready.' : hasUsableRound(S.rounds, S.seats.length) ? 'You can request a verdict from the saved replies.' : 'No usable replies were collected. Start a new review to get a verdict.'}` : S.stopQueued ? 'Cancelling calls. No further calls will start.' : S.status === 'verdict' ? 'Your notes are saved. The chairman is preparing the recommendation.' : S.finishQueued ? 'Cancelling unfinished seat calls, then writing the verdict from collected replies.' : S.status === 'waiting' ? 'Questions are collected below. Your answers are sent together.' : terminal ? 'Review the saved replies and error log before retrying.' : '';
+  $('review-state').innerHTML = `<strong>${esc(title)}</strong>${text ? `<p>${esc(text)}</p>` : ''}`;
+  $('review-state').classList.toggle('finished', terminal);
+}
+
+const questionKey = (round, q) => `${round}:${q.id}:${q.question}`;
+function renderQuestions() {
+  const groups = groupQuestions(S.gate?.questions);
+  const visible = S.status === 'waiting' && groups.length > 0;
+  $('questions-panel').hidden = !visible;
+  $('answer-questions').hidden = !visible;
+  if (!visible) return;
+  $('questions-count').textContent = `${groups.length} distinct · ${S.gate.questions.length} asked`;
+  const inputs = $('question-inputs'), signature = JSON.stringify([S.gate.round, groups]);
+  if (inputs.dataset.signature !== signature) {
+    inputs.dataset.signature = signature;
+    inputs.innerHTML = groups.map((q) => `<div class="question-answer"><label for="answer-${q.id}"><span class="question-sources">${q.sources.map(esc).join(' · ')}</span><strong>${esc(q.question)}</strong></label><textarea id="answer-${q.id}" data-question="${q.id}" rows="2" maxlength="1200" placeholder="Your answer, or leave blank">${esc(S.questionDrafts[questionKey(S.gate.round, q)] || '')}</textarea></div>`).join('');
+  }
+  const answered = groups.filter((q) => S.questionDrafts[questionKey(S.gate.round, q)]?.trim()).length;
+  $('answer-count').textContent = `${answered} of ${groups.length} answered · one send to all seats`;
+  $('send-answers').disabled = !!S.actionPending;
+  $('send-answers').textContent = S.actionPending === 'continue' ? 'Sending…' : answered ? 'Send answers and continue' : 'Continue without answers';
+  $('answer-questions').textContent = `Answer ${groups.length} question${groups.length === 1 ? '' : 's'}`;
 }
 
 // Which vendor would cross its cap, and by how much: shown wherever the gate status is.
@@ -855,6 +1215,7 @@ function budgetLine() {
   const b = S.budgetStop; if (!b) return '';
   const name = esc(VENDOR_LABEL[b.vendor] || b.vendor);
   if (b.kind === 'usd-unknown') return `<span class="status danger">budget</span> ${name} has a dollar cap, but its cost is not reported, so the ${esc(b.what)} was not run. `;
+  if (b.kind === 'tokens-unknown') return `<span class="status danger">budget</span> ${name} did not report token usage. Further calls to this vendor are blocked under its token cap; ${esc(b.what)} was not run. `;
   const unit = b.kind === 'usd' ? (n) => `$${(n || 0).toFixed(2)}` : (n) => `${k(n || 0)} tokens`;
   const figures = `${esc(unit(b.spent))} spent plus about ${esc(unit(b.projected))} projected, cap ${esc(unit(b.cap))}`;
   // a refused re-prompt fails one seat for one round; the debate goes on
@@ -866,6 +1227,10 @@ function budgetLine() {
 // connection to the server. Each says what happened and what happens next.
 function renderBanners() {
   const items = Object.values(S.down).map((x) => `<div class="banner danger"><span class="status danger">${esc(VENDOR_LABEL[x.vendor] || x.vendor)}${x.account ? ` (${esc(x.account)})` : ''} out</span> ${esc(x.message)} Its seats are skipped for the rest of this debate${S.verdict || S.status === 'done' ? '' : '; continue without them or stop'}.</div>`);
+  items.unshift(...S.initialNotes.map((note) => `<div class="human-note"><b>${noteLabel(note)} before round 0</b>${esc(noteRecord(note).text)}</div>`));
+  const unknown = rollup(S.rows).unknownAttempts;
+  if (unknown) items.push(`<div class="banner warn usage-warning"><span class="status warn">usage unknown</span> ${unknown} call${unknown === 1 ? ' did' : 's did'} not report usable token counts. Totals include reported figures only.</div>`);
+  if (S.transcriptWarning) items.unshift(`<div class="banner warn transcript-warning"><span class="status warn">record recovery</span> ${esc(S.transcriptWarning.message)}</div>`);
   if (S.chairmanFallback) items.push(`<div class="banner warn"><span class="status warn">chairman</span> ${esc(VENDOR_LABEL[S.chairmanFallback.from.vendor] || S.chairmanFallback.from.vendor)} could not write the verdict (${esc(S.chairmanFallback.reason)}), so ${esc(VENDOR_LABEL[S.chairmanFallback.to] || S.chairmanFallback.to)} wrote it at its default model.</div>`);
   if (S.connected === false && S.status !== 'done') items.unshift('<div class="banner warn"><span class="status warn">reconnecting</span> Lost the connection to the roundtable server. The debate keeps running there; this board catches up when it is back.</div>');
   $('banners').innerHTML = items.join('');
@@ -873,7 +1238,13 @@ function renderBanners() {
 
 function render() {
   $('rounds').innerHTML = S.rounds.map((r, i) => renderRound(i, r, i === S.rounds.length - 1)).join('');
-  renderUsage(); renderVerdict(); renderGate(); renderAccept(); renderBanners();
+  renderUsage(); renderVerdict(); renderGate(); renderAccept(); renderExportStatus(); renderBanners();
+  $('verdict-body').dataset.reveal = S.verdict ? replyKey(S.verdict) : '';
+  for (const el of document.querySelectorAll('[data-reveal]')) {
+    const startedAt = replyReveals.get(el.dataset.reveal);
+    if (startedAt != null) revealText(el, { startedAt });
+  }
+  for (const [key, at] of replyReveals) if (performance.now() - at > 960) replyReveals.delete(key);
   $('sys').className = `status ${S.status === 'error' ? 'danger' : S.status === 'waiting' ? 'warn' : 'ok'}`;
   $('sys').textContent = S.status;
   $('st-round').textContent = S.rounds.length ? `round ${S.rounds.length - 1}` : '';
@@ -881,6 +1252,7 @@ function render() {
 }
 
 function tick() {
+  updateReviewTime();
   if (S.startedAt && S.status !== 'done') $('st-elapsed').textContent = `${Math.floor((Date.now() - S.startedAt) / 60000)}m ${Math.floor(((Date.now() - S.startedAt) / 1000) % 60)}s`;
   const cd = $('cd');
   if (cd && S.deadline) cd.textContent = Math.max(0, Math.ceil((S.deadline - Date.now()) / 1000));
@@ -888,32 +1260,97 @@ function tick() {
 }
 
 // ---------- human bar ----------
-const post = (what, body = {}) => fetch(`/api/debates/${S.slug}/${what}`, { method: 'POST', headers: SEND, body: JSON.stringify(body) });
-function hold() { if (S.gate && S.deadline && !S.held) { S.held = true; S.deadline = null; post('hold'); render(); } }
+const post = (what, body = {}) => requestJson(`/api/debates/${S.slug}/${what}`, body);
+async function boardAction(action, body, onSuccess) {
+  if (S.actionPending) return;
+  const revision = viewRevision;
+  const focused = document.activeElement.id;
+  S.actionPending = action; S.actionError = null; render();
+  try {
+    const out = await post(action, body);
+    if (revision === viewRevision) onSuccess?.(out);
+  } catch (e) {
+    if (revision === viewRevision) S.actionError = { action, message: e.message };
+  } finally {
+    if (revision === viewRevision) {
+      S.actionPending = null; render();
+      const control = focused && $(focused);
+      if (document.activeElement === document.body && control && !control.disabled && control.getClientRects().length) control.focus({ preventScroll: true });
+    }
+  }
+}
+async function hold(ev) {
+  if (!S.gate || !S.deadline || S.held || S.holdPending || S.actionPending) return;
+  if (ev.target.closest('#continue, #finish, #stop') || ev.key === 'Enter' && ev.target.closest('#human-form')) return;
+  const gate = S.gate, revision = viewRevision;
+  S.holdPending = true;
+  try {
+    await post('hold');
+    if (revision === viewRevision && S.gate === gate) {
+      S.held = true; S.deadline = null;
+      if (S.actionError?.action === 'hold') S.actionError = null;
+    }
+  } catch (e) {
+    if (revision === viewRevision && S.gate === gate && !S.held) S.actionError = { action: 'hold', message: `Could not confirm that auto-continue paused. ${e.message}` };
+  } finally {
+    if (revision === viewRevision) { S.holdPending = false; renderGate(); }
+  }
+}
 document.addEventListener('click', hold, true);
 document.addEventListener('keydown', hold, true);
 
 $('human-form').addEventListener('submit', (ev) => {
   ev.preventDefault();
-  const message = $('human-msg').value.trim();
-  $('human-msg').value = '';
-  if (S.status === 'interrupted') post('resume', { message });
-  else if (/^\/stop\b/i.test(message)) post('stop', { message }); else post('continue', { message });
+  const action = S.status === 'interrupted' ? 'resume' : /^\/stop\b/i.test($('human-msg').value) ? 'stop' : 'continue';
+  sendHuman(action);
 });
-$('stop').addEventListener('click', () => { const message = $('human-msg').value.trim(); $('human-msg').value = ''; post('stop', { message }); });
+function sendHuman(action) {
+  const value = $('human-msg').value;
+  // Stop must not wait for question validation or depend on a gate that may have closed.
+  // Keep answer drafts; the general note can still explain why the review was stopped.
+  if (action === 'stop') return boardAction('stop', { message: value }, () => {
+    if ($('human-msg').value === value) $('human-msg').value = '';
+  });
+  const gate = S.gate, groups = groupQuestions(gate?.questions);
+  const drafts = groups.map((q) => ({ key: questionKey(gate.round, q), id: q.id, text: S.questionDrafts[questionKey(gate.round, q)] || '' }));
+  const answers = drafts.filter((a) => a.text.trim()).map(({ id, text }) => ({ id, text }));
+  const message = answerMessage(gate?.questions, answers, value);
+  if (message.length > 4000) { S.actionError = { action, message: 'The answers, questions and note together exceed 4,000 characters. Shorten your answers before sending; your draft is kept.' }; renderGate(); return; }
+  return boardAction(action, { message, ...(gate ? { round: gate.round } : {}) }, () => {
+    if ($('human-msg').value === value) $('human-msg').value = '';
+    for (const draft of drafts) if (S.questionDrafts[draft.key] === draft.text) delete S.questionDrafts[draft.key];
+    delete $('question-inputs').dataset.signature;
+  });
+}
+$('stop').addEventListener('click', () => sendHuman('stop'));
+$('finish').addEventListener('click', () => sendHuman('finish'));
+$('question-inputs').addEventListener('input', (event) => {
+  const q = groupQuestions(S.gate?.questions).find((q) => q.id === event.target.dataset.question);
+  if (!q || !S.gate) return;
+  S.questionDrafts[questionKey(S.gate.round, q)] = event.target.value;
+  renderQuestions();
+});
+$('send-answers').addEventListener('click', () => sendHuman('continue'));
+$('answer-questions').addEventListener('click', () => {
+  $('questions-panel').scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
+  $('question-inputs').querySelector('textarea')?.focus({ preventScroll: true });
+});
 
 // ---------- export ----------
 try { $('export-target').value = localStorage.getItem('roundtable.exportTarget') || ''; } catch {}
 // A verdict skipped (budget, wall clock), failed or never written: run the chairman alone.
 $('gate-status').addEventListener('click', async (ev) => {
   if (ev.target.id !== 'synthesize') return;
-  ev.target.disabled = true;
+  const revision = viewRevision;
   const pick = $('synth-chair').value;
   const seat = pick.startsWith('seat:') && S.seats.find((s) => s.id === pick.slice(5));
-  const chairman = seat ? { vendor: seat.vendor, endpoint: seat.endpoint, keyEnv: seat.keyEnv || undefined, model: seat.model } : { vendor: pick };
-  const res = await post('synthesize', { chairman });
-  if (!res.ok) { ev.target.disabled = false; ev.target.textContent = (await res.json()).error; }
+  const savedChair = S.configuredChairman || S.chairman;
+  const chosen = seat || (pick === savedChair?.vendor ? savedChair : { vendor: pick });
+  const chairman = Object.fromEntries(['vendor', 'endpoint', 'keyEnv', 'model', 'effort', 'account'].filter((key) => chosen[key] != null).map((key) => [key, chosen[key]]));
+  await boardAction('synthesize', { chairman });
+  if (revision === viewRevision) $('synthesize')?.focus({ preventScroll: true });
 });
+$('gate-status').addEventListener('change', (ev) => { if (ev.target.id === 'synth-chair') S.synthChoice = ev.target.value; });
 
 // The human's decision: the recommended option preselected, any option or none allowed.
 function renderAccept() {
@@ -925,26 +1362,33 @@ function renderAccept() {
   if (sel.dataset.html !== html) { sel.innerHTML = html; sel.dataset.html = html; delete sel.dataset.applied; }
   // follow the recommendation, then the acceptance, as they arrive (a replay sends them late);
   // never overwrite what the human is choosing
-  if (want && sel.dataset.applied !== want && document.activeElement !== sel) { sel.value = want; sel.dataset.applied = want; }
+  if (want && !S.acceptEdited && sel.dataset.applied !== want && document.activeElement !== sel) { sel.value = want; sel.dataset.applied = want; }
+  if (!S.acceptNoteEdited && S.accepted) $('accept-note').value = S.accepted.note || '';
   $('accept-form').hidden = S.status !== 'done'; // a finished debate, live or replayed, can be accepted
-  $('accept-status').textContent = S.accepted ? `accepted: ${S.accepted.option === 'none' ? 'none of these' : optionLabel(S.accepted.option, opts)}` : 'not yet accepted';
+  $('accept').disabled = !!S.actionPending;
+  $('accept-status').textContent = S.actionPending === 'accept' ? 'saving…' : S.actionError?.action === 'accept' ? S.actionError.message : S.accepted ? `accepted: ${S.accepted.option === 'none' ? 'none of these' : optionLabel(S.accepted.option, opts)}` : 'not yet accepted';
 }
+$('accept-option').addEventListener('change', () => { S.acceptEdited = true; });
+$('accept-note').addEventListener('input', () => { S.acceptNoteEdited = true; });
 $('accept-form').addEventListener('submit', async (ev) => {
   ev.preventDefault();
-  const res = await post('accept', { option: $('accept-option').value, note: $('accept-note').value.trim() });
-  if (!res.ok) $('accept-status').textContent = (await res.json()).error;
+  const body = { option: $('accept-option').value, note: $('accept-note').value.trim() };
+  await boardAction('accept', body, () => { S.accepted = body; });
 });
 
+function renderExportStatus() {
+  $('export').disabled = !!S.actionPending;
+  $('export-status').textContent = S.actionPending === 'export' ? 'writing…' : S.actionError?.action === 'export' ? `failed: ${S.actionError.message}` : S.exported ? `written: ${S.exported.path} (${S.exported.status}: ${S.exported.chosen})` : '';
+}
 $('export-form').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   const target = $('export-target').value.trim();
   try { localStorage.setItem('roundtable.exportTarget', target); } catch {}
-  $('export-status').textContent = 'writing…';
-  const res = await post('export', { target });
-  const out = await res.json();
-  $('export-status').textContent = res.ok ? `written: ${out.path} (${out.status}: ${out.chosen})` : `failed: ${out.error}`;
-  if (res.ok) { S.exported = out; S.exportError = null; renderGate(); }
+  await boardAction('export', { target }, (out) => { S.exported = out; S.exportError = null; });
 });
+
+// Reserve the actual bar height so the final cards remain scrollable above it at any width.
+new ResizeObserver(() => document.documentElement.style.setProperty('--board-bar-height', `${Math.ceil($('humanbar').getBoundingClientRect().height)}px`)).observe($('humanbar'));
 
 // ---------- theme ----------
 $('theme').addEventListener('click', () => {
@@ -955,8 +1399,28 @@ $('theme').addEventListener('click', () => {
 });
 try { if (localStorage.getItem('roundtable.theme') === 'night') { document.documentElement.dataset.theme = 'night'; $('theme').textContent = 'Paper'; } } catch {}
 
+// ---------- sound ----------
+// Browsers let a page make sound only after the person has interacted with it.
+for (const type of ['pointerdown', 'keydown']) document.addEventListener(type, () => { if (soundEnabled()) unlockSound(); }, { passive: true });
+function renderSound() { $('sound').setAttribute('aria-pressed', String(soundEnabled())); $('sound').textContent = soundEnabled() ? 'Sound: on' : 'Sound: off'; }
+$('sound').addEventListener('click', () => { setSound(!soundEnabled()); renderSound(); playCue('open'); }); // a preview at the real volume
+renderSound();
+
 // ---------- boot ----------
-await setup();
-$('recent-list').addEventListener('click', (ev) => { if (ev.target.id === 'debates-more') { S.showAllDebates = !S.showAllDebates; loadRecent(); } });
-window.addEventListener('hashchange', route);
-route();
+$('start').disabled = true;
+try {
+  await setup();
+  $('recent-list').addEventListener('click', (ev) => {
+    const deletion = ev.target.closest('[data-delete]');
+    if (deletion) confirmHistoryDeletion(deletion.dataset.delete);
+    if (ev.target.id === 'debates-more') { S.showAllDebates = !S.showAllDebates; loadRecent(); }
+    if (ev.target.id === 'retry-recent') loadRecent();
+  });
+  window.addEventListener('hashchange', route);
+  route();
+} catch (e) {
+  $('start').disabled = true;
+  $('setup-error').textContent = `Could not load setup. ${e.message} `;
+  const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'btn btn-small'; retry.textContent = 'Reload';
+  retry.addEventListener('click', () => location.reload()); $('setup-error').append(retry);
+}

@@ -14,11 +14,38 @@
 // Errors carry the same kinds as a CLI failure (errors.js): auth, quota, network, timeout,
 // killed, other; the engine benches a pool on the first three.
 import { ADAPTERS } from './config.js';
-import { normaliseUsage } from './common.js';
+import { normaliseUsage, usageCounters } from './common.js';
 import { registerCall } from './spawn.js';
 import { checkEndpointUrl, KEY_ENV_RE } from '../seats.js';
 
 const cfg = ADAPTERS.api;
+export const MAX_RESPONSE_BYTES = 1024 * 1024;
+
+// fetch exposes decoded bytes, including for compressed responses. Bound those bytes before
+// decoding or parsing, on errors as well as successful replies, and close an oversized stream.
+async function responseText(res) {
+  if (!res.body) return '';
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  const tooLarge = () => Object.assign(new Error('response exceeds the 1 MiB limit.'), { code: 'RESPONSE_TOO_LARGE' });
+  let bytes = 0, text = '';
+  try {
+    // Content-Length is only an early check for unencoded bodies, never the actual bound.
+    const length = res.headers.get('content-length');
+    if (!res.headers.get('content-encoding') && /^\d+$/.test(length || '') && Number(length) > MAX_RESPONSE_BYTES) throw tooLarge();
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > MAX_RESPONSE_BYTES) throw tooLarge();
+      text += decoder.decode(value, { stream: true });
+    }
+    return text + decoder.decode();
+  } catch (e) {
+    await reader.cancel().catch(() => {});
+    throw e;
+  } finally { reader.releaseLock(); }
+}
 
 // What an HTTP failure means for the pool. Pure, so it is unit tested on status codes.
 //
@@ -61,11 +88,10 @@ function contentText(message) {
 // part (cached_tokens); DeepSeek reports the hit count under its own name. Reasoning tokens
 // count as thinking where the server reports them.
 export function pickUsage(u) {
-  const n = (v) => (typeof v === 'number' ? v : 0);
-  return {
-    input: n(u?.prompt_tokens), cacheRead: n(u?.prompt_tokens_details?.cached_tokens ?? u?.prompt_cache_hit_tokens), cacheWrite: 0,
-    output: n(u?.completion_tokens), thinking: n(u?.completion_tokens_details?.reasoning_tokens),
-  };
+  return usageCounters({
+    input: u?.prompt_tokens, cacheRead: u?.prompt_tokens_details?.cached_tokens ?? u?.prompt_cache_hit_tokens, cacheWrite: 0,
+    output: u?.completion_tokens, thinking: u?.completion_tokens_details?.reasoning_tokens,
+  });
 }
 
 export async function run(prompt, sessionId = null, opts = {}) {
@@ -95,11 +121,12 @@ export async function run(prompt, sessionId = null, opts = {}) {
       method: 'POST', headers, body: JSON.stringify(body), redirect: 'error', // a redirect would carry the key elsewhere
       signal: AbortSignal.any([call.signal, AbortSignal.timeout(timeoutMs)]),
     });
-    text = await res.text();
+    text = await responseText(res);
   } catch (e) {
     const cause = e?.cause || e;
     if (call.signal.aborted) throw fail('stopped before it answered.', { kind: 'killed', code: 'KILLED' });
     if (e?.name === 'TimeoutError' || cause?.name === 'TimeoutError') throw fail(`did not answer in ${Math.round(timeoutMs / 1000)} s.`, { kind: 'timeout', code: 'TIMEOUT' });
+    if (e?.code === 'RESPONSE_TOO_LARGE') throw fail(e.message, { code: e.code });
     throw fail(`could not reach ${host} (${cause?.code || cause?.message || e.message}).`, { kind: 'network' });
   } finally { call.release(); }
   const ms = Date.now() - t0;
@@ -114,7 +141,8 @@ export async function run(prompt, sessionId = null, opts = {}) {
   const message = data?.choices?.[0]?.message;
   const reply = contentText(message).trim();
   const usedTools = Array.isArray(message?.tool_calls) && message.tool_calls.length > 0;
-  if (!reply && !usedTools) throw fail(`empty reply (finish_reason ${data?.choices?.[0]?.finish_reason || 'unknown'}).`, { raw });
-  const usage = { ...normaliseUsage(cfg, pickUsage(data.usage)), cost: null, ms };
+  const counters = normaliseUsage(cfg, pickUsage(data?.usage));
+  const usage = counters ? { ...counters, cost: null, ms } : null;
+  if (!reply && !usedTools) throw fail(`empty reply (finish_reason ${data?.choices?.[0]?.finish_reason || 'unknown'}).`, { raw, usage });
   return { text: reply, usage, sessionId: null, quota: null, usedTools, raw };
 }

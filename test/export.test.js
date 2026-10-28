@@ -35,13 +35,13 @@ test('decisionRecord: front matter, every section, tally per round with PASS hol
   assert.match(md, /Recommended by a roundtable of 3 seats on 2026-10-20: \*\*Ship now\*\*[^\n]*Not yet accepted by a human\./);
   // each seat line says where it ran, "CLI" or "API <url>"
   assert.match(md, /  - Claude, CLI, risk, grill, sonnet, default effort\n  - Codex, CLI, cost, builder, default model, high\n  - "Antigravity, CLI, customer, custom: Argue like a CFO\., default model, default effort"\n/);
-  for (const h of ['Question', 'Field notes', 'Tally', 'Recommendation', 'Dissent', 'Kill criteria', 'Open questions', 'Human notes', 'Usage']) assert.ok(md.includes(`\n## ${h}\n`), h);
+  for (const h of ['Question', 'Field notes', 'Tally', 'Recommendation', 'Dissent', 'Kill criteria', 'Open questions', 'Discussion notes', 'Usage']) assert.ok(md.includes(`\n## ${h}\n`), h);
   assert.match(md, /- \*\*Constraints:\*\* two devs\n- \*\*Evidence, known:\*\* traffic is flat\n- \*\*Reversibility:\*\* high\n- \*\*Deadline:\*\* Friday/);
   assert.match(md, /\| seat \| round 0 \| round 1 \| final \|\n\|---\|---\|---\|---\|\n\| Claude · risk \| Ship now \| Ship now \| Ship now \|\n\| Codex · cost \| Wait a sprint \| Ship now \| Ship now \|\n\| Antigravity · customer \| Wait a sprint \| PASS \| Wait a sprint \|/);
   assert.match(md, /## Recommendation\n\nShip now, on balance\./);
   assert.match(md, /## Dissent\n\ncustomer argued/);
   assert.match(md, /## Kill criteria\n\n- Error rate above 2%/);
-  assert.match(md, /## Human notes\n\n### After round 0\n\nMind the deadline/);
+  assert.match(md, /## Discussion notes\n\n### After round 0\n\n\*\*Human:\*\* Mind the deadline/);
   assert.match(md, /\| Claude · risk \| 200 \| 100 \| 40 \| \$0\.10 \|/);
   assert.match(md, /\| chairman \(codex\) \| 300 \| 0 \| 40 \| not reported \|/);
   // legacy codex rows (no usageVersion) are read as input - cacheRead: 2 x (100 - 50)
@@ -49,6 +49,19 @@ test('decisionRecord: front matter, every section, tally per round with PASS hol
   // only the claude calls report a cost, so the total says it is partial
   assert.match(md, /\| \*\*debate\*\* \| 800 \| 300 \| 160 \| \$0\.10 \(partial: 2 of 7 calls report a cost\) \|/);
   assert.doesNotMatch(md, /<[a-z]+>/, 'plain markdown, no HTML');
+});
+
+test('exports label unknown and partial token counts, preserving measured zeros and reported costs', () => {
+  const head = rows()[0];
+  const missing = { type: 'attempt', attemptId: 'u', round: 0, kind: 'reply', seat: SEATS[0], usage: null, unknown: true, cost: 0.05, ms: 12 };
+  const allUnknown = decisionRecord([head, missing], 'unknown').markdown;
+  assert.match(allUnknown, /\| Claude · risk \| unknown \| unknown \| unknown \| \$0\.05 \|/);
+  assert.match(allUnknown, /\| \*\*debate\*\* \| unknown \| unknown \| unknown \| \$0\.05 \|/);
+  assert.match(allUnknown, /1 call\(s\) did not report usable token counts/);
+  const zero = { ...missing, attemptId: 'zero', seat: SEATS[1], usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 } };
+  const mixed = decisionRecord([head, missing, zero], 'partial').markdown;
+  assert.match(mixed, /\| Codex · cost \| 0 \| 0 \| 0 \| \$0\.00 \|/);
+  assert.match(mixed, /\| \*\*debate\*\* \| 0 \(partial\) \| 0 \(partial\) \| 0 \(partial\) \| \$0\.05 \|/);
 });
 
 test('status: decided, split (no option chosen), stopped (human, budget, no verdict)', () => {

@@ -1,5 +1,9 @@
 node_modules/
 debates/
 debates-fake/
+_diagnostics/
 *.log
 .DS_Store
+# a coding agent's local setup stays on your machine (test/public-tree.test.js refuses it anyway)
+.claude/
+CLAUDE.md

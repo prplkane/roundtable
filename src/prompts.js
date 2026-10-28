@@ -1,22 +1,24 @@
 // Every string an agent sees. Seats never see vendor names, only lens labels.
 import { moodLine } from './seats.js';
 import { optionIds } from './contract.js';
+import { noteRecord, noteAuthor } from './notes.js';
 
 const NO_TOOLS = 'Answer from this prompt only. Do not use any tools, do not read files, do not run commands, do not ask for permissions.';
 
 export function contractText(options) {
   return [
     'Reply with ONLY these lines, in this order, nothing before or after:',
+    'Aim for 140 words total. Use short, specific bullets; do not repeat the field notes.',
     '',
     `STANCE: <exactly one option id: ${optionIds(options).map((o) => o.id).join(' | ')}, or other: <short label>>`,
-    'AGREE_WITH: [lens labels you agree with, comma separated; [] if none]',
+    'AGREE_WITH: [lens labels, comma separated; [] if none]',
     'DISAGREE:',
-    '- up to 3 bullets, one sentence each, naming what you reject and why',
+    '- up to 3 short bullets: what you reject and why',
     'NEW:',
-    '- up to 2 bullets, one sentence each, of evidence or angles not yet on the table, or "none"',
+    '- up to 2 short bullets of new evidence or angles, or "none"',
     'ASSUMPTIONS:',
-    '- up to 3 bullets, one sentence each: what must be true for your stance to hold',
-    'QUESTION_FOR_HUMAN: <one line, only if an answer would change your stance; omit otherwise>',
+    '- up to 3 short bullets: what must be true for your stance',
+    'QUESTION_FOR_HUMAN: <optional; one unanswered question that would change your stance; omit this entire line if none, never write a placeholder or commentary; do not repeat an answered question>',
     '',
     'If you have nothing new to add and no change of stance, reply with the single word PASS instead.',
   ].join('\n');
@@ -35,7 +37,7 @@ export function fieldNotesText(fn) {
   return lines.join('\n');
 }
 
-export function round0Prompt({ fieldNotes, lens, mood, seatCount }) {
+export function round0Prompt({ fieldNotes, lens, mood, seatCount, notes = [] }) {
   return [
     `You are one of ${seatCount} seats at a roundtable deciding a question. You speak through the lens: ${lens}.`,
     `How you approach it: ${moodLine(mood)}`,
@@ -46,6 +48,7 @@ export function round0Prompt({ fieldNotes, lens, mood, seatCount }) {
     fieldNotesText(fieldNotes),
     '--- END ---',
     '',
+    ...notesBlock(notes),
     contractText(fieldNotes.options),
   ].join('\n');
 }
@@ -67,13 +70,13 @@ export function statelessPrefix({ fieldNotes, lens, mood, seatCount }) {
   ].join('\n');
 }
 
-// The human's notes as one block: every note given so far, oldest first, each with the round it
-// followed, the newest marked. notes: [{ round, text }]. A correction made after round 0 still
+// Notes as one block: every note given so far, oldest first, each with its source and the round it
+// followed, the newest marked. notes: [{ round, text, source? }]. A correction made after round 0 still
 // reaches round 3, so no seat argues from an assumption the human already overturned.
 export function notesBlock(notes) {
   const list = (notes || []).filter((n) => n?.text && n.text.trim());
   if (!list.length) return [];
-  return ['### The human at the table says', ...list.map((n, i) => `- After round ${n.round}${i === list.length - 1 ? ' (latest)' : ''}: ${n.text.trim()}`), ''];
+  return ['### Discussion notes (agent notes are not human answers)', ...list.map((n, i) => `- ${noteAuthor(n)} — ${n.round < 0 ? 'Before round 0' : `After round ${n.round}`}${i === list.length - 1 ? ' (latest)' : ''}: ${n.text.trim()}`), ''];
 }
 
 // A critique round as one fresh call: the seat has no thread, so its own last reply, the other
@@ -157,7 +160,7 @@ export function repromptText(errors, options, extra = []) {
   ].join('\n');
 }
 
-export function chairmanPrompt({ fieldNotes, rounds, humanNotes }) {
+export function chairmanPrompt({ fieldNotes, rounds, humanNotes, initialNotes = [] }) {
   const parts = [
     'You are the chairman of a roundtable. You did not take part in the debate. Your job is to write the verdict.',
     'Be sceptical. Judge the arguments, not the votes: seats agreeing is not evidence, and a majority can share one unsupported premise.',
@@ -171,15 +174,17 @@ export function chairmanPrompt({ fieldNotes, rounds, humanNotes }) {
     '',
     '--- TRANSCRIPT (seats identified by lens) ---',
   ];
+  parts.push(...notesBlock(initialNotes.map((note) => ({ round: -1, ...noteRecord(note) }))));
   rounds.forEach((r, i) => {
     parts.push(`## Round ${i}`);
     for (const reply of r) parts.push(`### ${reply.lens}`, reply.text.trim(), '');
-    for (const note of humanNotes[i] || []) if (note?.trim()) parts.push('### Human', note.trim(), '');
+    parts.push(...notesBlock((humanNotes[i] || []).map((note) => ({ round: i, ...noteRecord(note) }))));
   });
   parts.push(
     '--- END ---',
     '',
     'Write the verdict with exactly these sections and headers:',
+    'Aim for 220 words total. Keep the reasoning specific; do not repeat the field notes or whole seat replies.',
     `RECOMMENDATION: <on this line only: one option id (${optionIds(fieldNotes.options).map((o) => o.id).join(' | ')}), or none if the evidence does not support a pick yet>`,
     'then the rationale on the lines below it, in at most four sentences.',
     'DISSENT: the strongest argument against the recommendation, stated fairly in at most two sentences, with the lens that made it. Never erase it.',

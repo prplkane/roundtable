@@ -21,6 +21,25 @@ function stripFence(text) {
   return text.replace(/^\s*```[a-z]*\s*\n?/i, '').replace(/\n?\s*```\s*$/, '');
 }
 
+// Ignore explicit no-question placeholders, including a short declarative explanation.
+// Be conservative: punctuation is not required for real questions, and an uncertain suffix
+// remains a question. In particular, "None of these options ..." is not a placeholder.
+export function humanQuestion(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  const plain = text.replace(/[*_`]/g, '').replace(/^[-•]\s+/, '').trim();
+  if (/^[-–—]+[.!]?$/.test(plain)) return null;
+  if (/[?？]/.test(plain)) return text;
+  const match = /^(?:none|n\/?a|not applicable|no (?:further |additional |unanswered )?questions?(?: for (?:the )?human)?)(?:\s*[.,;:!–—-]\s*|$)(.*)$/i.exec(plain);
+  if (!match) return text;
+  const explanation = match[1].trim();
+  if (!explanation) return null;
+  // These are bookkeeping statements, not a request for an answer. Other suffixes stay live.
+  if (/^(?:treat [^.;:!?]{1,160} as (?:an? )?(?:explicit )?(?:unknown|assumption)s?|(?:all |the )?questions? (?:are |were |have been )?answered|(?:the |this )?(?:information|answer|detail|value) (?:is |remains )?(?:unknown|not provided))[.!]?$/i.test(explanation)
+      && !/\b(?:who|what|when|where|why|how|which|whether|please|confirm|clarify)\b/i.test(explanation)) return null;
+  return text;
+}
+
 // Split the reply into sections keyed by header. Text before the first header is ignored.
 export function parseReply(text) {
   const body = stripFence(text || '').trim();
@@ -48,7 +67,7 @@ export function parseReply(text) {
     disagree: list('DISAGREE'),
     new: list('NEW'),
     assumptions: list('ASSUMPTIONS'),
-    question: question && !/^(none|n\/a|-)$/i.test(question) ? question : null,
+    question: humanQuestion(question),
     sections: Object.keys(sections),
     raw: text,
   };
@@ -85,7 +104,12 @@ export function matchStance(stance, options) {
   return null;
 }
 
-// Returns {ok, errors[], parsed}. A violation list feeds the single re-prompt.
+// Bullet limits are repaired here, not re-prompted: a re-prompt is a whole extra call, and the
+// extra bullets stay in the reply text the board and the other seats read.
+export const BULLET_LIMITS = { disagree: 3, new: 2 };
+
+// Returns {ok, errors[], parsed}. A violation list feeds the single re-prompt; parsed.trimmed
+// names the sections cut back to their limit.
 export function validateReply(text, { options, round }) {
   const parsed = parseReply(text);
   const errors = [];
@@ -97,9 +121,11 @@ export function validateReply(text, { options, round }) {
     if (!(parsed.sections || []).includes(h)) errors.push(`missing ${h} section`);
   }
   if (round > 0 && !(parsed.sections || []).includes('AGREE_WITH')) errors.push('missing AGREE_WITH line (use [] if none)');
-  if (parsed.disagree.length > 3) errors.push('DISAGREE has more than 3 bullets');
-  if (parsed.new.length > 2 && !/^none$/i.test(parsed.new.join(' '))) errors.push('NEW has more than 2 bullets');
-  return { ok: errors.length === 0, errors, parsed: { ...parsed, stanceKey } };
+  const trimmed = [];
+  for (const [key, limit] of Object.entries(BULLET_LIMITS)) {
+    if (parsed[key].length > limit) { parsed[key] = parsed[key].slice(0, limit); trimmed.push(key.toUpperCase()); }
+  }
+  return { ok: errors.length === 0, errors, parsed: { ...parsed, stanceKey, ...(trimmed.length ? { trimmed } : {}) } };
 }
 
 // ---- The chairman's verdict -----------------------------------------------------------------

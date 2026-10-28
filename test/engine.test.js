@@ -43,6 +43,28 @@ const GOOD_VERDICT = 'RECOMMENDATION: opt-1\nShip it.\nTALLY:\n- opt-1: risk\nDI
 const autoGate = async () => ({ action: 'continue' });
 const stub = () => ({ append() {}, writeFieldNotes() {}, writeVerdict() {} });
 
+test('a note before resumed round zero reaches fresh seats, stateless retries and later rounds, and every chairman', async () => {
+  for (const memory of ['stateless', 'resume']) {
+    const initialNotes = ['The deadline changed before the first round completed.'];
+    const fr = fakeRunner((vendor, round) => round === 0 ? 'off contract' : reply('opt-1'));
+    let gates = 0;
+    const state = await createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS, runner: fr.runner, store: stub(), emit() {},
+      options: { memory, critiqueRounds: 1 }, resume: { rounds: [], humanNotes: [], initialNotes, ledger: [] },
+      gate: async () => ({ action: 'continue', message: gates++ === 0 ? 'Revisit the blind consensus.' : '' }),
+    }).run();
+    assert.equal(state.rounds.length, 2);
+    for (const call of fr.calls.filter((c) => c.round === 0 || c.round === 'verdict' || memory === 'stateless')) {
+      assert.ok(call.prompt.includes(initialNotes[0]), `${memory}: ${call.round} keeps the correction`);
+      assert.match(call.prompt, /Before round 0/);
+    }
+    await createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS, runner: fr.runner, store: stub(), emit() {}, gate: autoGate,
+      synthesisOnly: true, resume: { rounds: state.rounds, humanNotes: state.humanNotes, initialNotes, ledger: [] },
+    }).run();
+    assert.ok(fr.calls.at(-1).prompt.includes(initialNotes[0]), 'manual synthesis also receives the correction');
+    assert.deepEqual(initialNotes, ['The deadline changed before the first round completed.']);
+  }
+});
+
 function debate(script, extra = {}) {
   const fr = fakeRunner(script);
   const events = [];
@@ -58,6 +80,68 @@ const disagreeForever = (vendor, round) => {
   if (round === 'reprompt') return reply('Ship now');
   return reply(vendor === 'claude' ? 'Ship now' : vendor === 'codex' ? 'Wait a sprint' : 'other: split it');
 };
+
+test('a budget-skipped chairman keeps its configuration available to the live recovery controls', async () => {
+  const chairman = { vendor: 'claude', model: 'sonnet', effort: 'low', account: 'review' };
+  const { d, fr, events } = debate(disagreeForever, { chairman, options: { budget: { claude: { tokens: 1 } } } });
+  const state = await d.run();
+  assert.equal(state.verdict.skipped, true);
+  assert.equal(fr.calls.length, 0);
+  assert.deepEqual(events.find((e) => e.type === 'started').chairman, chairman);
+  assert.ok(!events.some((e) => e.type === 'chairman-start'), 'the configured choice is available before any chairman attempt');
+});
+
+test('a mid-round stop is journaled immediately, beats consensus or failure, and prevents retries', async () => {
+  for (const fail of [false, true]) {
+    const rows = [], events = [];
+    let entered, release, arrivals = 0;
+    const inFlight = new Promise((resolve) => { entered = resolve; });
+    const finishCalls = new Promise((resolve) => { release = resolve; });
+    const fr = fakeRunner(() => reply('opt-1'));
+    const runner = async (...args) => {
+      if (/^Round 1 of/m.test(args[1])) {
+        if (++arrivals === 2) entered();
+        await finishCalls;
+        if (fail) throw Object.assign(new Error('network fixture'), { kind: 'network', usage: { input: 1, output: 1 } });
+      }
+      return fr.runner(...args);
+    };
+    const d = createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS.slice(0, 2), runner,
+      chairman: { vendor: 'claude' }, options: { critiqueRounds: 2, networkRetryMs: 1 },
+      store: { append: (row) => rows.push(row) }, emit: (t, e) => events.push(e),
+      gate: async () => ({ action: 'continue', message: 'Reconsider the blind consensus.' }),
+    });
+    const running = d.run(); await inFlight;
+    d.requestStop('Stop with this explanation preserved.');
+    assert.ok(rows.some((r) => r.type === 'human' && r.round === 1 && r.text === 'Stop with this explanation preserved.'), 'the note is saved before calls settle');
+    release(); const state = await running;
+    assert.equal(state.stopReason, 'human'); assert.equal(state.rounds.length, 2);
+    assert.equal(arrivals, 2, 'no network retries or re-prompts dispatch after Stop');
+    assert.equal(events.filter((e) => e.type === 'gate').length, 1, 'Stop does not depend on another gate');
+    assert.ok(!fr.calls.some((c) => c.round === 'verdict'), 'Stop never starts the chairman');
+    assert.equal(state.verdict.skipped, true);
+    assert.equal(state.verdict.reason, 'human');
+    assert.equal(events.at(-1).cancelled, true);
+  }
+});
+
+test('Stop during manual synthesis keeps its note with the completed round and prevents a chairman retry', async () => {
+  const { d: initial } = debate(() => reply('opt-1'), { options: { critiqueRounds: 0 } });
+  const prior = await initial.run();
+  const rows = []; let entered, release, calls = 0;
+  const inFlight = new Promise((resolve) => { entered = resolve; });
+  const finishCall = new Promise((resolve) => { release = resolve; });
+  const d = createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS, chairman: { vendor: 'claude' },
+    synthesisOnly: true, resume: { rounds: prior.rounds, humanNotes: prior.humanNotes, ledger: [] },
+    options: { networkRetryMs: 1 }, store: { append: (row) => rows.push(row) }, gate: autoGate,
+    runner: async () => { calls++; entered(); await finishCall; throw Object.assign(new Error('network fixture'), { kind: 'network', usage: { input: 1, output: 1 } }); },
+  });
+  const running = d.run(); await inFlight; d.requestStop('Stop this synthesis.');
+  assert.ok(rows.some((r) => r.type === 'human' && r.round === 0 && r.text === 'Stop this synthesis.'));
+  release(); const state = await running;
+  assert.equal(calls, 1); assert.equal(state.verdict.skipped, true);
+  assert.equal(state.stopReason, 'human');
+});
 
 test('round cap: stops after round 0 plus critiqueRounds', async () => {
   const { d } = debate(disagreeForever, { options: { critiqueRounds: 2 } });
@@ -332,7 +416,7 @@ test('stateless rounds (the default): fresh calls, own last reply first, then th
   const r2 = fr.calls.find((c) => c.round === 2 && c.vendor === 'codex');
   assert.match(r2.prompt, /cost says round 1/);
   assert.doesNotMatch(r2.prompt, /says round 0/);
-  assert.match(r2.prompt, /- After round 0 \(latest\): Mind the deadline/);
+  assert.match(r2.prompt, /- Human — After round 0 \(latest\): Mind the deadline/);
   // transcript rows say every call was fresh and carry the session the CLI reported
   const replies = rows.filter((r) => r.type === 'reply');
   assert.equal(replies.length, 9);
@@ -548,7 +632,73 @@ test('a call that ends without a usage report is recorded as unknown, not as zer
   assert.ok(s.rounds[0].find((r) => r.seat.vendor === 'agy').failed);
   const u = rollup(events);
   assert.equal(u.unknownAttempts, 1);
-  assert.equal(u.bySeat[agy[0].seat.id], undefined, 'no invented zero row for the seat');
+  assert.deepEqual(u.bySeat[agy[0].seat.id].usage.tokenCoverage, { reported: 0, of: 1 }, 'the seat shows unknown usage, not no call yet');
+});
+
+test('unknown token usage blocks further calls only for that capped vendor, including re-prompts and network retries', async () => {
+  for (const failure of ['valid', 'format', 'network']) for (const capped of [false, true]) {
+    const fr = fakeRunner(disagreeForever), rows = [];
+    let calls = 0;
+    const runner = async (vendor, prompt, sid, opts) => {
+      if (vendor !== 'codex') return fr.runner(vendor, prompt, sid, opts);
+      calls++;
+      if (failure === 'network') throw Object.assign(new Error('lost response'), { kind: 'network' });
+      return { text: failure === 'format' ? 'invalid reply' : reply('Wait a sprint'), usage: null };
+    };
+    const d = createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS, chairman: { vendor: 'claude' }, runner,
+      gate: autoGate, store: { append: (r) => rows.push(r) },
+      options: { critiqueRounds: 2, networkRetryMs: 0, budget: capped ? { codex: { tokens: 1_000_000 } } : {} } });
+    const s = await d.run();
+    assert.equal(calls === 1, capped, `${failure}, capped=${capped}`);
+    assert.equal(rows.filter((r) => r.type === 'attempt' && r.seat.vendor === 'codex').length, calls, 'refusals are not attempts');
+    assert.equal(s.verdict.failed, false, 'the uncapped chairman can finish');
+    if (capped) {
+      assert.equal(rows.find((r) => r.type === 'budget').kind, 'tokens-unknown');
+      assert.equal(rows.filter((r) => r.type === 'pool-down').length, 0, 'unknown usage is not a login failure');
+    }
+  }
+});
+
+test('unknown usage blocks the same vendor chairman across replay, resume and later synthesis', async () => {
+  const { rebuildDebate } = await import('../src/store.js');
+  const rows = [], fr = fakeRunner(disagreeForever);
+  const runner = async (vendor, prompt, sid, opts) => ({ ...await fr.runner(vendor, prompt, sid, opts), usage: null });
+  const options = { critiqueRounds: 2, budget: { codex: { tokens: 1_000_000 } } };
+  const d = createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS, chairman: { vendor: 'codex' }, runner, options,
+    gate: autoGate, store: { append: (r) => rows.push(r) } });
+  const s = await d.run();
+  assert.equal(fr.calls.filter((c) => c.vendor === 'codex').length, 1);
+  assert.equal(s.verdict.skipped, true);
+  assert.match(s.verdict.text, /usage.*unknown/i);
+  const rb = rebuildDebate(rows);
+  assert.deepEqual(rollup(rb.events), rollup(rows), 'replay retains unknown accounting');
+  assert.equal(rb.events.filter((e) => e.type === 'budget').at(-1).kind, 'tokens-unknown');
+  for (const synthesisOnly of [false, true]) {
+    let calls = 0;
+    const resumed = createDebate({ fieldNotes: FIELD_NOTES, seats: rb.seats, chairman: { vendor: 'codex' }, options,
+      runner: async () => { calls++; throw new Error('must not dispatch'); }, gate: autoGate, store: stub(), synthesisOnly,
+      resume: { rounds: rb.rounds, humanNotes: rb.humanNotes, ledger: rb.ledger } });
+    assert.equal((await resumed.run()).verdict.skipped, true);
+    assert.equal(calls, 0, 'restart grants no additional calls');
+  }
+});
+
+test('rollup keeps unknown token coverage, elapsed time and known cost without confusing a measured zero', async () => {
+  const { rebuildDebate } = await import('../src/store.js');
+  const rows = [];
+  const d = createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS, chairman: { vendor: 'claude' },
+    runner: async (vendor, prompt) => ({ text: /^You are the chairman/.test(prompt) ? GOOD_VERDICT : reply('Ship now'),
+      usage: vendor === 'claude' ? null : { input: 0, output: 0, cost: 0, ms: 2 },
+      cost: 0.01, rawCost: 0.02, ms: 7, sessionId: `s-${vendor}` }),
+    gate: autoGate, store: { append: (r) => rows.push(r) }, options: { critiqueRounds: 0, memory: 'resume' } });
+  await d.run();
+  const u = rollup(rows);
+  assert.deepEqual(u.total.tokenCoverage, { reported: 2, of: 4 });
+  assert.deepEqual(u.total.costCoverage, { reported: 4, of: 4 });
+  assert.equal(u.total.cost, 0.02);
+  assert.equal(u.total.ms, 18);
+  assert.deepEqual(u.bySeat['seat-1'].usage.tokenCoverage, { reported: 1, of: 1 });
+  assert.equal(rebuildDebate(rows).seats[0].lastRawCost, 0.02, 'cost-only reports survive restart');
 });
 
 test('a cap in dollars cannot be checked against a vendor that reports no cost', async () => {
@@ -569,10 +719,10 @@ test('every human note carries forward, labelled: rounds 1 to 3 and a stateless 
   await d.run();
   for (const r of [1, 2, 3]) {
     const p = fr.calls.find((c) => c.round === r && c.vendor === 'claude').prompt;
-    assert.match(p, /- After round 0[^\n]*: Traffic doubled last month/, `round ${r} keeps the round-0 note`);
+    assert.match(p, /- Human — After round 0[^\n]*: Traffic doubled last month/, `round ${r} keeps the round-0 note`);
   }
   const r3 = fr.calls.find((c) => c.round === 3 && c.vendor === 'claude').prompt;
-  assert.match(r3, /- After round 0: Traffic doubled last month\n- After round 1 \(latest\): Budget is fixed/);
+  assert.match(r3, /- Human — After round 0: Traffic doubled last month\n- Human — After round 1 \(latest\): Budget is fixed/);
   const reprompt = fr.calls.find((c) => c.round === 'reprompt' && c.vendor === 'codex').prompt;
   assert.match(reprompt, /Traffic doubled last month/);
   assert.match(reprompt, /Budget is fixed/);
@@ -646,6 +796,8 @@ test('a gate nobody answers ends at the deadline', async () => {
   assert.equal(s.stopReason, 'wall-clock');
   assert.ok(events.some((e) => e.type === 'gate-expired'));
   assert.equal(s.verdict.skipped, true);
+  assert.equal(s.stopContext, 'waiting');
+  assert.equal(events.find((e) => e.type === 'stopped').context, 'waiting');
 });
 
 test('a call in flight at the deadline is cancelled and its seat fails for the round', async () => {
@@ -659,8 +811,21 @@ test('a call in flight at the deadline is cancelled and its seat fails for the r
   assert.equal(cancelled, 1);
   const agy = s.rounds[1].find((r) => r.seat.vendor === 'agy');
   assert.equal(agy.failed, true);
+  assert.equal(agy.cancelReason, 'wall-clock');
   assert.match(agy.errors[0], /wall clock ran out during the call/);
   assert.equal(s.stopReason, 'wall-clock');
+});
+
+test('questions in the final critique round still wait for answers before the verdict', async () => {
+  const gates = [];
+  const fr = fakeRunner((vendor, round) => reply(vendor === 'claude' ? 'opt-1' : 'opt-2', { question: round === 1 ? 'What evidence would change the plan?' : null }));
+  const state = await createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS, runner: fr.runner, store: stub(), options: { critiqueRounds: 1 },
+    gate: async (info) => { gates.push(info); return { action: 'continue', message: info.round === 1 ? 'The pilot must be reversible.' : '' }; },
+  }).run();
+  assert.deepEqual(gates.map((g) => g.round), [0, 1]);
+  assert.equal(gates[1].stop, 'round-cap');
+  assert.equal(state.rounds.length, 2);
+  assert.match(fr.calls.find((c) => c.round === 'verdict').prompt, /The pilot must be reversible/);
 });
 
 test('a resumed debate keeps its original deadline', async () => {
@@ -714,6 +879,139 @@ test('a network failure gets one retry, and a second one fails the seat for the 
   assert.equal(codex.errorKind, 'network');
   assert.equal(events.filter((e) => e.type === 'attempt' && e.seat.vendor === 'codex').length, 2, 'two attempts, both in the ledger');
   assert.equal(events.filter((e) => e.type === 'pool-down').length, 0, 'a network failure does not take the login out');
+});
+
+test('network retries recheck token and dollar caps against the failed attempt, without charging a refused retry', async () => {
+  const baselines = { codex: { fresh: { input: 10, output: 10, n: 1, cost: 0.2, nCost: 1 } } };
+  for (const [cap, allowed] of [[{ tokens: 25 }, false], [{ tokens: 40 }, true], [{ usd: 0.25 }, false], [{ usd: 0.4 }, true]]) {
+    const fr = fakeRunner(disagreeForever), rows = [];
+    let calls = 0;
+    const runner = async (vendor, prompt, sid, opts) => {
+      if (vendor !== 'codex') return fr.runner(vendor, prompt, sid, opts);
+      const usage = { input: 10, output: 10, cost: 0.2 };
+      if (++calls === 1) throw Object.assign(new Error('connection lost after usage was reported'), { kind: 'network', usage });
+      return { text: reply('Wait a sprint'), usage };
+    };
+    const d = createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS, runner, gate: autoGate, store: { append: (r) => rows.push(r) },
+      baselines, options: { critiqueRounds: 0, networkRetryMs: 0, budget: { codex: cap } } });
+    const s = await d.run();
+    const seat = s.rounds[0].find((r) => r.seat.vendor === 'codex');
+    assert.equal(calls, allowed ? 2 : 1, JSON.stringify(cap));
+    assert.equal(seat.valid, allowed);
+    const attempts = rows.filter((r) => r.type === 'attempt' && r.seat.vendor === 'codex');
+    assert.equal(attempts.length, calls, 'only calls actually dispatched enter the ledger');
+    assert.equal(attempts[0].errorKind, 'network');
+    assert.equal(rollup(attempts).total.input, calls * 10);
+    if (!allowed) {
+      assert.equal(seat.errorKind, 'budget');
+      assert.equal(seat.skipped, false, 'a budget refusal does not mark the login out for the debate');
+      assert.equal(seat.attemptId, null);
+      assert.match(seat.errors[0], /network retry would cross the codex budget/);
+      const refusal = rows.find((r) => r.type === 'budget');
+      assert.equal(refusal.what, 'network retry of cost');
+      assert.equal(refusal.spent, cap.tokens ? 20 : 0.2);
+      assert.equal(refusal.projected, cap.tokens ? 20 : 0.2);
+    }
+    assert.equal(s.verdict.failed, false, 'an uncapped chairman remains available');
+  }
+});
+
+test('concurrent network retries reserve their allowance before dispatch', async () => {
+  const seats = [{ vendor: 'claude', lens: 'risk' }, { vendor: 'codex', lens: 'cost a' }, { vendor: 'codex', lens: 'cost b' }];
+  const baselines = { codex: { fresh: { input: 10, output: 10, n: 1 } } };
+  const fr = fakeRunner(disagreeForever), rows = [], calls = new Map();
+  let release, retries = 0;
+  const retryFinished = new Promise((resolve) => { release = resolve; });
+  const runner = async (vendor, prompt, sid, opts) => {
+    if (vendor !== 'codex') return fr.runner(vendor, prompt, sid, opts);
+    const n = (calls.get(opts.seat.id) || 0) + 1;
+    calls.set(opts.seat.id, n);
+    if (n === 1) throw Object.assign(new Error('connection lost'), { kind: 'network', usage: { input: 5, output: 5 } });
+    // The first retry stays in flight until the second is refused (or wrongly dispatched).
+    if (++retries === 2) release();
+    await retryFinished;
+    return { text: reply('Wait a sprint'), usage: { input: 10, output: 10 } };
+  };
+  const d = createDebate({ fieldNotes: FIELD_NOTES, seats, runner, gate: autoGate, store: { append: (r) => rows.push(r) },
+    emit: (type) => { if (type === 'budget') release(); }, baselines,
+    options: { critiqueRounds: 0, networkRetryMs: 0, budget: { codex: { tokens: 50 } } } });
+  const s = await d.run();
+  assert.equal(retries, 1, 'two failed 10-token calls leave room for only one 20-token retry');
+  const refusal = rows.find((r) => r.type === 'budget');
+  assert.equal(refusal.spent, 40, '20 measured tokens plus the in-flight 20-token reservation');
+  assert.equal(refusal.projected, 20);
+  assert.equal(s.rounds[0].filter((r) => r.errorKind === 'budget').length, 1);
+  assert.equal(rows.filter((r) => r.type === 'attempt' && r.seat.vendor === 'codex').length, 3);
+});
+
+test('a network retry leaves the projected chairman call affordable', async () => {
+  const baselines = { codex: { fresh: { input: 10, output: 10, n: 1 } } };
+  const fr = fakeRunner(disagreeForever), rows = [];
+  let seatCalls = 0, chairmanCalls = 0;
+  const runner = async (vendor, prompt, sid, opts) => {
+    if (vendor !== 'codex') return fr.runner(vendor, prompt, sid, opts);
+    const usage = { input: 10, output: 10 };
+    if (opts.seat.id === 'chairman') { chairmanCalls++; return { text: GOOD_VERDICT, usage }; }
+    if (++seatCalls === 1) throw Object.assign(new Error('connection lost'), { kind: 'network', usage });
+    return { text: reply('Wait a sprint'), usage };
+  };
+  const d = createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS, chairman: { vendor: 'codex' }, runner, gate: autoGate,
+    store: { append: (r) => rows.push(r) }, baselines, options: { critiqueRounds: 0, networkRetryMs: 0, budget: { codex: { tokens: 60 } } } });
+  const s = await d.run();
+  assert.equal(seatCalls, 1, '20 spent + 20 retry + 31 chairman would cross 60');
+  assert.equal(chairmanCalls, 1, '20 spent + 31 chairman still fits');
+  assert.equal(rows.find((r) => r.type === 'budget').projected, 51);
+  assert.equal(s.verdict.failed, false);
+});
+
+test('chairman network retries obey the cap in normal and synthesis-only runs', async () => {
+  const baselines = { codex: { fresh: { input: 10, output: 0, n: 1 } } };
+  for (const synthesisOnly of [false, true]) {
+    const fr = fakeRunner(disagreeForever), rows = [];
+    const reviewSeats = SEATS.filter((s) => s.vendor !== 'codex');
+    const collected = synthesisOnly ? await createDebate({ fieldNotes: FIELD_NOTES, seats: reviewSeats,
+      runner: fr.runner, gate: async () => ({ action: 'stop' }), options: { critiqueRounds: 0 } }).run() : null;
+    let calls = 0;
+    const runner = async (vendor, prompt, sid, opts) => {
+      if (vendor !== 'codex') return fr.runner(vendor, prompt, sid, opts);
+      if (++calls === 1) throw Object.assign(new Error('connection lost'), { kind: 'network', usage: { input: 20, output: 0 } });
+      return { text: GOOD_VERDICT, usage: { input: 20, output: 0 } };
+    };
+    const d = createDebate({ fieldNotes: FIELD_NOTES, seats: reviewSeats, chairman: { vendor: 'codex' }, runner,
+      gate: autoGate, store: { append: (r) => rows.push(r) }, baselines, synthesisOnly,
+      resume: synthesisOnly ? { rounds: collected.rounds, humanNotes: [], ledger: [] } : null,
+      options: { critiqueRounds: 0, networkRetryMs: 0, budget: { codex: { tokens: 25 } } } });
+    const s = await d.run();
+    assert.equal(calls, 1);
+    assert.equal(s.verdict.failed, true);
+    assert.equal(s.verdict.skipped, true);
+    assert.equal(s.verdict.reason, 'budget', 'the board explains a budget refusal, not a malformed verdict');
+    assert.equal(rows.find((r) => r.type === 'budget').what, 'network retry of the chairman');
+    assert.equal(rows.filter((r) => r.type === 'attempt' && r.seat.vendor === 'codex').length, 1);
+  }
+});
+
+test('a fallback chairman is admitted against its own vendor projection and cap', async () => {
+  const baselines = { codex: { fresh: { input: 10, output: 10, n: 1 } } };
+  const fr = fakeRunner(disagreeForever), rows = [];
+  let fallbackCalls = 0;
+  const runner = async (vendor, prompt, sid, opts) => {
+    if (opts.seat.id === 'chairman') {
+      if (vendor === 'claude') throw Object.assign(new Error('quota exhausted'), { kind: 'quota' });
+      fallbackCalls++;
+    }
+    return fr.runner(vendor, prompt, sid, opts);
+  };
+  const d = createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS, chairman: { vendor: 'claude' }, runner, gate: autoGate,
+    store: { append: (r) => rows.push(r) }, baselines, options: { critiqueRounds: 0, budget: { codex: { tokens: 30 } } } });
+  const s = await d.run();
+  assert.equal(fallbackCalls, 0, '15 spent + the codex chairman projection of 31 would cross 30');
+  assert.equal(s.verdict.failed, true);
+  assert.equal(s.verdict.skipped, true);
+  assert.equal(s.verdict.reason, 'budget');
+  const refusal = rows.find((r) => r.type === 'budget');
+  assert.equal(refusal.vendor, 'codex');
+  assert.equal(refusal.projected, 31);
 });
 
 test('a seat out for the debate leaves the table: the others can reach consensus, and one seat left stops the debate', async () => {
