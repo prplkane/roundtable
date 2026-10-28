@@ -48,6 +48,10 @@
 - Give the JSON agent client a `board` link in every result with a review id, so an agent can
   hand a person the page to watch. Add a small-review recipe for lenses, moods, effort, model
   and context fields to `agent --help` and the workflow guide.
+- Trim a reply with too many DISAGREE or NEW bullets to the limit instead of re-prompting the
+  seat; the extra call cost more than the lost bullet. Show agents `gate.reopenCalls` when the
+  seats already agree at round 0, so answering only reopens the table when it could change a
+  position.
 - Put delayed hover explanations on text labels. Separate positions from arguments, emphasize
   rejection words, and collapse usage into quota bars with expandable details.
 - Collect questions and answers in one area, combine identical questions without a model call,

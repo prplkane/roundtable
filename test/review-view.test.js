@@ -59,3 +59,13 @@ test('session cue: live endings play once by outcome; replayed history and unrea
   assert.equal(ceremonyOutcome({ type: 'verdict' }), null);
   assert.equal(ceremonyOutcome(null), null);
 });
+
+test('agent state: a unanimous round 0 says what answering would cost; other gates do not', async () => {
+  const { reviewSnapshot } = await import('../src/snapshot.js');
+  const seats = [{ lens: 'risk' }, { lens: 'cost' }, { lens: 'evidence' }];
+  const board = (info) => ({ slug: 'r', gen: 1, events: [], pending: { info }, debate: { canFinish: () => false, state: { seats, rounds: [], fieldNotes: { decision: 'd', options: ['A', 'B'] } } } });
+  const agreed = reviewSnapshot(board({ round: 0, mode: 'blocking', stop: 'consensus', questions: [], reopenable: true }));
+  assert.equal(agreed.gate.reopenCalls, 3, 'one more call per seat if the agent sends any text');
+  const open = reviewSnapshot(board({ round: 0, mode: 'blocking', stop: null, questions: [], reopenable: false }));
+  assert.equal(open.gate.reopenCalls, undefined);
+});

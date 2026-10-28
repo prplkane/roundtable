@@ -104,7 +104,12 @@ export function matchStance(stance, options) {
   return null;
 }
 
-// Returns {ok, errors[], parsed}. A violation list feeds the single re-prompt.
+// Bullet limits are repaired here, not re-prompted: a re-prompt is a whole extra call, and the
+// extra bullets stay in the reply text the board and the other seats read.
+export const BULLET_LIMITS = { disagree: 3, new: 2 };
+
+// Returns {ok, errors[], parsed}. A violation list feeds the single re-prompt; parsed.trimmed
+// names the sections cut back to their limit.
 export function validateReply(text, { options, round }) {
   const parsed = parseReply(text);
   const errors = [];
@@ -116,9 +121,11 @@ export function validateReply(text, { options, round }) {
     if (!(parsed.sections || []).includes(h)) errors.push(`missing ${h} section`);
   }
   if (round > 0 && !(parsed.sections || []).includes('AGREE_WITH')) errors.push('missing AGREE_WITH line (use [] if none)');
-  if (parsed.disagree.length > 3) errors.push('DISAGREE has more than 3 bullets');
-  if (parsed.new.length > 2 && !/^none$/i.test(parsed.new.join(' '))) errors.push('NEW has more than 2 bullets');
-  return { ok: errors.length === 0, errors, parsed: { ...parsed, stanceKey } };
+  const trimmed = [];
+  for (const [key, limit] of Object.entries(BULLET_LIMITS)) {
+    if (parsed[key].length > limit) { parsed[key] = parsed[key].slice(0, limit); trimmed.push(key.toUpperCase()); }
+  }
+  return { ok: errors.length === 0, errors, parsed: { ...parsed, stanceKey, ...(trimmed.length ? { trimmed } : {}) } };
 }
 
 // ---- The chairman's verdict -----------------------------------------------------------------

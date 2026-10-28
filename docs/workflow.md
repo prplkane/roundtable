@@ -538,6 +538,13 @@ costs far more than one more sentence of context. `agent --help` repeats this re
 - **Context.** `constraints`, `known`, `assumed`, `reversibility` and `deadline` go into every
   prompt. Fill them only with facts the user stated. A guess belongs under `assumed`, never
   under `known`, and an empty field is better than an invented one.
+- **Agreement.** When `gate.reopenCalls` appears, every seat already agrees. Answers with empty
+  text and no message go straight to the verdict. Any answer text or message runs one more
+  round, at that many calls. Send text only when it could change a position. A fact that only
+  confirms what the seats said can wait for the verdict.
+
+A seat that writes more bullets than the format allows is trimmed to the limit instead of being
+asked again. The full reply text stays on the board.
 
 The older `npm run debate -- --token <hex> < review.json` runner is still available for
 unattended scripts. It automatically continues through questions; use `agent` for interactive

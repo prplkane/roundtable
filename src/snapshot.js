@@ -20,7 +20,10 @@ export function reviewSnapshot(d) {
     ...(state.stopReason ? { explanation: stopExplanation(state.stopReason, state.stopContext) } : {}),
     actions: d.finished ? (!verdict || verdict.failed || verdict.skipped) && hasUsableRound(rounds, state.seats.length) ? ['verdict'] : []
       : d.interrupted ? ['resume'] : status === 'error' ? [] : [gate ? 'answer' : 'wait', ...(d.debate?.canFinish() ? ['finish'] : []), 'stop'],
-    gate: gate ? { round: gate.round, mode: gate.mode, stop: gate.stop, questions: groupQuestions(gate.questions) } : null,
+    // reopenCalls: the seats already agree, so empty answers end the discussion; any answer text
+    // or message runs one more round at this many calls. Absent when answering cannot reopen.
+    gate: gate ? { round: gate.round, mode: gate.mode, stop: gate.stop, questions: groupQuestions(gate.questions),
+      ...(gate.reopenable ? { reopenCalls: (state.seats || []).length } : {}) } : null,
     replies: (rounds[lastRound] || []).map((r) => ({ lens: r.seat.lens, vendor: r.seat.vendor,
       status: cancellationReason(r, state.stopReason, lastRound) ? 'cancelled' : r.failed ? 'failed' : r.valid ? 'replied' : 'invalid',
       ...(r.failed ? { reason: cancellationReason(r, state.stopReason, lastRound) || r.errorKind } : r.valid ? {

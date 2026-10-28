@@ -23,6 +23,7 @@ const HELP = {
     moods: 'Pair one sceptical seat (grill) with one practical seat (builder). Use steelman when the user already leans one way, contrarian when the seats would otherwise agree too early.',
     effort: 'effort low and the lightest model in status for a small review. Raise effort for one seat, not all, when the decision is hard to reverse.',
     context: 'constraints, known, assumed, reversibility and deadline go into every prompt. Fill them only with facts the user stated; put guesses under assumed, never under known. Leave a field empty rather than invent it.',
+    agreement: 'When gate.reopenCalls is present, every seat already agrees. Empty answers and no message go straight to the verdict. Any answer text or message runs one more round at reopenCalls calls. Send text only if it could change a seat\'s position; a fact that confirms what the seats already said is better left for the verdict.',
   },
 };
 
