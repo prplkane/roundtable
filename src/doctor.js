@@ -10,8 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ADAPTERS } from './adapters/config.js';
 import { resolveBinary, runProcess, profileHome, dataDir } from './adapters/spawn.js';
-
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+import { dataDirectory } from './history.js';
 
 // Shell lines that log a profile in, per vendor, for the platform the user is on. Pure.
 export function loginInstructions(vendor, profile, where = {}) {
@@ -68,7 +67,7 @@ async function main() {
     if (live && bin) {
       const t0 = Date.now();
       try {
-        const r = await adapters[vendor]('Reply with exactly the word pong.', null, { timeoutMs: 180_000, cwd: path.join(ROOT, 'debates', '_doctor', vendor) });
+        const r = await adapters[vendor]('Reply with exactly the word pong.', null, { timeoutMs: 180_000, cwd: path.join(dataDirectory(), '_doctor', vendor) });
         console.log(`  logged in  yes (${Date.now() - t0} ms)  reply: ${JSON.stringify(r.text.slice(0, 40))}  session: ${r.sessionId}`);
         console.log(`  usedTools  ${r.usedTools}${r.usedTools ? '  <- a plain reply reached for tools; the guard would re-prompt it' : ''}`);
         const cost = r.usage?.cost ?? r.cost;

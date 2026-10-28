@@ -52,7 +52,8 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
 - **On disk:** history defaults to the OS user-data folder, outside the checkout, with separate
   `live` and `demo` directories. `ROUNDTABLE_DEBATES_DIR` overrides that location. Each holds one folder per debate with the transcript (field notes, replies,
   your notes, usage figures), `field-notes.md` and `verdict.md`; plus the calibration and pool
-  figures. Legacy checkout data folders remain gitignored. A CLI's full raw output is kept in memory during
+  figures. Live diagnostic working files use the same data folder. Legacy checkout data
+  folders remain gitignored. A CLI's full raw output is kept in memory during
   a call; selected replies, errors and usage are recorded. Copy the entire data folder while
   the server is stopped to back it up. Exported records and CLI login profiles live separately.
   The browser also retains field notes, seat choices, limits, chairman settings and budgets in

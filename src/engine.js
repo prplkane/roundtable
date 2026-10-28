@@ -359,6 +359,8 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     const answer = (await Promise.race([gate(info), atDeadline])) || { action: 'continue' };
     clearTimeout(timer);
     if (answer.reason === 'wall-clock') {
+      // Gate expiry is final even when the overall deadline timer has not fired yet.
+      deadlineHit = true;
       state.status = 'running'; state.stopContext = 'waiting';
       record({ type: 'gate-expired', round }); fire('gate-expired', { round }); return 'wall-clock';
     }

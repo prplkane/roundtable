@@ -788,6 +788,22 @@ test('a wall clock that runs out during the human gate dispatches no further sea
   assert.equal(s.verdict.reason, 'wall-clock');
 });
 
+test('gate expiry stays final when it arrives before the overall deadline timer', async () => {
+  // The gate can expire before the other timer fires or the clock reaches the deadline.
+  // Freeze the clock to reproduce that ordering without a timing-dependent wait.
+  const { d, fr } = debate(disagreeForever, {
+    now: () => 0,
+    gate: async () => ({ action: 'stop', reason: 'wall-clock' }),
+    options: { critiqueRounds: 2, wallClockMs: 60_000 },
+  });
+  const state = await d.run();
+  assert.equal(state.stopReason, 'wall-clock');
+  assert.equal(state.stopContext, 'waiting');
+  assert.equal(fr.calls.length, SEATS.length, 'only the blind round may call a provider');
+  assert.equal(state.verdict.skipped, true);
+  assert.equal(state.verdict.reason, 'wall-clock');
+});
+
 test('a gate nobody answers ends at the deadline', async () => {
   const events = [];
   const fr = fakeRunner(disagreeForever);

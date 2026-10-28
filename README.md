@@ -34,11 +34,12 @@ The demo uses scripted replies. It needs no provider account and makes no model 
 ```bash
 git clone https://github.com/prplkane/roundtable.git
 cd roundtable
-npm test
-npm run fake -- --no-open
+npm run fake
 ```
 
-Open [localhost:4748](http://localhost:4748/). The header identifies the session as **Demo**.
+The board opens at [localhost:4748](http://localhost:4748/). If no browser window appears,
+open that address yourself. The header identifies the session as **Demo**. Press Ctrl+C in
+the terminal to stop the server.
 
 ### Run a live review
 
@@ -48,7 +49,7 @@ endpoints have separate billing.
 
 ```bash
 npm run doctor
-npm start -- --no-open
+npm start
 ```
 
 Open [localhost:4747](http://localhost:4747/). The header identifies the session as **Live**.

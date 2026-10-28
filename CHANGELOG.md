@@ -20,6 +20,9 @@
 
 ### Records and recovery
 
+- Treat an expired input pause as final even when its timer fires before the overall deadline
+  timer. Do not start a chairman call after the pause expires.
+
 - Add Delete and Clear finished with confirmation and protection for active sessions. Keep
   exported files and usage statistics after cleanup. Default history to the OS user-data folder,
   outside the checkout, and allow one server per data folder.
@@ -39,6 +42,10 @@
   Restore the human decision and reason on reload.
 
 ### Local operation and interface
+
+- Use the same external data folder for live diagnostic workspaces and headless calibration
+  reads as for saved reviews. Respect `ROUNDTABLE_DEBATES_DIR` in both commands.
+- Reduce the demo quick start to clone, enter the folder and start the board.
 
 - Mark session opening and completion with the chairman seat's pixel gavel and a quiet generated sound, with
   separate endings for a verdict, no verdict and a failure. Add a sound toggle. Keep the gavel out
