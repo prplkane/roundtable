@@ -12,6 +12,7 @@ test('diagnostics retain actionable categories and source lines without private 
   const error = Object.assign(new Error('PRIVATE-MARKER in a provider reply'), { code: 'ENOSPC',
     stack: 'Error: PRIVATE-MARKER\n at privateName (file:///home/user/project/src/server.js:25:7)\n at privateFn (/secret/private.js:2:3)' });
   const entry = log.write({ code: 'provider-failed', action: 'events', vendor: 'claude', kind: 'auth',
+    progress: { elapsedMs: 300000, eventCount: 3, stage: 'reasoning', outcome: 'timeout', text: 'PRIVATE-MARKER' },
     message: 'PRIVATE-MARKER', model: 'PRIVATE-MARKER', account: 'PRIVATE-MARKER', slug: 'PRIVATE-MARKER',
     headers: { authorization: 'Bearer PRIVATE-MARKER' }, body: { notes: 'PRIVATE-MARKER' } }, error);
   assert.equal(entry.saved, true);
@@ -22,6 +23,7 @@ test('diagnostics retain actionable categories and source lines without private 
   assert.equal(event.systemCode, 'ENOSPC');
   assert.deepEqual(event.frames, [{ file: 'server.js', line: 25, column: 7 }]);
   assert.equal(event.vendor, 'claude');
+  assert.deepEqual(event.progress, { elapsedMs: 300000, eventCount: 3, stage: 'reasoning', outcome: 'timeout' });
   assert.equal(diagnosticAction('/api/debates/private-title/export'), 'export');
   assert.equal(diagnosticAction('/api/debates/private-title/state'), 'state');
   assert.equal(diagnosticAction('/api/preview'), 'preview');

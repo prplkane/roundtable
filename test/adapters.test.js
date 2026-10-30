@@ -10,7 +10,7 @@ import path from 'node:path';
 
 test('claude: fresh call on stdin, resume appends --resume', () => {
   const fresh = buildArgs(ADAPTERS.claude, { prompt: 'hi' });
-  assert.deepEqual(fresh.args, ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'plan', '--tools', '', '--disable-slash-commands', '--setting-sources', 'local', '--strict-mcp-config']);
+  assert.deepEqual(fresh.args, ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'plan', '--tools', '', '--disable-slash-commands', '--setting-sources', 'local', '--strict-mcp-config', '--safe-mode', '--permission-prompts', 'none']);
   assert.equal(fresh.stdin, 'hi');
   const res = buildArgs(ADAPTERS.claude, { prompt: 'hi', sessionId: 'S1', model: 'opus' });
   assert.deepEqual(res.args.slice(-4), ['--resume', 'S1', '--model', 'opus']);
@@ -18,7 +18,7 @@ test('claude: fresh call on stdin, resume appends --resume', () => {
 
 test('codex: resume replaces the subcommand and keeps the trailing "-" last', () => {
   const fresh = buildArgs(ADAPTERS.codex, { prompt: 'hi', model: 'gpt-x' });
-  assert.deepEqual(fresh.args, ['exec', '--json', '--sandbox', 'read-only', '--skip-git-repo-check', '-c', 'project_doc_max_bytes=0', ...CODEX_NO_TOOLS, '-m', 'gpt-x', '-']);
+  assert.deepEqual(fresh.args, ['exec', '--json', '--sandbox', 'read-only', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules', '--strict-config', '-c', 'project_doc_max_bytes=0', ...CODEX_NO_TOOLS, '-m', 'gpt-x', '-']);
   const res = buildArgs(ADAPTERS.codex, { prompt: 'hi', sessionId: 'T1' });
   assert.equal(res.args.filter((a) => a === 'exec').length, 1, 'exec must appear once');
   assert.deepEqual(res.args.slice(0, 3), ['exec', 'resume', 'T1']);
@@ -35,20 +35,24 @@ test('restriction flags: every adapter sends its tool restrictions on fresh call
   for (const sid of [undefined, 'S1']) {
     const c = all('claude', sid);
     assert.deepEqual(c.slice(c.indexOf('--tools'), c.indexOf('--tools') + 2), ['--tools', ''], 'claude: empty built-in tool list');
-    for (const f of ['--strict-mcp-config', '--disable-slash-commands']) assert.ok(c.includes(f), `claude ${f}`);
+    for (const f of ['--strict-mcp-config', '--disable-slash-commands', '--safe-mode', '--permission-prompts']) assert.ok(c.includes(f), `claude ${f}`);
     assert.deepEqual(c.slice(c.indexOf('--permission-mode'), c.indexOf('--permission-mode') + 2), ['--permission-mode', 'plan']);
     const x = all('codex', sid);
+    for (const f of ['--ignore-user-config', '--ignore-rules', '--strict-config']) assert.ok(x.includes(f), `codex ${f}`);
     for (const f of ['mcp_servers={}', 'web_search="disabled"', 'features.shell_tool=false', 'features.unified_exec=false', 'features.apps=false']) assert.ok(x.includes(f), `codex ${f}`);
     const a = all('agy', sid);
     assert.deepEqual(a.slice(a.indexOf('--mode'), a.indexOf('--mode') + 2), ['--mode', 'plan']);
     assert.ok(a.includes('--disable-slash-commands'));
+    const settings = JSON.parse(a[a.indexOf('--settings') + 1]);
+    assert.equal(settings.toolPermission, 'strict');
+    assert.deepEqual(settings.permissions.deny, ['read_file(*)', 'write_file(*)', 'read_url(*)', 'execute_url(*)', 'command(*)', 'mcp(*)']);
   }
 });
 
-test('agy: prompt on argv, long prompt switches to stream-json on stdin, resume adds --conversation', () => {
+test('agy: every prompt uses stream-json stdin and resume adds --conversation', () => {
   const fresh = buildArgs(ADAPTERS.agy, { prompt: 'hi' });
-  assert.equal(fresh.args.at(-1), '-p=hi');
-  assert.equal(fresh.stdin, null);
+  assert.ok(!fresh.args.some((a) => a.includes('hi')));
+  assert.equal(JSON.parse(fresh.stdin).message.content, 'hi');
   const long = buildArgs(ADAPTERS.agy, { prompt: 'x'.repeat(ARGV_LIMIT + 1), sessionId: 'C1' });
   assert.equal(long.streamMode, true);
   assert.ok(long.args.includes('stream-json'));
@@ -81,7 +85,7 @@ test('CLI adapters preserve unknown usage and known costs, including error resul
       const run = makeAdapter(name, { bin: { file: process.execPath, prefix: [fixture] } });
       for (const mode of ['missing', 'empty', 'partial', 'zero']) {
         process.env.FAKE_USAGE = mode;
-        const r = await run('hello', null, { timeoutMs: 20_000 });
+        const r = await run('hello', null, { timeoutMs: 20_000, allowLimitedIsolation: true });
         if (mode === 'zero') assert.equal(r.usage.input, 0, name);
         else {
           assert.equal(r.usage, null, `${name}: ${mode}`);
@@ -169,7 +173,7 @@ test('effort: each vendor spells it its own way; agy skips it when the model id 
   assert.ok(!agySuffixed.includes('--effort'), 'the id already says high; do not also say low');
   assert.ok(agySuffixed.includes('gemini-4-argon-high'));
   const agyNoModel = buildArgs(ADAPTERS.agy, { prompt: 'hi', effort: 'medium' }).args;
-  assert.deepEqual(agyNoModel.slice(-3), ['--effort', 'medium', '-p=hi']);
+  assert.deepEqual(agyNoModel.slice(-2), ['--effort', 'medium']);
 });
 
 test('profile homes live under the OS user-data dir, one per profile name, per vendor', () => {
@@ -236,7 +240,7 @@ test('a call that overruns its timeout rejects with code TIMEOUT', async () => {
   } finally { delete process.env.FAKE_SLEEP; }
 });
 
-test('tool-use guard: each adapter reports usedTools from its own stream, false on a plain reply', async () => {
+test('tool-use guard: each adapter rejects reported tools and accepts a plain reply', async () => {
   const fixture = path.resolve('test/fixtures/fake-cli.mjs');
   const bin = { file: process.execPath, prefix: [fixture] };
   const cwd = mkdtempSync(path.join(os.tmpdir(), 'rt-tools-'));
@@ -245,13 +249,11 @@ test('tool-use guard: each adapter reports usedTools from its own stream, false 
       const run = makeAdapter(name, { bin });
       process.env.FAKE_SHAPE = name;
       delete process.env.FAKE_TOOLS;
-      const plain = await run('hello', null, { cwd, timeoutMs: 20_000 });
+      const plain = await run('hello', null, { cwd, timeoutMs: 20_000, allowLimitedIsolation: true });
       assert.equal(plain.usedTools, false, `${name}: a plain reply`);
       assert.match(plain.text, /^STANCE:/);
       process.env.FAKE_TOOLS = '1';
-      const tooled = await run('hello', null, { cwd, timeoutMs: 20_000 });
-      assert.equal(tooled.usedTools, true, `${name}: tool use in the stream`);
-      assert.match(tooled.text, /^STANCE:/, 'the text still parses');
+      await assert.rejects(run('hello', null, { cwd, timeoutMs: 20_000, allowLimitedIsolation: true }), (e) => e.code === 'TOOL_POLICY' && e.usedTools === true && !e.text);
     }
   } finally { delete process.env.FAKE_SHAPE; delete process.env.FAKE_TOOLS; }
   // the detectors on captured shapes
@@ -261,6 +263,56 @@ test('tool-use guard: each adapter reports usedTools from its own stream, false 
   assert.equal(detectToolUse('codex', '{"type":"item.started","item":{"type":"command_execution","command":"ls"}}'), true);
   assert.equal(detectToolUse('agy', '{"response":"","num_turns":1,"denied_actions":[{"action":"run_command"}]}'), true, 'a denied tool is still an attempt');
   assert.equal(detectToolUse('agy', '{"response":"pong","num_turns":1}'), false);
+});
+
+test('split tool events stop a hanging CLI before its timeout, including server tools and intermediate updates', async () => {
+  const cases = [
+    ['claude', { type: 'assistant', message: { content: [{ type: 'server_tool_use', name: 'web_search' }] } }],
+    ['claude', { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'mcp_tool_use' } } }],
+    ['codex', { type: 'item.updated', item: { type: 'command_execution' } }],
+    ['agy', { event: 'step_update', tool_info: { name: 'read_file' } }],
+    ['agy', { event: 'step_update', subagent_info: { id: 'test' } }],
+  ];
+  try {
+    for (const [name, event] of cases) {
+      process.env.FAKE_SHAPE = name;
+      process.env.FAKE_PRELUDE = JSON.stringify(event) + '\n';
+      process.env.FAKE_SLEEP = '10000';
+      const run = makeAdapter(name, { bin: { file: process.execPath, prefix: [path.resolve('test/fixtures/fake-cli.mjs')] } });
+      await assert.rejects(run('synthetic question', null, { timeoutMs: 3000, allowLimitedIsolation: true }),
+        (e) => e.code === 'TOOL_POLICY' && e.kind === 'policy' && e.usedTools && e.usage === null && !e.text);
+    }
+  } finally { for (const k of ['FAKE_SHAPE', 'FAKE_PRELUDE', 'FAKE_SLEEP']) delete process.env[k]; }
+});
+
+test('a truncated final event or unsuccessful exit cannot promote an earlier message to success', async () => {
+  const answer = JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'partial answer' } });
+  for (const [tail, exitCode, expected] of [
+    ['{"type":"item.started","item":{"type":"command_execution"', 1, 'PROVIDER_PROTOCOL'],
+    [JSON.stringify({ type: 'item.started', item: { type: 'command_execution' } }), 0, 'TOOL_POLICY'],
+    ['', 1, 'CLI_EXIT'],
+    ['', 0, 'PROVIDER_PROTOCOL'],
+  ]) {
+    const script = `process.stdin.resume(); process.stdin.on('end', () => { process.stdout.write(${JSON.stringify(answer + '\n' + tail)}); process.exit(${exitCode}); });`;
+    const run = makeAdapter('codex', { bin: { file: process.execPath, prefix: ['-e', script, '--'] } });
+    await assert.rejects(run('q'), (e) => e.code === expected && !e.text && (expected === 'CLI_EXIT' || e.kind === 'policy'));
+  }
+  const completed = JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 12, output_tokens: 4 } });
+  const output = `${answer}\n${completed}\n{"error":"network error"`;
+  const script = `process.stdin.resume(); process.stdin.on('end', () => process.stdout.write(${JSON.stringify(output)}));`;
+  const run = makeAdapter('codex', { bin: { file: process.execPath, prefix: ['-e', script, '--'] } });
+  await assert.rejects(run('q'), (e) => e.code === 'PROVIDER_PROTOCOL' && e.kind === 'policy' && e.usage?.input === 12 && !e.text);
+});
+
+test('limited isolation requires explicit opt-in and malformed or oversized output fails closed', async () => {
+  const bin = { file: process.execPath, prefix: [path.resolve('test/fixtures/fake-cli.mjs')] };
+  await assert.rejects(makeAdapter('agy', { bin })('q'), (e) => e.code === 'ISOLATION_REQUIRED' && e.kind === 'policy');
+  process.env.FAKE_PRELUDE = '{broken event}\n';
+  process.env.FAKE_SLEEP = '10000';
+  try {
+    await assert.rejects(makeAdapter('claude', { bin })('q', null, { timeoutMs: 3000 }), (e) => e.code === 'PROVIDER_PROTOCOL');
+    await assert.rejects(runProcess({ file: process.execPath, prefix: [] }, ['-e', 'process.stdout.write("x".repeat(4096))'], { maxOutputBytes: 512 }), (e) => e.code === 'OUTPUT_LIMIT');
+  } finally { delete process.env.FAKE_PRELUDE; delete process.env.FAKE_SLEEP; }
 });
 
 test('child registry: running CLIs are listed by tag, killAll(tag) kills only those and their calls reject with KILLED', async () => {

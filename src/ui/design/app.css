@@ -508,3 +508,9 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .seat-card .flat.model-pick:hover, .seat-card .flat.model-pick:focus { border-bottom-color: var(--color-border-strong); color: var(--color-text); }
 .pick-row { display: flex; gap: var(--space-2); align-items: center; }
 .pick-row input { flex: 1; min-width: 0; }
+
+#research-panel { overflow-wrap: anywhere; }
+#research-body { padding: var(--space-3); }
+#research-panel details { padding: var(--space-2) 0; border-top: var(--border-width) solid var(--color-border); }
+#research-panel summary { cursor: pointer; font-weight: 600; }
+#research-panel p { white-space: pre-wrap; }

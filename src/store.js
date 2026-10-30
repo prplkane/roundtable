@@ -1,10 +1,12 @@
 import { mkdirSync, existsSync, appendFileSync, writeFileSync, readFileSync, readdirSync, renameSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { fieldNotesText } from './prompts.js';
 import { positions, ledgerEntries, synthesisOf } from './engine.js';
 import { ADAPTERS } from './adapters/config.js';
 import { optionId, humanQuestion } from './contract.js';
 import { noteRecord, storedNote } from './notes.js';
+import { researchSources } from './research.js';
 
 // Usage rows written before usageVersion 3 carry the vendor's own input figure. Bring them to
 // the one meaning (input = uncached) by the vendor's cache semantics. Idempotent: a row already
@@ -29,8 +31,7 @@ const reportTranscriptWarning = (warning) => console.warn(`[transcript] ${warnin
 // Parse bytes so a torn UTF-8 character and a torn JSON value have the same recovery boundary.
 // Only an unreadable, unterminated final line with a valid prefix is recoverable. A completed
 // bad line or a non-record JSON value is corruption; never skip it and trust the rest.
-function inspectTranscript(file) {
-  const data = existsSync(file) ? readFileSync(file) : Buffer.alloc(0);
+function inspectTranscript(file, data = existsSync(file) ? readFileSync(file) : Buffer.alloc(0)) {
   const rows = [];
   const name = `${path.basename(path.dirname(file))}/transcript.jsonl`;
   const decoder = new TextDecoder('utf-8', { fatal: true });
@@ -131,7 +132,17 @@ export function openDebateDir(root, slug, { create = true } = {}) {
       mkdirSync(d, { recursive: true });
       return d;
     },
-    append(row) { prepareAppend(); appendFileSync(transcript, JSON.stringify({ t: new Date().toISOString(), ...row }) + '\n'); },
+    append(row) {
+      try {
+        prepareAppend();
+        appendFileSync(transcript, JSON.stringify({ t: new Date().toISOString(), ...row }) + '\n', { flush: row.type === 'attempt-start' });
+      } catch (error) {
+        // A failed append can have written a torn tail. Even this same writer must inspect
+        // and preserve it before a later turn or a repaired review writes anything else.
+        prepared = false;
+        throw error;
+      }
+    },
     writeFieldNotes(fn, seats) {
       const md = [
         `# Field notes: ${fn.decision}`, '',
@@ -153,6 +164,11 @@ export function openDebateDir(root, slug, { create = true } = {}) {
       if (parsed.warning) onWarning(parsed.warning);
       return parsed.rows;
     },
+    async readTranscriptAsync({ onWarning = reportTranscriptWarning } = {}) {
+      const parsed = inspectTranscript(transcript, await readFile(transcript));
+      if (parsed.warning) onWarning(parsed.warning);
+      return parsed.rows;
+    },
   };
 }
 
@@ -165,6 +181,18 @@ export function rebuildDebate(rows) {
   rows = normaliseRows(rows);
   const head = rows.find((r) => r.type === 'field-notes');
   if (!head) return null;
+  let research = rows.findLast((r) => r.type === 'research') || (rows.some((r) => r.type === 'research-start') ? { status: 'interrupted' } : null);
+  const fieldNotes = { ...head.fieldNotes };
+  delete fieldNotes.research;
+  if (research?.status === 'done') {
+    try {
+      const gatheredAt = new Date(research.gatheredAt).toISOString();
+      if (!Number.isInteger(research.searches) || research.searches < 1 || research.searches > 8) throw new Error('invalid count');
+      research = { status: 'done', gatheredAt, searches: research.searches, attemptId: research.attemptId,
+        sources: researchSources(JSON.stringify({ sources: research.sources }), gatheredAt) };
+      fieldNotes.research = research.sources;
+    } catch { research = { status: 'failed', errorKind: 'format', error: 'The saved research bundle is invalid. It was not refetched.' }; }
+  }
   const seats = head.seats || [];
   const sid = (s) => s?.id ?? `${s?.vendor}:${s?.lens}`; // schema 1 rows had no seat id
   const byRound = new Map(); // round -> Map(seatId -> reply)
@@ -190,6 +218,7 @@ export function rebuildDebate(rows) {
     else if (r.type === 'reopen') reopens.push(r);
     else if (r.type === 'stop') stop = r;
     else if (r.type === 'verdict') verdict = r;
+    else if (r.type === 'synthesis-cancelled') verdict = { text: 'Verdict not written: you stopped the synthesis.', failed: true, skipped: true, reason: r.reason, seat: null };
     else if (r.type === 'error') error = r;
     else if (r.type === 'resumed') resumedRows++;
     else if (r.type === 'accepted') accepted = r;
@@ -216,6 +245,9 @@ export function rebuildDebate(rows) {
   // The spend ledger, partial rounds included (they were paid for), and each seat's last
   // cumulative cost reading, so a resumed session is charged only its own part.
   const ledger = ledgerEntries(rows);
+  // Older versions recorded tool activity on a repair/reply row after the successful
+  // attempt. Keep the policy state even if the process stopped before a complete round.
+  const policyFailures = rows.filter((r) => r.seat && (r.usedTools || r.toolFail || r.errorKind === 'policy')).map((r) => r.seat);
   const lastRawCost = {};
   for (const e of ledger) {
     const cost = e.usage?.raw?.cost ?? e.rawCost;
@@ -235,7 +267,8 @@ export function rebuildDebate(rows) {
 
   // The event list the board replays. Same shapes as the live engine emits.
   const t = (row) => ({ type: row.type });
-  const events = [{ type: 'started', seats, fieldNotes: head.fieldNotes, options: head.options, chairman: head.chairman, deadlineAt, replayed: true }];
+  const events = [{ type: 'started', seats, fieldNotes, options: head.options, chairman: head.chairman, deadlineAt, replayed: true }];
+  if (research) events.push({ type: 'research', ...research, replayed: true });
   const recoveryWarnings = rows.filter((r) => r.type === 'transcript-recovered').map((r) => ({ ...r, type: 'transcript-warning' }));
   events.push(...recoveryWarnings);
   events.push(...initialNotes.map((note) => ({ type: 'human', round: -1, ...noteRecord(note) })));
@@ -257,13 +290,13 @@ export function rebuildDebate(rows) {
   for (const expired of rows.filter((r) => r.type === 'gate-expired')) events.push({ type: 'gate-expired', round: expired.round });
   if (stop) events.push({ type: 'stopped', reason: stop.reason, rounds: stop.rounds, context: stop.context });
   if (verdict && verdict.skipped) events.push({ type: 'verdict', seat: null, text: verdict.text, usage: null, failed: true, skipped: true, reason: verdict.reason });
-  else if (verdict) events.push({ type: 'chairman-start', seat: verdict.seat }, { type: 'verdict', seat: verdict.seat, text: verdict.text, usage: verdict.usage, attemptId: verdict.attemptId, ...(verdict.failed ? { failed: true, errors: verdict.errors, errorKind: verdict.errorKind, cancelReason: verdict.cancelReason } : {}) });
+  else if (verdict) events.push({ type: 'chairman-start', seat: verdict.seat }, { type: 'verdict', seat: verdict.seat, text: verdict.text, usage: verdict.usage, attemptId: verdict.attemptId, progress: verdict.progress, ...(verdict.failed ? { failed: true, errors: verdict.errors, errorKind: verdict.errorKind, cancelReason: verdict.cancelReason } : {}) });
   if (error && !finished) events.push({ type: 'error', message: error.message });
   if (finished) events.push({ type: 'done', reason: stop?.reason ?? null, replayed: true, synthesis });
   else events.push({ type: 'interrupted', round: rounds.length, partialRound, resumedBefore: resumedRows });
   if (accepted) events.push({ ...accepted, type: 'accepted' });
   return {
-    fieldNotes: head.fieldNotes, seats: seatsWithSessions, chairman: head.chairman, options: head.options,
-    rounds, humanNotes, initialNotes, partialRound, finished, synthesis, deadlineAt, accepted, stopReason: stop?.reason ?? null, stopContext: stop?.context ?? null, verdict, nextRound: rounds.length, events, ledger, recoveryWarnings,
+    fieldNotes, research, seats: seatsWithSessions, chairman: head.chairman, options: head.options,
+    rounds, humanNotes, initialNotes, partialRound, finished, synthesis, deadlineAt, accepted, stopReason: stop?.reason ?? null, stopContext: stop?.context ?? null, verdict, nextRound: rounds.length, events, ledger, policyFailures, recoveryWarnings,
   };
 }

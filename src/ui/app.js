@@ -1,14 +1,15 @@
 import { rollup, hasUsableRound, positions } from '/src/engine.js';
 import { optionLabel } from '/src/contract.js';
-import { poolKey, poolVendor, poolAccount, hostKey, seatKind, initialSeatVendors, nextSeatLens, fillMissingSeatLenses, seatSetupIssue, hiddenMood, lightestModel, HIDDEN_MOODS } from '/src/seats.js';
+import { poolKey, poolVendor, poolAccount, hostKey, seatKind, initialSeatVendors, nextSeatLens, fillMissingSeatLenses, seatSetupIssue, hiddenMood, lightestModel, keyEnvName, HIDDEN_MOODS } from '/src/seats.js';
 import { avatar } from '/ui/avatars.js';
 import { modelsForPlan, retired } from '/src/adapters/models.js';
-import { project, projectedWindows } from '/src/estimate.js';
+import { project, projectedWindows, unknownUsageMessage } from '/src/estimate.js';
 import { PREFLIGHT_TTL_MS } from '/src/preflight.js';
 import { createBrowserDiagnostics, requestAction } from '/ui/diagnostics.js';
 import { installHelp, revealText, MOOD_HELP } from '/ui/help.js';
 import { installCeremony } from '/ui/ceremony.js';
 import { noteRecord, noteLabel } from '/src/notes.js';
+import { progressText } from '/src/progress.js';
 import { unlock as unlockSound, setSound, soundEnabled, playCue } from '/ui/sound.js';
 import { groupQuestions, answerMessage, stopExplanation, cancellationReason, remainingWindow, argumentHtml, ceremonyOutcome, verdictView, verdictResultText } from '/src/review-view.js';
 
@@ -50,6 +51,10 @@ const clientDiagnostics = createBrowserDiagnostics({ storage: diagnosticStorage,
   },
 });
 const errorReference = (diagnostic) => diagnostic?.id ? ` Reference ${diagnostic.id}.${diagnostic.saved === false ? ' The local log could not save this entry.' : ''}` : '';
+const callDetails = (errors, progress) => {
+  const text = (errors || []).join('\n'), details = progressText(progress);
+  return details && !text.includes(details) ? `${text}\n${details}` : text;
+};
 function browserFailure(code, action, message, details) {
   const id = clientDiagnostics.report(code, action, details);
   return new Error(`${message}${errorReference({ id })}`);
@@ -139,6 +144,8 @@ const S = {
 const CONN_LABEL = { idle: 'idle', thinking: 'thinking', replied: 'replied', reprompted: 're-prompted', failed: 'failed', cancelled: 'cancelled', 'timed-out': 'timed out', down: 'out for this debate' };
 // What a failed call's kind means for the human, in one line (adapters/errors.js classifies).
 const ERROR_LINE = {
+  policy: 'The provider tool policy stopped this seat. Its rejected answer is excluded from the discussion.',
+  compatibility: 'The CLI does not support a required restriction. Update it before starting a new review.',
   quota: 'Provider usage limit reached. Wait for the reset or choose another provider.',
   auth: 'Provider login needs attention. Sign in with its CLI, then refresh status.',
   missing: 'Provider CLI not found. Install it and restart Roundtable.',
@@ -183,6 +190,15 @@ async function setup() {
   let saved = null, settings = {};
   try { saved = JSON.parse(localStorage.getItem('roundtable.seats') || 'null'); } catch {}
   try { settings = JSON.parse(localStorage.getItem('roundtable.settings') || '{}') || {}; } catch {}
+  // Migrate old preferences before restoring inputs, including fields on a changed vendor.
+  if (Array.isArray(saved)) {
+    saved = saved.map((s) => s && typeof s === 'object' ? { ...s, keyEnv: keyEnvName(s.keyEnv) } : s);
+    try { localStorage.setItem('roundtable.seats', JSON.stringify(saved)); } catch {}
+  }
+  if (settings.chairman && typeof settings.chairman === 'object') {
+    settings.chairman = { ...settings.chairman, keyEnv: keyEnvName(settings.chairman.keyEnv) };
+    try { localStorage.setItem('roundtable.settings', JSON.stringify(settings)); } catch {}
+  }
   const retained = Array.isArray(saved) ? saved.filter((s) => s && VENDOR_META[s.vendor]) : [];
   S.draft = retained.length >= 2 ? fillMissingSeatLenses(retained) : initialDraft(initialSeatVendors(vendors));
   const filled = retained.length >= 2 ? retained.filter((s) => !String(s.lens || '').trim()).length : 0;
@@ -198,6 +214,12 @@ async function setup() {
   }
   if (['stateless', 'resume'].includes(settings.options?.memory)) $('memory').value = settings.options.memory;
   $('unattended').checked = settings.options?.unattended === true;
+  $('limited-isolation').checked = settings.options?.allowLimitedIsolation === true;
+  $('research-enabled').checked = !!settings.options?.research;
+  $('research-query').value = settings.options?.research?.query || '';
+  $('research-searches').value = settings.options?.research?.maxSearches || 4;
+  $('research-time').value = (settings.options?.research?.timeoutMs || 120000) / 1000;
+  $('research-fields').hidden = !$('research-enabled').checked;
   const ch = settings.chairman;
   if (ch && VENDOR_META[ch.vendor]) {
     chair.value = ch.vendor;
@@ -253,6 +275,7 @@ async function setup() {
   for (const id of ['chairman-endpoint', 'chairman-keyenv']) $(id).addEventListener('input', () => { renderChair(); requestPreflight(); });
   renderChair();
   for (const id of ['chairman-model', 'chairman-effort', 'critique-rounds', 'memory']) $(id).addEventListener('input', renderProjection);
+  $('research-enabled').addEventListener('change', () => { $('research-fields').hidden = !$('research-enabled').checked; renderProjection(); requestPreflight(); });
   $('start').addEventListener('click', start);
   try { S.budget = JSON.parse(localStorage.getItem('roundtable.budget') || '{}') || {}; } catch {}
   renderProjection();
@@ -424,6 +447,7 @@ function requestPreflight({ fresh = false } = {}) {
   clearTimeout(preflightTimer);
   preflightTimer = setTimeout(async () => {
     const seats = [...S.draft, { vendor: $('chairman').value, account: $('chairman-account').value.trim(), endpoint: $('chairman-endpoint').value, keyEnv: $('chairman-keyenv').value }];
+    if ($('research-enabled').checked && !seats.some((s) => s.vendor === 'codex')) seats.push({ vendor: 'codex' });
     const keys = [...new Set([...seats.map((s) => poolKey(s.vendor, seatAccount(s), !!VENDOR_META[s.vendor]?.profiles)),
       ...(S.initialDraft ? Object.keys(VENDOR_META).filter((v) => !isApi(v)) : [])])];
     // an API pool is checked from its URL and key-variable NAME (no request leaves the server);
@@ -689,12 +713,13 @@ const usageLink = (key) => { const m = VENDOR_META[poolVendor(key)]; return m?.u
 function renderProjection() {
   const seats = draftSeats().map((s, i) => ({ ...s, id: `seat-${i}` }));
   const chairman = draftChairman();
-  const p = project({ seats, chairman, critiqueRounds: Number($('critique-rounds').value) || 0, baselines: BASELINES, memory: $('memory').value });
-  const label = (id) => (id === 'chairman' ? 'chairman' : `${seats[Number(id.slice(5))]?.lens || id}`);
-  const colourOf = (id) => (id === 'chairman' ? vendorColour(chairman.vendor) : seats[Number(id.slice(5))]?.colour || 'ink');
+  const p = project({ seats, chairman, critiqueRounds: Number($('critique-rounds').value) || 0, baselines: BASELINES, memory: $('memory').value, research: $('research-enabled').checked });
+  const researcher = seats.find((s) => s.vendor === 'codex') || (chairman.vendor === 'codex' ? chairman : { vendor: 'codex' });
+  const label = (id) => (id === 'chairman' ? 'chairman' : id === 'research' ? 'shared research' : `${seats[Number(id.slice(5))]?.lens || id}`);
+  const colourOf = (id) => (id === 'chairman' ? vendorColour(chairman.vendor) : id === 'research' ? vendorColour('codex') : seats[Number(id.slice(5))]?.colour || 'ink');
   $('projection').innerHTML = Object.values(p.byVendor).map((v) => {
     // the vendor's seats all on one account: that account's pool; mixed: the default one
-    const keys = new Set(v.seats.map((id) => (id === 'chairman' ? seatPool(chairman) : seatPool(seats[Number(id.slice(5))]))));
+    const keys = new Set(v.seats.map((id) => seatPool(id === 'chairman' ? chairman : id === 'research' ? researcher : seats[Number(id.slice(5))])));
     const pool = keys.size === 1 ? [...keys][0] : v.vendor;
     const q = S.quota[pool];
     const pw = projectedWindows(S.calib, pool, v.seats.map((id) => p.bySeat[id])) || [];
@@ -723,7 +748,7 @@ function renderProjection() {
   const vs = Object.values(p.byVendor);
   const rounds = Number($('critique-rounds').value) || 0;
   const priced = vs.filter((v) => v.cost != null);
-  $('start-summary').innerHTML = seats.length ? `<b>${seats.length} seats</b> · ${seats.length * (rounds + 1) + 1} planned calls before retries · ≈ ${k(vs.reduce((n, v) => n + v.total, 0))} tokens${priced.length ? ` · ≈ $${priced.reduce((n, v) => n + v.cost, 0).toFixed(2)} for ${priced.map((v) => esc(VENDOR_LABEL[v.vendor] || v.vendor)).join(', ')}` : ''}` : '';
+  $('start-summary').innerHTML = seats.length ? `<b>${seats.length} seats</b> · ${seats.length * (rounds + 1) + 1 + ($('research-enabled').checked ? 1 : 0)} planned calls before retries · ≈ ${k(vs.reduce((n, v) => n + v.total, 0))} tokens${priced.length ? ` · ≈ $${priced.reduce((n, v) => n + v.cost, 0).toFixed(2)} for ${priced.map((v) => esc(VENDOR_LABEL[v.vendor] || v.vendor)).join(', ')}` : ''}` : '';
 }
 
 function clearSetupValidation() {
@@ -756,15 +781,16 @@ async function start() {
   const body = {
     fieldNotes, seats: draftSeats(),
     chairman: draftChairman(),
-    options: { critiqueRounds: Number($('critique-rounds').value), autoContinueMs: Number($('auto').value) * 1000, wallClockMs: Number($('wall').value) * 60000, memory: $('memory').value, unattended: $('unattended').checked, budget: budgetBody() },
+    options: { critiqueRounds: Number($('critique-rounds').value), autoContinueMs: Number($('auto').value) * 1000, wallClockMs: Number($('wall').value) * 60000, memory: $('memory').value, unattended: $('unattended').checked, allowLimitedIsolation: $('limited-isolation').checked, budget: budgetBody(),
+      ...($('research-enabled').checked ? { research: { query: $('research-query').value.trim(), maxSearches: Number($('research-searches').value), timeoutMs: Number($('research-time').value) * 1000 } } : {}) },
   };
   try {
     localStorage.setItem('roundtable.notes', JSON.stringify(notes));
-    localStorage.setItem('roundtable.seats', JSON.stringify(S.draft));
+    localStorage.setItem('roundtable.seats', JSON.stringify(S.draft.map((s) => ({ ...s, keyEnv: keyEnvName(s.keyEnv) }))));
     localStorage.setItem('roundtable.budget', JSON.stringify(S.budget));
     localStorage.setItem('roundtable.settings', JSON.stringify({ options: body.options, chairman: {
       vendor: $('chairman').value, model: $('chairman-model').value, effort: $('chairman-effort').value,
-      account: $('chairman-account').value, endpoint: $('chairman-endpoint').value, keyEnv: $('chairman-keyenv').value,
+      account: $('chairman-account').value, endpoint: $('chairman-endpoint').value, keyEnv: keyEnvName($('chairman-keyenv').value),
     } }));
   } catch {}
   const issue = seatSetupIssue(S.draft);
@@ -926,7 +952,7 @@ function openBoard(slug) {
 function resetBoard({ clearDrafts = false } = {}) {
   replyReveals.clear();
   Object.assign(S, { seats: [], fieldNotes: null, rows: [], rounds: [], expanded: new Set(), humanNotes: [], initialNotes: [], gate: null, deadline: null, held: false, verdict: null, status: 'idle', startedAt: null, stopReason: null, pending: new Set(), chairman: null, configuredChairman: null, interrupted: null, stopQueued: false, finishQueued: false, error: null, conn: {}, positions: [], accepted: null, synthesis: null, down: {},
-    budgetStop: null, exported: null, exportError: null, replayed: false, connected: null, chairmanFallback: null, transcriptWarning: null, unattended: false,
+    budgetStop: null, exported: null, exportError: null, replayed: false, connected: null, chairmanFallback: null, transcriptWarning: null, unattended: false, research: null,
     actionPending: null, actionError: null, holdPending: false, synthChoice: null, stopContext: null, reviewDeadline: null }); // hash routing reuses S: nothing from the last board
   if (clearDrafts || !S.questionDrafts) S.questionDrafts = {};
   if (clearDrafts) { $('question-inputs').replaceChildren(); delete $('question-inputs').dataset.signature; $('usage-details').open = false; $('decision-actions').open = false; }
@@ -942,6 +968,7 @@ function handle(e) {
   switch (e.type) {
     case 'started': resetBoard(); S.seats = e.seats; S.fieldNotes = e.fieldNotes; S.unattended = !!e.options?.unattended; S.configuredChairman = e.chairman || null; S.reviewDeadline = e.deadlineAt; S.status = 'running'; S.startedAt = Date.now(); $('board-title').textContent = e.fieldNotes.decision; document.title = `${e.fieldNotes.decision} · Roundtable`; $('board-empty').hidden = false; break;
     case 'resumed': S.status = 'running'; S.interrupted = null; S.reviewDeadline = e.deadlineAt; S.startedAt = Date.now(); S.pending.clear(); break;
+    case 'research': S.research = e; if (!e.replayed) S.status = e.status === 'running' ? 'researching' : 'running'; break;
     case 'interrupted': S.status = 'interrupted'; S.interrupted = e; S.pending.clear(); break;
     case 'round-start': S.rounds[e.round] = []; S.pending = new Set(S.seats.map((s) => s.index)); $('board-empty').hidden = true; break;
     case 'seat-start': break;
@@ -977,7 +1004,9 @@ function handle(e) {
     case 'export-failed': S.exportError = e.error + errorReference(e.diagnostic); break;
     case 'transcript-warning': S.transcriptWarning = e; break;
     case 'error':
-      S.status = 'error'; S.gate = null; S.deadline = null; S.pending.clear(); S.error = e.message + errorReference(e.diagnostic);
+      S.status = e.recoverable ? e.recoveryFinished ? 'done' : 'interrupted' : 'error';
+      if (e.recoverable && !e.recoveryFinished) S.interrupted = { round: S.round };
+      S.gate = null; S.deadline = null; S.pending.clear(); S.error = e.message + errorReference(e.diagnostic);
       if (e.fatal) { closeBoard(); $('board-title').textContent = 'Transcript needs repair'; document.title = 'Transcript needs repair · Roundtable'; }
       break;
   }
@@ -1007,8 +1036,9 @@ function card(r, position = null, provisional = false) {
     const line = cancelled === 'human' ? 'Cancelled when you pressed Stop. Earlier replies are kept; this seat did not finish this round.'
       : cancelled === 'finish' ? 'Discussion ended for the verdict. Earlier replies are kept; this seat did not finish this round.'
       : cancelled === 'wall-clock' ? 'Cancelled because the review time limit expired. Earlier replies are kept.'
-      : (r.skipped ? `Skipped: ${VENDOR_LABEL[seat.vendor] || seat.vendor} is out for this debate.` : (ERROR_LINE[r.errorKind] || 'The provider call failed. Check the details and save the error log.')) + errorReference(r.diagnostic);
-    body = `<p class="fail-line ${cancelled ? 'muted' : 'danger'}">${esc(line)}${r.resetsAt ? ` Resets ${esc(new Date(r.resetsAt).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}.` : ''}</p><details class="fail-detail"><summary>Details</summary><pre>${esc((r.errors || []).join('\n') + (cancelled ? errorReference(r.diagnostic) : ''))}</pre></details>`;
+      : (r.errorKind === 'policy' ? r.errors?.[0] || 'This seat is stopped by the provider tool policy.' : r.skipped ? `Skipped: ${VENDOR_LABEL[seat.vendor] || seat.vendor} is out for this debate.` :
+        (r.errorKind === 'budget' && r.errors?.[0] ? r.errors[0] : ERROR_LINE[r.errorKind] || 'The provider call failed. Check the details and save the error log.')) + errorReference(r.diagnostic);
+    body = `<p class="fail-line ${cancelled ? 'muted' : 'danger'}">${esc(line)}${r.resetsAt ? ` Resets ${esc(new Date(r.resetsAt).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}.` : ''}</p><details class="fail-detail"><summary>Details</summary><pre>${esc(callDetails(r.errors, r.progress) + (cancelled ? errorReference(r.diagnostic) : ''))}</pre></details>`;
   }
   else if (r.parsed.pass) body = '<span class="muted">Nothing new to add.</span>';
   else if (!r.valid) body = `<pre>${esc(r.text)}</pre>`;
@@ -1076,10 +1106,11 @@ function renderUsage() {
   // last: the seat's input in the latest round it took part in (cache included), the figure that
   // says whether rounds stay flat (stateless) or grow (resume)
   const row = (name, x, cls = '', last = null, position = null) => `<tr class="${cls}" data-position="${esc(position || 'none')}"><td>${name}</td><td class="data">${tokens(x.input, x)}</td><td class="data">${tokens(x.cacheRead + x.cacheWrite, x)}</td><td class="data">${tokens(x.output, x)}</td><td class="data">${cost(x.cost, x)}</td><td class="data">${secs(x.ms)}</td><td class="data">${last ? `${tokens(last.usage.input + last.usage.cacheRead + last.usage.cacheWrite, last.usage)}<span class="seat-meta">r${esc(last.round)}</span>` : ''}</td></tr>`;
-  const pools = [...new Set([...S.seats.map(seatPool), ...(S.chairman ? [seatPool(S.chairman)] : [])])];
+  const pools = [...new Set([...S.seats.map(seatPool), ...(S.chairman ? [seatPool(S.chairman)] : []), ...(u.bySeat.research ? [seatPool(u.bySeat.research.seat)] : [])])];
   const rows = [];
   for (const pool of pools) {
     rows.push(`<tr class="pool-row"><td colspan="7">${poolLine(pool)}</td></tr>`);
+    if (u.bySeat.research && seatPool(u.bySeat.research.seat) === pool) rows.push(row('Codex · shared research', u.bySeat.research.usage));
     const seated = [...S.seats.filter((s) => seatPool(s) === pool), ...(S.chairman && seatPool(S.chairman) === pool ? [S.chairman] : [])];
     for (const seat of seated) {
       const x = u.bySeat[seat.id]?.usage;
@@ -1143,7 +1174,7 @@ function renderVerdict() {
   if (!v) return;
   if (v.skipped) { $('verdict-body').innerHTML = `<p class="wide">${esc(v.text)}</p><div class="verdict-meta">${S.rounds.length} rounds · stopped: ${esc(S.stopReason)} · debates/${esc(S.slug)}/</div>`; return; }
   // A malformed or failed reply stays diagnostic; it cannot be copied as a completed result.
-  if (v.failed) { $('verdict-body').innerHTML = `<p class="wide danger">${esc(ERROR_LINE[v.errorKind] || 'The chairman could not write a verdict. Check the details and save the error log.')} After resolving the problem, write the verdict again from the bar below.${esc(errorReference(v.diagnostic))}</p><details class="wide"><summary>Details</summary><pre>${esc(v.errors?.join('\n') || v.text)}</pre></details>`; return; }
+  if (v.failed) { $('verdict-body').innerHTML = `<p class="wide danger">${esc(ERROR_LINE[v.errorKind] || 'The chairman could not write a verdict. Check the details and save the error log.')} After resolving the problem, write the verdict again from the bar below.${esc(errorReference(v.diagnostic))}</p><details class="wide"><summary>Details</summary><pre>${esc(callDetails(v.errors || [v.text], v.progress))}</pre></details>`; return; }
   const view = verdictView(v.text, S.fieldNotes?.options);
   const section = (title, items, cls = '') => items.length
     ? `<section class="section ${cls}"><h3 class="label">${esc(title)}</h3>${items.length === 1 ? `<p>${esc(items[0])}</p>` : `<ul>${items.map((item) => `<li>${esc(item)}</li>`).join('')}</ul>`}</section>` : '';
@@ -1263,6 +1294,11 @@ function updateReviewTime() {
 
 function renderReviewState() {
   const terminal = ['done', 'error'].includes(S.status);
+  if (S.status === 'researching' && !S.stopQueued) {
+    $('review-state').innerHTML = '<strong>Gathering shared web evidence</strong><p>Discussion starts after the source bundle is saved. Stop cancels this call.</p>';
+    $('review-state').classList.remove('finished');
+    return;
+  }
   const title = S.status === 'done' ? S.synthesis === 'done' ? 'Review finished' : S.stopReason === 'human' ? 'Review stopped' : 'Review ended · no verdict' : S.stopQueued ? 'Stopping review' : S.status === 'verdict' ? 'Discussion finished · writing verdict' : S.finishQueued ? 'Finishing discussion' : S.status === 'waiting' ? 'Waiting for your input' : S.status === 'interrupted' ? 'Review interrupted' : S.status === 'error' ? 'Review stopped unexpectedly' : 'Discussion in progress';
   const text = S.status === 'done' ? `${stopExplanation(S.stopReason, S.stopContext)} ${S.synthesis === 'done' ? 'Read the conclusion below, then record your decision if ready.' : hasUsableRound(S.rounds, S.seats.length) ? 'You can request a verdict from the saved replies.' : 'No usable replies were collected. Start a new review to get a verdict.'}` : S.stopQueued ? 'Cancelling calls. No further calls will start.' : S.status === 'verdict' ? 'Your notes are saved. The chairman is preparing the recommendation.' : S.finishQueued ? 'Cancelling unfinished seat calls, then writing the verdict from collected replies.' : S.status === 'waiting' ? 'Questions are collected below. Your answers are sent together.' : terminal ? 'Review the saved replies and error log before retrying.' : '';
   $('review-state').innerHTML = `<strong>${esc(title)}</strong>${text ? `<p>${esc(text)}</p>` : ''}`;
@@ -1302,7 +1338,7 @@ function budgetLine() {
   const name = esc(VENDOR_LABEL[b.vendor] || b.vendor);
   if (b.kind === 'usd-unknown') return `<span class="status danger">budget</span> ${name} has a dollar cap, but its cost is not reported, so the ${esc(b.what)} was not run. `;
   if (b.kind === 'tokens-unknown') return `<span class="status danger">budget</span> ${name} did not report token usage. Further calls to this vendor are blocked under its token cap; ${esc(b.what)} was not run. `;
-  if (b.kind === 'seat-tokens-unknown') return `<span class="status warn">seat cap</span> That seat did not report complete token usage, so ${esc(b.what)} was not run. Its further calls are blocked under the seat cap; other seats can continue. `;
+  if (b.kind === 'seat-tokens-unknown') return `<span class="status warn">usage unknown</span> ${esc(unknownUsageMessage(b.cause))} Other seats can continue. `;
   // one seat reached its own cap for this review: that seat sits out, the others go on
   if (b.kind === 'seat-tokens') return `<span class="status warn">seat cap</span> the ${esc(b.what)} was not made: that seat has used ${esc(k(b.spent || 0))} of its ${esc(k(b.cap || 0))}-token cap for this review. The others go on. `;
   const unit = b.kind === 'usd' ? (n) => `$${(n || 0).toFixed(2)}` : (n) => `${k(n || 0)} tokens`;
@@ -1325,7 +1361,21 @@ function renderBanners() {
   $('banners').innerHTML = items.join('');
 }
 
+function renderResearch() {
+  const r = S.research;
+  $('research-panel').hidden = !r;
+  if (!r) { $('research-body').textContent = ''; return; }
+  if (r.status !== 'done') {
+    $('research-body').textContent = r.status === 'running' ? `Codex is collecting evidence: at most ${r.maxSearches} reported search operations, ${Math.round(r.timeoutMs / 1000)} seconds.`
+      : r.error || 'Research was interrupted. It will not rerun automatically.';
+    return;
+  }
+  $('research-body').innerHTML = `<p class="hint">${r.searches} reported search operation${r.searches === 1 ? '' : 's'} · gathered ${esc(r.gatheredAt)}. Every seat and the chairman receive this same saved bundle. Citations, excerpts and publication dates are supplied by Codex and are not independently checked.</p>`
+    + (r.sources || []).map((s) => `<details><summary>${esc(s.id)} · ${esc(s.title)}</summary><p><a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.url)}</a></p><p>${esc(s.excerpt)}</p><p class="hint">Published: ${esc(s.publishedAt || 'not reported')}</p></details>`).join('');
+}
+
 function render() {
+  renderResearch();
   $('rounds').classList.toggle('compact', S.compact);
   $('rounds').innerHTML = S.rounds.map((r, i) => renderRound(i, r, i === S.rounds.length - 1)).join('');
   renderUsage(); renderVerdict(); renderGate(); renderAccept(); renderExportStatus(); renderBanners();

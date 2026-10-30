@@ -11,7 +11,8 @@
 // this slug under `roundtable:`, and an index region between two marker comments. Everything
 // outside the region is kept byte for byte; any other file in the way is refused, never
 // replaced.
-import { existsSync, statSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { existsSync, statSync, lstatSync, realpathSync, readFileSync, writeFileSync, openSync, closeSync, fchmodSync, renameSync, unlinkSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { rebuildDebate, normaliseRows } from './store.js';
@@ -63,7 +64,7 @@ const STOPPED = new Set(['human', 'wall-clock', 'budget', 'all-failed', 'seats-d
 const yaml = (v) => (typeof v === 'string' && /[:#"'\n]|^\s|\s$/.test(v) ? JSON.stringify(v) : String(v));
 const k = (n) => (n || 0).toLocaleString('en-US');
 
-export function decisionRecord(rows, slug, { warnings = [] } = {}) {
+export function decisionRecord(rows, slug, { warnings = [], metadataOnly = false } = {}) {
   rows = normaliseRows(rows);
   const rb = rebuildDebate(rows);
   if (!rb) throw new Error('No field-notes row: nothing to export.');
@@ -103,6 +104,8 @@ export function decisionRecord(rows, slug, { warnings = [] } = {}) {
   const status = accepted ? 'accepted' : failedVerdict ? 'no verdict' : !rb.finished || !verdictRow || verdictRow.skipped || STOPPED.has(rb.stopReason) ? 'stopped' : chosen === 'no consensus' || chosen === 'no pick' ? 'split' : 'recommended';
   const usage = rollup(rows);
   const recoveryMessages = [...new Set([...rb.recoveryWarnings, ...warnings].map((w) => w.message).filter(Boolean))];
+  const meta = { title: fn.decision, date, slug, status, chosen: accepted ?? chosen, recommended, accepted, stopReason: rb.stopReason, file: `${slug}.md` };
+  if (metadataOnly) return { meta, summary: { decision: fn.decision, finished: rb.finished, seats: seats.length, rounds: rb.rounds.length, usage: usage.total, warning: recoveryMessages.at(-1) || null } };
 
   // where the seat ran is part of the record: a CLI on a subscription, or an API endpoint by URL
   const where = (s) => (s.endpoint ? `API ${s.endpoint}` : 'CLI');
@@ -156,6 +159,8 @@ export function decisionRecord(rows, slug, { warnings = [] } = {}) {
     return u ? `| ${s.label || s.vendor} · ${s.lens} | ${tokens(u.input, u)} | ${tokens(u.cacheRead + u.cacheWrite, u)} | ${tokens(u.output, u)} | ${costCell(u)} |` : null;
   }).filter(Boolean);
   const ch = usage.bySeat.chairman?.usage;
+  const researchUsage = usage.bySeat.research?.usage;
+  if (researchUsage) usageRows.push(`| Codex shared research | ${tokens(researchUsage.input, researchUsage)} | ${tokens(researchUsage.cacheRead + researchUsage.cacheWrite, researchUsage)} | ${tokens(researchUsage.output, researchUsage)} | ${costCell(researchUsage)} |`);
   if (ch) usageRows.push(`| chairman (${rb.chairman?.vendor || '?'}) | ${tokens(ch.input, ch)} | ${tokens(ch.cacheRead + ch.cacheWrite, ch)} | ${tokens(ch.output, ch)} | ${costCell(ch)} |`);
   const t = usage.total;
   const usageTable = usageRows.length
@@ -178,6 +183,11 @@ export function decisionRecord(rows, slug, { warnings = [] } = {}) {
     ...(recoveryMessages.length ? section('Record recovery', recoveryMessages.join('\n\n')) : []),
     ...section('Question', `${fn.decision}\n\nOptions:\n${options.map((o) => `- ${o}`).join('\n')}`),
     ...section('Field notes', notesBody),
+    ...(rb.research ? section('Shared web evidence', rb.research.status === 'done'
+      ? ['Provider-supplied citations, excerpts and publication dates; not independently verified. Every seat received this saved bundle.',
+        `Gathered: ${rb.research.gatheredAt}. Reported search operations: ${rb.research.searches}.`,
+        ...rb.research.sources.map((s) => `### ${s.id}: ${s.title.replace(/[\r\n]/g, ' ')}\n\n<${s.url}>\n\nPublished: ${s.publishedAt || 'not reported'}\n\n> ${s.excerpt.replace(/\r?\n/g, '\n> ')}`)].join('\n\n')
+      : rb.research.error || 'Research was interrupted; no source bundle was saved.') : []),
     ...section('Tally', [tally, tallyCount].filter(Boolean).join('\n\n')),
     ...section('Recommendation', recommendation),
     ...(v.TALLY ? section("Chairman's tally", v.TALLY) : []),
@@ -189,7 +199,6 @@ export function decisionRecord(rows, slug, { warnings = [] } = {}) {
     `_Exported by roundtable from debates/${slug}/transcript.jsonl._`,
     '',
   ].join('\n');
-  const meta = { title: fn.decision, date, slug, status, chosen: accepted ?? chosen, recommended, accepted, stopReason: rb.stopReason, file: `${slug}.md` };
   return { markdown: md, meta };
 }
 
@@ -238,9 +247,10 @@ export function ownsRecord(text, slug) {
 // forbid: further directories the caller will not write into (the server's own debates dir).
 export function validateTarget(target, { forbid = [] } = {}) {
   if (!target || typeof target !== 'string') throw new Error('Export needs a target directory.');
-  const abs = path.resolve(target);
+  let abs = path.resolve(target);
   if (!existsSync(abs) || !statSync(abs).isDirectory()) throw new Error(`Export target is not an existing directory: ${abs}`);
-  const same = (dir) => path.relative(path.resolve(dir), abs) === '';
+  abs = realpathSync(abs);
+  const same = (dir) => path.relative(existsSync(dir) ? realpathSync(dir) : path.resolve(dir), abs) === '';
   if (path.parse(abs).root === abs) throw new Error(`Refusing to export into a filesystem root: ${abs}`);
   if (same(os.homedir())) throw new Error(`Refusing to export into the home directory: ${abs}. Pick a decisions folder inside a project.`);
   for (const f of forbid) if (same(f)) throw new Error(`Refusing to export into ${abs}: roundtable keeps its own transcripts there.`);
@@ -256,25 +266,42 @@ export function recordPath(target, slug, opts) {
 }
 
 // Temp file in the same directory, then rename: a reader never sees half a file.
-function writeAtomic(file, text) {
-  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(tmp, text);
-  renameSync(tmp, file);
+function writeAtomic(file, text, mode) {
+  const tmp = `${file}.${randomUUID()}.tmp`;
+  const fd = openSync(tmp, 'wx', mode ?? 0o666);
+  try {
+    try {
+      writeFileSync(fd, text);
+      // Creation respects umask; an existing record/index keeps its exact access bits.
+      if (mode != null && process.platform !== 'win32') fchmodSync(fd, mode);
+    } finally { closeSync(fd); }
+    renameSync(tmp, file);
+  } finally { if (existsSync(tmp)) unlinkSync(tmp); }
+}
+
+function regularOrAbsent(file) {
+  try {
+    const s = lstatSync(file);
+    if (!s.isFile() || s.isSymbolicLink()) throw new Error(`Refusing linked or non-file export destination: ${file}`);
+    return s.mode & 0o777;
+  } catch (e) { if (e.code !== 'ENOENT') throw e; }
 }
 
 // Every check runs before the first write, so a refusal leaves the directory untouched.
 export function exportDebate(rows, slug, target, opts) {
   const file = recordPath(target, slug, opts);
+  const mode = regularOrAbsent(file);
   if (existsSync(file) && !ownsRecord(readFileSync(file, 'utf8'), slug)) throw new Error(`Refusing to replace ${file}: it was not written by roundtable for this debate.`);
   const { markdown, meta } = decisionRecord(rows, slug, opts);
-  let indexPath = null, indexText = null;
+  let indexPath = null, indexText = null, indexMode;
   for (const name of ['README.md', 'DECISIONS.md']) {
     const p = path.join(path.dirname(file), name);
+    const candidateMode = regularOrAbsent(p);
     const next = updateIndex(existsSync(p) ? readFileSync(p, 'utf8') : null, meta);
-    if (next != null) { indexPath = p; indexText = next; break; }
+    if (next != null) { indexPath = p; indexText = next; indexMode = candidateMode; break; }
   }
   if (!indexPath) throw new Error(`Refusing to export into ${path.dirname(file)}: README.md and DECISIONS.md both exist and neither is a roundtable index.`);
-  writeAtomic(file, markdown);
-  writeAtomic(indexPath, indexText);
+  writeAtomic(file, markdown, mode);
+  writeAtomic(indexPath, indexText, indexMode);
   return { path: file, indexPath, meta };
 }

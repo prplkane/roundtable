@@ -13,19 +13,20 @@ import { retired } from './adapters/models.js';
 import { vendorCatalogue } from './adapters/catalogue.js';
 import { createDebate, DEFAULTS } from './engine.js';
 import { normaliseSeats, normaliseChairman, MOODS, COLOURS, poolKey, poolVendor, poolAccount } from './seats.js';
-import { slugFor, openDebateDir, rebuildDebate, normaliseRows } from './store.js';
+import { slugFor, openDebateDir, rebuildDebate } from './store.js';
 import { exportDebate, validateTarget, decisionRecord } from './export.js';
 import { rollup, hasUsableRound } from './engine.js';
 import { windowDeltas, updateCalibration, migrateCalibration, CALIBRATION_VERSION, project } from './estimate.js';
-import { readFileSync, writeFileSync, statSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { fakeRunner, fakeQuota } from './fake.js';
 import { validateDebateRequest, validateMessage, validateAccept, BODY_LIMIT } from './validate.js';
 import { createDiagnostics, diagnosticAction, validateBrowserDiagnostics } from './diagnostics.js';
 import { answerMessage } from './review-view.js';
+import { createSettingsStore } from './settings.js';
 import { noteRecord, storedNote } from './notes.js';
 import { reviewSnapshot } from './snapshot.js';
 import { pickFolder } from './folder-picker.js';
-import { dataDirectory, acquireDataLock, historyIds, checkedHistoryPath, removeHistory, createUsageStore } from './history.js';
+import { dataDirectory, acquireDataLock, historyIds, checkedHistoryPath, removeHistory, createUsageStore, createHistoryIndex } from './history.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const UI = path.join(ROOT, 'src', 'ui');
@@ -54,6 +55,7 @@ const ORIGINS = new Set([...HOSTS].map((h) => `http://${h}`));
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.md': 'text/plain; charset=utf-8' };
 
 const debates = new Map(); // slug -> live debate record
+let shuttingDown = false;
 
 // Model ids and effort levels per vendor. `agy models` is a network call, so it is read once in
 // the background at boot; the setup screen gets the static hints until it lands.
@@ -75,10 +77,14 @@ usageStore.sync((e) => {
 const baselines = usageStore.baselines();
 // The fake board must never teach the real projection: it measures into its own file.
 const CALIB_FILE = path.join(DEBATES_DIR, FAKE ? '_calibration.fake.json' : '_calibration.json');
+const calibrationStore = createSettingsStore(CALIB_FILE, { onError: (e) => {
+  diagnostics.write({ code: 'storage-failed', action: 'calibration' }, e);
+  console.warn('[calibration] Settings unreadable; restore the file and restart before saving.');
+} });
 let calibration = {};
-const saveCalibration = () => { try { writeFileSync(CALIB_FILE, JSON.stringify({ _version: CALIBRATION_VERSION, ...calibration }, null, 2)); } catch (e) { diagnostics.write({ code: 'storage-failed', action: 'calibration' }, e); console.warn('[calibration]', e.message); } };
+const saveCalibration = () => { try { calibrationStore.save({ _version: CALIBRATION_VERSION, ...calibration }); } catch (e) { diagnostics.write({ code: 'storage-failed', action: 'calibration' }, e); console.warn('[calibration]', e.message); } };
 try {
-  const m = migrateCalibration(JSON.parse(readFileSync(CALIB_FILE, 'utf8')), { subsetVendors: Object.keys(ADAPTERS).filter((v) => ADAPTERS[v].cacheSemantics === 'subset') });
+  const m = migrateCalibration(calibrationStore.value, { subsetVendors: Object.keys(ADAPTERS).filter((v) => ADAPTERS[v].cacheSemantics === 'subset') });
   calibration = m.calibration;
   if (m.dropped.length) { console.log(`[calibration] dropped ${m.dropped.join(', ')}: measured before cached input was counted once`); saveCalibration(); }
 } catch { /* none yet */ }
@@ -88,8 +94,11 @@ const snapshotQuota = () => JSON.parse(JSON.stringify(quota));
 // "AI credits" page is browser-only). Kept with its time so the strip can say how old it is, and
 // decremented on the board by each debate's weighted tokens at the user's own rate when given.
 const POOLS_FILE = path.join(DEBATES_DIR, FAKE ? '_pools.fake.json' : '_pools.json');
-let pools = {};
-try { pools = JSON.parse(readFileSync(POOLS_FILE, 'utf8')); } catch { /* none yet */ }
+const poolStore = createSettingsStore(POOLS_FILE, { onError: (e) => {
+  diagnostics.write({ code: 'storage-failed', action: 'pools' }, e);
+  console.warn('[pools] Settings unreadable; restore the file and restart before saving.');
+} });
+let pools = poolStore.value;
 function setPool(vendor, body) {
   const remaining = Number(body.remaining);
   if (!ADAPTERS[vendor]) throw new Error('Unknown vendor.');
@@ -97,9 +106,9 @@ function setPool(vendor, body) {
   const perToken = body.perToken == null || body.perToken === '' ? null : Number(body.perToken);
   if (perToken != null && !(Number.isFinite(perToken) && perToken >= 0)) throw new Error('Units per token must be a finite number of 0 or more.');
   const next = { ...pools, [vendor]: { remaining, unit: String(body.unit || 'credits').slice(0, 24), perToken, note: String(body.note || '').slice(0, 120), at: Date.now() } };
-  writeFileSync(POOLS_FILE, JSON.stringify(next, null, 2));
+  poolStore.save(next);
   pools = next;
-  for (const d of debates.values()) push(d, { type: 'pool', vendor, pool: pools[vendor] });
+  for (const d of debates.values()) if (activeDebate(d) || d.clients.size) push(d, { type: 'pool', vendor, pool: pools[vendor] });
   return pools[vendor];
 }
 
@@ -130,7 +139,7 @@ function settleRound(d, r) {
     const keys = [pool];
     if (models[pool].size === 1) { const key = `${pool}:${[...models[pool]][0]}`; calibration = updateCalibration(calibration, key, deltas, t); keys.push(key); }
     changed = true;
-    for (const key of keys) for (const x of debates.values()) push(x, { type: 'calibration', vendor: pool, key, windows: calibration[key], round: r, tokens: t, deltas });
+    for (const key of keys) for (const x of debates.values()) if (activeDebate(x) || x.clients.size) push(x, { type: 'calibration', vendor: pool, key, windows: calibration[key], round: r, tokens: t, deltas });
   }
   if (changed) saveCalibration();
 }
@@ -155,7 +164,7 @@ function sseLine(d, i, replayed = false) { return `id: ${d.gen}:${i}\ndata: ${JS
 function push(d, event) {
   let code;
   if (event.cancelReason) code = 'call-cancelled';
-  else if (event.type === 'attempt' && event.errorKind) code = 'provider-failed';
+  else if ((event.type === 'attempt' || event.type === 'research') && event.errorKind) code = 'provider-failed';
   else if ((event.type === 'reply' && event.valid === false) || (event.type === 'verdict' && event.failed)) code = event.failed && event.errorKind !== 'format' ? 'provider-failed' : 'reply-invalid';
   else if (event.type === 'reprompt') code = 'reply-invalid';
   else if (event.type === 'error') code = 'engine-failed';
@@ -164,7 +173,8 @@ function push(d, event) {
   else if (event.type === 'budget') code = 'provider-failed';
   if (code && !event.diagnostic) {
     const diagnostic = diagnostics.write({ code, action: event.type === 'export-failed' ? 'export' : 'events',
-      vendor: event.seat?.vendor, kind: event.errorKind || (event.type === 'budget' ? 'budget' : undefined), cancelReason: event.cancelReason, round: event.round, line: event.line });
+      vendor: event.seat?.vendor, kind: event.errorKind || (event.type === 'budget' ? 'budget' : undefined), cancelReason: event.cancelReason, round: event.round, line: event.line,
+      progress: event.progress, systemCode: event.systemCode });
     event = { ...event, diagnostic };
   }
   d.events.push(event);
@@ -174,6 +184,28 @@ function push(d, event) {
 function replayFrom(d, lastEventId) {
   const m = /^(\d+):(\d+)$/.exec(lastEventId || '');
   return m && Number(m[1]) === d.gen ? Number(m[2]) + 1 : 0;
+}
+
+// Active engines and connected boards are never evicted. Inactive replay bodies are bounded;
+// summaries have a separate small cache and never require keeping the transcript in memory.
+function pruneReplays(keep = null) {
+  for (const [id, d] of debates) {
+    if (debates.size <= 32) break;
+    if (d !== keep && !activeDebate(d) && !d.clients.size) debates.delete(id);
+  }
+}
+
+function recoverFailed(d) {
+  if (!d.needsRecovery) return;
+  const warnings = [];
+  const store = openDebateDir(DEBATES_DIR, d.slug, { create: false });
+  const rb = store && rebuildDebate(store.readTranscript({ onWarning: (w) => warnings.push(w) }));
+  if (!rb) throw new Error('The saved review needs repair before it can resume.');
+  d.store = store;
+  d.debate = null; d.rebuilt = rb; d.finished = rb.finished; d.interrupted = !rb.finished;
+  d.needsRecovery = false; d.gen = Date.now(); d.events = [];
+  for (const event of rb.events) push(d, { ...event, replayed: true });
+  for (const warning of warnings) push(d, { ...warning, type: 'transcript-warning' });
 }
 
 // A slug the server does not hold in memory (after a restart): rebuild the record from its
@@ -192,6 +224,7 @@ function loadDebate(slug) {
   for (const [key, windows] of Object.entries(calibration)) push(d, { type: 'calibration', vendor: key.split(':')[0], key, windows });
   for (const [vendor, pool] of Object.entries(pools)) push(d, { type: 'pool', vendor, pool });
   debates.set(slug, d);
+  pruneReplays(d);
   console.log(`[${slug}] loaded from disk: ${rebuilt.finished ? 'finished' : `interrupted after round ${rebuilt.nextRound - 1}`}`);
   return d;
 }
@@ -200,6 +233,7 @@ function loadDebate(slug) {
 // their recorded session ids, used when memory is 'resume') and runs from the first incomplete
 // round. A message belongs to the last complete round, or precedes round zero if none completed.
 function resumeDebate(d, body = {}) {
+  recoverFailed(d);
   if (!d.interrupted) throw new Error(d.finished ? 'This debate is finished.' : 'This debate is running.');
   prepareTranscript(d);
   const rb = d.rebuilt;
@@ -212,7 +246,7 @@ function resumeDebate(d, body = {}) {
     push(d, row);
   }
   d.interrupted = false;
-  attachEngine(d, { fieldNotes: rb.fieldNotes, seats: rb.seats, chairman: rb.chairman, options: { ...DEFAULTS, ...(rb.options || {}) }, resume: { rounds: rb.rounds, humanNotes: rb.humanNotes, initialNotes: rb.initialNotes, ledger: rb.ledger, deadlineAt: rb.deadlineAt } });
+  attachEngine(d, { fieldNotes: rb.fieldNotes, seats: rb.seats, chairman: rb.chairman, options: { ...DEFAULTS, ...(rb.options || {}) }, resume: { rounds: rb.rounds, humanNotes: rb.humanNotes, initialNotes: rb.initialNotes, ledger: rb.ledger, policyFailures: rb.policyFailures, research: rb.research, deadlineAt: rb.deadlineAt } });
   console.log(`[${d.slug}] resumed from round ${rb.nextRound}`);
 }
 
@@ -273,34 +307,19 @@ async function preflight(keys, { refresh = false, fresh = false, endpoints = {} 
 function activeDebate(d) {
   return !!d && (d.synthesizing || !d.finished && !d.interrupted && d.debate?.state.status !== 'error' || liveChildren(d.slug).length > 0);
 }
-function listDebates() {
-  const dirs = historyIds(DEBATES_DIR);
-  const withTime = dirs.map((slug) => { const f = path.join(DEBATES_DIR, slug, 'transcript.jsonl'); return existsSync(f) ? { slug, f, t: statSync(f).mtimeMs } : null; }).filter(Boolean);
-  withTime.sort((a, b) => b.t - a.t);
-  const out = [];
-  for (const { slug, t } of withTime) {
-    try {
-      const warnings = [];
-      const rows = openDebateDir(DEBATES_DIR, slug, { create: false }).readTranscript({ onWarning: (w) => warnings.push(w) });
-      const rb = rebuildDebate(rows);
-      if (!rb) continue;
-      const { meta } = decisionRecord(rows, slug);
-      const live = debates.get(slug);
-      const state = activeDebate(live) ? 'running' : rb.finished ? 'finished' : 'interrupted';
-      const u = rollup(normaliseRows(rows)).total;
-      out.push({ slug, decision: rb.fieldNotes.decision, date: slug.slice(0, 10), updated: t, state, status: state === 'finished' ? meta.status : state,
-        warning: (warnings.at(-1) || rb.recoveryWarnings.at(-1))?.message || null,
-        chosen: meta.chosen, recommended: meta.recommended, accepted: meta.accepted, seats: rb.seats.length, rounds: rb.rounds.length,
-        tokens: u.tokenCoverage?.reported === 0 ? null : u.input + u.cacheRead + u.cacheWrite + u.output,
-        tokensPartial: !!(u.tokenCoverage && u.tokenCoverage.reported < u.tokenCoverage.of),
-        cost: u.cost, costPartial: !!(u.costCoverage && u.costCoverage.reported < u.costCoverage.of) });
-    } catch (e) {
-      diagnostics.write({ code: 'transcript-warning', action: 'history', line: e.line }, e);
-      console.warn(`[list] ${slug}: ${e.message}`);
-      out.push({ slug, decision: slug, date: slug.slice(0, 10), updated: t, state: 'corrupt', status: 'corrupt', warning: e.message });
-    }
-  }
-  return out;
+const historyIndex = createHistoryIndex(DEBATES_DIR, { onWarning: (e, slug) => {
+  diagnostics.write({ code: 'transcript-warning', action: 'history', line: e.line }, e);
+  console.warn(`[list] ${slug}: ${e.message}`);
+} });
+async function listDebates() {
+  return (await historyIndex.list()).map(({ usage: u, finished, ...row }) => {
+    if (row.state === 'corrupt') return row;
+    const state = activeDebate(debates.get(row.slug)) ? 'running' : finished ? 'finished' : 'interrupted';
+    return { ...row, state, status: state === 'finished' ? row.status : state,
+      tokens: u.tokenCoverage?.reported === 0 ? null : u.input + u.cacheRead + u.cacheWrite + u.output,
+      tokensPartial: !!(u.tokenCoverage && u.tokenCoverage.reported < u.tokenCoverage.of),
+      cost: u.cost, costPartial: !!(u.costCoverage && u.costCoverage.reported < u.costCoverage.of) };
+  });
 }
 
 function deleteSessions(ids, finishedOnly = false) {
@@ -322,6 +341,7 @@ function deleteSessions(ids, finishedOnly = false) {
   Object.assign(baselines, usageStore.baselines());
   for (const { d } of records) {
     removeHistory(DEBATES_DIR, d.slug);
+    historyIndex.invalidate(d.slug);
     push(d, { type: 'deleted' });
     for (const client of d.clients) client.end();
     d.clients.clear(); clearTimeout(d.timer); debates.delete(d.slug);
@@ -335,6 +355,7 @@ function deleteSessions(ids, finishedOnly = false) {
 // body.chairman (optional): write it with another vendor, for example when the first chairman's
 // quota ran out. Checked like the setup screen's chairman.
 function synthesizeDebate(d, body = {}) {
+  recoverFailed(d);
   if (!d.finished) throw new Error(d.interrupted ? 'This debate was interrupted; resume it first.' : 'This debate is still running.');
   if (d.synthesizing) throw new Error('The verdict is being written.');
   const rb = rebuildDebate(d.store.readTranscript());
@@ -350,7 +371,7 @@ function synthesizeDebate(d, body = {}) {
   d.synthesizing = true;
   d.finished = false;
   attachEngine(d, { fieldNotes: rb.fieldNotes, seats: rb.seats, chairman, options: { ...DEFAULTS, ...(rb.options || {}) }, synthesisOnly: true,
-    resume: { rounds: rb.rounds, humanNotes: rb.humanNotes, initialNotes: rb.initialNotes, ledger: rb.ledger, stopReason: rb.stopReason } });
+    resume: { rounds: rb.rounds, humanNotes: rb.humanNotes, initialNotes: rb.initialNotes, ledger: rb.ledger, policyFailures: rb.policyFailures, research: rb.research, stopReason: rb.stopReason } });
   console.log(`[${d.slug}] writing the verdict`);
 }
 
@@ -364,7 +385,7 @@ const keyOf = (vendor, account) => poolKey(vendor, account, poolsByAccount(ADAPT
 function setQuota(key, q) {
   if (!q) return;
   quota[key] = q;
-  for (const d of debates.values()) push(d, { type: 'quota', vendor: key, quota: q });
+  for (const d of debates.values()) if (activeDebate(d) || d.clients.size) push(d, { type: 'quota', vendor: key, quota: q });
 }
 
 // One read per pool at a time: a read asked for while one is running shares its result.
@@ -413,6 +434,9 @@ function prepareDebate(raw, { board = false } = {}) {
     if (r) throw new Error(`${ADAPTERS[s.vendor].label} retired ${s.model} (${r.date}); use ${r.instead}.`);
   }
   const chairman = normaliseChairman(body.chairman, { vendors: ADAPTERS, efforts: effortsByVendor() });
+  if (!FAKE && !body.options.allowLimitedIsolation && [...seats, chairman].some((s) => s && ADAPTERS[s.vendor]?.limitedIsolation)) {
+    throw Object.assign(new Error('Antigravity has limited isolation. Enable Allow limited isolation explicitly, or choose another provider.'), { status: 400 });
+  }
   return { fieldNotes, seats, chairman, options: { ...DEFAULTS, ...body.options } };
 }
 
@@ -466,13 +490,16 @@ function attachEngine(d, { fieldNotes, seats, chairman, options, resume = null, 
       cwd: store.seatDir(opts.seat?.id || 'chairman'), home: opts.seat?.account && ADAPTERS[vendor].home ? profileHome(vendor, opts.seat.account) : null,
       endpoint: opts.seat?.endpoint ? { url: opts.seat.endpoint, keyEnv: opts.seat.keyEnv || null } : null, // an API seat: where to send the round
       timeoutMs: opts.timeoutMs, prevCost: opts.prevCost, model: opts.model || undefined, effort: opts.effort || undefined, tag: d.slug,
+      allowLimitedIsolation: opts.allowLimitedIsolation,
+      research: opts.research,
       minimal: !!opts.seat?.mood?.hidden, // a hidden mood runs as cheaply as its vendor allows
     });
   // Every reply either carries the vendor's quota or triggers a separate read (not awaited).
   const runner = async (vendor, ...rest) => {
+    if (shuttingDown) throw Object.assign(new Error('The server is shutting down.'), { code: 'KILLED', kind: 'killed' });
     const r = await call(vendor, ...rest);
     const key = keyOf(vendor, rest[2]?.seat?.account);
-    if (r.quota) setQuota(key, r.quota); else refreshQuota(key);
+    if (!shuttingDown) { if (r.quota) setQuota(key, r.quota); else refreshQuota(key); }
     return r;
   };
 
@@ -487,7 +514,7 @@ function attachEngine(d, { fieldNotes, seats, chairman, options, resume = null, 
 
   d.debate = createDebate({
     fieldNotes, seats, chairman, options, runner, gate, store, resume, baselines, provenance: FAKE ? { fake: true } : {}, synthesisOnly,
-    cancel: (reason) => { const n = killAll(d.slug); if (n) console.log(`[${d.slug}] ${reason === 'human' ? 'stop' : reason === 'finish' ? 'finish discussion' : reason === 'error' ? 'engine error' : 'wall clock'}: cancelled ${n} call${n === 1 ? '' : 's'}`); },
+    cancel: (reason) => { const n = killAll(d.slug); if (n) console.log(`[${d.slug}] ${reason === 'human' ? 'stop' : reason === 'finish' ? 'finish discussion' : reason === 'interrupted' ? 'server shutdown' : reason === 'error' ? 'engine error' : 'wall clock'}: cancelled ${n} call${n === 1 ? '' : 's'}`); },
     emit: (type, payload) => {
       // run() rejects with the original Error after emitting this. Its catch below logs a
       // sanitized source location and sends one useful failure instead of exposing internals.
@@ -500,13 +527,19 @@ function attachEngine(d, { fieldNotes, seats, chairman, options, resume = null, 
         try { usageStore.record(d.slug, d.store.readTranscript()); usageStore.save(); Object.assign(baselines, usageStore.baselines()); }
         catch (error) { diagnostics.write({ code: 'storage-failed', action: 'history' }, error); }
         autoExport(d, fieldNotes.exportTo);
+        pruneReplays(d);
       }
     },
   });
-  d.debate.run().catch((e) => {
+  d.runPromise = d.debate.run().catch((e) => {
     d.synthesizing = false;
+    clearTimeout(d.timer); d.timer = null; d.pending = null;
+    d.needsRecovery = true; d.interrupted = true; d.finished = false;
     const diagnostic = diagnostics.write({ code: 'engine-failed', action: 'events' }, e);
-    push(d, { type: 'error', message: 'The review stopped unexpectedly. Check saved history and save the error log before trying again.', diagnostic });
+    try { recoverFailed(d); } catch { /* retry reading on Resume after storage is repaired */ }
+    push(d, { type: 'error', recoverable: true, recoveryFinished: d.finished,
+      message: 'The review stopped unexpectedly. Fix any storage problem, then resume or request the missing verdict from saved history.', diagnostic });
+    pruneReplays(d);
     console.error(`[${d.slug}]`, e.message);
   });
 }
@@ -582,6 +615,7 @@ const server = http.createServer(async (req, res) => {
     const isRead = req.method === 'GET' && (!p.startsWith('/api/') || p === '/api/seats' || p === '/api/debates' || p === '/api/preflight' || /\/(events|state)$/.test(p));
     const no = refuse(req, isRead);
     if (no) return requestError(res, no[0], no[1], diagnosticAction(p));
+    if (shuttingDown && !isRead) return requestError(res, 503, 'The server is shutting down.', diagnosticAction(p));
     if (p === '/') {
       const html = (await readFile(path.join(UI, 'index.html'), 'utf8')).replace('<meta name="roundtable-token" content="">', `<meta name="roundtable-token" content="${TOKEN}">`);
       res.writeHead(200, { 'content-type': MIME['.html'], 'cache-control': 'no-store', 'set-cookie': `rt_board=${BOARD_COOKIE}; HttpOnly; SameSite=Strict; Path=/` });
@@ -618,7 +652,7 @@ const server = http.createServer(async (req, res) => {
     }
     const pm = p.match(/^\/api\/pools\/([a-z]+)$/);
     if (pm && req.method === 'POST') return json(res, 200, { pool: setPool(pm[1], await readBody(req)) });
-    if (req.method === 'GET' && p === '/api/debates') return json(res, 200, { debates: listDebates(), usage: usageStore.summary(FAKE) });
+    if (req.method === 'GET' && p === '/api/debates') return json(res, 200, { debates: await listDebates(), usage: usageStore.summary(FAKE) });
     if (req.method === 'POST' && p === '/api/debates/clear-finished') {
       const body = await readBody(req);
       return json(res, 200, deleteSessions(body?.ids, true));
@@ -637,8 +671,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/preview') {
       const plan = prepareDebate(await readBody(req), { board: fromBoard(req) });
       return json(res, 200, { valid: true, mode: FAKE ? 'demo' : 'live',
-        plannedCalls: plan.seats.length * (plan.options.critiqueRounds + 1) + 1,
-        projection: project({ seats: plan.seats, chairman: plan.chairman || { vendor: plan.seats[0].vendor }, critiqueRounds: plan.options.critiqueRounds, memory: plan.options.memory, baselines }),
+        plannedCalls: plan.seats.length * (plan.options.critiqueRounds + 1) + 1 + (plan.options.research ? 1 : 0),
+        projection: project({ seats: plan.seats, chairman: plan.chairman || { vendor: plan.seats[0].vendor }, critiqueRounds: plan.options.critiqueRounds, memory: plan.options.memory, research: plan.options.research, baselines }),
         note: 'Estimate before retries. Checking does not start a review or call a model.' });
     }
     if (p === '/api/preflight' && (req.method === 'GET' || req.method === 'POST')) {
@@ -670,6 +704,7 @@ const server = http.createServer(async (req, res) => {
       if (m[2] === 'state' && req.method === 'GET') return json(res, 200, reviewSnapshot(d));
       if (m[2] === 'events') {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+        res.flushHeaders(); // let an up-to-date browser reconnect even when there is nothing to replay
         const from = replayFrom(d, req.headers['last-event-id']);
         // A known id means the board was watching and lost the connection: what follows it is
         // new to that board, so endings can still show and sound. With no id, or one from an
@@ -677,7 +712,7 @@ const server = http.createServer(async (req, res) => {
         const asHistory = from === 0;
         for (let i = from; i < d.events.length; i++) res.write(sseLine(d, i, asHistory));
         d.clients.add(res);
-        req.on('close', () => d.clients.delete(res));
+        req.on('close', () => { d.clients.delete(res); pruneReplays(); });
         return;
       }
       const body = validateMessage(await readBody(req));
@@ -745,11 +780,21 @@ server.listen(PORT, '127.0.0.1', () => {
 // No CLI outlives the server: on a signal or an uncaught error every registered child goes
 // (process tree on Windows, process group elsewhere) before the process exits.
 function shutdown(why, code = 0) {
+  if (shuttingDown) return;
+  shuttingDown = true;
   const n = liveChildren().length;
+  for (const d of debates.values()) {
+    d.debate?.requestInterrupt();
+    answerGate(d, { action: 'interrupt' });
+    for (const client of d.clients) client.end();
+    d.clients.clear();
+  }
   killAll();
   console.log(`[server] ${why}${n ? `, killed ${n} CLI process${n === 1 ? '' : 'es'}` : ''}`);
-  server.close(() => process.exit(code));
-  setTimeout(() => process.exit(code), 1500).unref();
+  const exit = () => { killAll(); process.exit(code); };
+  const closed = new Promise((resolve) => server.close(resolve));
+  Promise.allSettled([closed, ...[...debates.values()].map((d) => d.runPromise)]).then(exit);
+  setTimeout(exit, 1500).unref();
 }
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));

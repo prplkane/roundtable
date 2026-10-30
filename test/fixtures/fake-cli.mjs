@@ -26,6 +26,13 @@ async function main() {
     const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => /^(CLAUDE|CODEX|ANTHROPIC|FAKE|MAX_THINKING)/.test(k)));
     writeFileSync(process.env.FAKE_RECORD, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), env, stdin }));
   }
+  if (process.env.FAKE_PRELUDE) {
+    const prelude = process.env.FAKE_PRELUDE;
+    const split = Math.floor(prelude.length / 2);
+    process.stdout.write(prelude.slice(0, split));
+    await new Promise((r) => setTimeout(r, 10));
+    process.stdout.write(prelude.slice(split));
+  }
   if (process.env.FAKE_SLEEP) await new Promise((r) => setTimeout(r, Number(process.env.FAKE_SLEEP)));
   const lines = [];
   if (shape === 'claude') {
@@ -51,7 +58,7 @@ async function main() {
       if (process.env.FAKE_USAGE === 'partial') row.usage = { input_tokens: 10 };
       if (process.env.FAKE_USAGE === 'zero') row.usage = { input_tokens: 0, output_tokens: 0 };
     }
-    return JSON.stringify(row);
+    return JSON.stringify(shape === 'agy' && process.argv.includes('--input-format') ? { event: 'result', result: row } : row);
   });
   process.stdout.write(output.join('\n') + '\n');
   process.exit(Number(process.env.FAKE_EXIT || 0));

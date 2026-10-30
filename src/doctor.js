@@ -1,4 +1,4 @@
-// node src/doctor.js [--live] [--profile <name>] [--vendor <name>]
+// node src/doctor.js [--live] [--profile <name>] [--vendor <name>] [--allow-limited-isolation]
 //
 // What this machine can seat. Per vendor: the binary and where it was found, its version, the
 // models and effort levels the setup screen will offer, the live pool read where one exists
@@ -35,6 +35,7 @@ const flag = (name) => { const i = process.argv.indexOf(`--${name}`); return i >
 
 async function main() {
   const live = process.argv.includes('--live');
+  const allowLimitedIsolation = process.argv.includes('--allow-limited-isolation');
   const profile = flag('profile');
   const only = flag('vendor');
   const { vendorCatalogue } = await import('./adapters/catalogue.js');
@@ -64,16 +65,17 @@ async function main() {
       const q = bin ? await quotaReaders[vendor]() : null;
       console.log(`  pool read  ${q ? q.windows.map((w) => `${w.label} ${(w.used * 100).toFixed(0)}% used`).join(', ') + (q.plan ? ` (plan ${q.plan})` : '') : 'no figure (not logged in, or the app-server read failed)'}`);
     } else console.log(`  pool read  ${a.quota === 'per-call' ? 'rides on each reply (shown with --live)' : `none headless; usage page ${a.usageUrl}`}`);
-    if (live && bin) {
+    if (live && bin && a.limitedIsolation && !allowLimitedIsolation) console.log('  live call  skipped: Antigravity has limited isolation. Add --allow-limited-isolation to consent, or use another provider.');
+    if (live && bin && (!a.limitedIsolation || allowLimitedIsolation)) {
       const t0 = Date.now();
       try {
-        const r = await adapters[vendor]('Reply with exactly the word pong.', null, { timeoutMs: 180_000, cwd: path.join(dataDirectory(), '_doctor', vendor) });
+        const r = await adapters[vendor]('Reply with exactly the word pong.', null, { timeoutMs: 180_000, cwd: path.join(dataDirectory(), '_doctor', vendor), allowLimitedIsolation });
         console.log(`  logged in  yes (${Date.now() - t0} ms)  reply: ${JSON.stringify(r.text.slice(0, 40))}  session: ${r.sessionId}`);
-        console.log(`  usedTools  ${r.usedTools}${r.usedTools ? '  <- a plain reply reached for tools; the guard would re-prompt it' : ''}`);
+        console.log(`  usedTools  ${r.usedTools}`);
         const cost = r.usage?.cost ?? r.cost;
         console.log(`  usage      ${r.usage ? `in ${r.usage.input} cache ${r.usage.cacheRead + r.usage.cacheWrite} out ${r.usage.output} think ${r.usage.thinking}` : 'tokens unknown'}${cost != null ? ` $${cost.toFixed(2)}` : ''}`);
         if (r.quota) console.log(`  windows    ${r.quota.windows.map((w) => `${w.label} ${(w.used * 100).toFixed(0)}% used`).join(', ')}`);
-      } catch (e) { console.log(`  logged in  NO or failed (${Date.now() - t0} ms): ${e.message.slice(0, 200)}`); }
+      } catch (e) { console.log(`  live call  failed (${e.kind || 'other'}, ${Date.now() - t0} ms): ${e.message.slice(0, 200)}`); }
     }
     if (profile) for (const l of loginInstructions(vendor, profile)) console.log(`  profile    ${l}`);
   }

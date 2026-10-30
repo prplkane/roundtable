@@ -21,6 +21,128 @@ const reply = (seat, round, stance, extra = {}) => ({
 const VERDICT_OK = 'RECOMMENDATION: opt-1\nShip.\nTALLY:\n- opt-1: all\nDISSENT: none raised\nKILL_CRITERIA:\n- x\nOPEN_QUESTIONS:\n- y';
 const head = (options = {}) => ({ type: 'field-notes', schemaVersion: 2, fieldNotes: FN, seats: SEATS, chairman: { vendor: 'codex' }, options: { critiqueRounds: 2, memory: 'resume', ...options } });
 
+test('legacy tool activity recorded only on an interrupted repair still blocks that seat on resume', async () => {
+  const rows = [head({ strictTools: false }),
+    { type: 'attempt-start', attemptId: 'legacy-tool', round: 0, kind: 'reply', seat: SEATS[0] },
+    { type: 'attempt', attemptId: 'legacy-tool', round: 0, kind: 'reply', seat: SEATS[0], usage: { input: 10, output: 2 } },
+    { type: 'reprompt', attemptId: 'legacy-tool', round: 0, seat: SEATS[0], usedTools: true, text: 'PRIVATE_REJECTED_TEXT' },
+  ];
+  const rb = rebuildDebate(rows), calls = [];
+  assert.equal(rb.ledger.length, 1, 'retaining policy state must not double-charge the attempt');
+  assert.equal(rb.ledger[0].usage.input, 10);
+  await createDebate({ fieldNotes: FN, seats: rb.seats, chairman: rb.chairman, options: { ...rb.options, critiqueRounds: 0 }, resume: rb,
+    gate: async () => ({ action: 'continue' }), runner: async (v, prompt, sid, opts) => {
+      calls.push(opts.seat.id);
+      assert.ok(!prompt.includes('PRIVATE_REJECTED_TEXT'));
+      return { text: opts.seat.id === 'chairman' ? VERDICT_OK : text('opt-1'), usage: { input: 1, output: 1 } };
+    } }).run();
+  assert.ok(!calls.includes('seat-0'));
+});
+
+test('interrupted resume seeds completed history and every note without reusing mutable provider threads', async () => {
+  for (const partialReply of [false, true]) {
+    const rows = [head({ seatTokenCap: 0 }),
+      ...[0, 1].flatMap((r) => SEATS.map((s, i) => reply(s, r, i === 1 ? 'Wait a sprint' : 'Ship now', { rawCost: 20 }))),
+      { type: 'human', round: 0, text: 'Keep the older correction.' },
+      { type: 'human', round: 1, text: 'Keep the latest correction.' },
+      { type: 'attempt-start', attemptId: 'unfinished', round: 2, kind: 'reply', seat: SEATS[0] },
+      ...(partialReply ? [reply(SEATS[0], 2, 'Ship now', { text: 'DISCARDED_PROVIDER_CONTEXT', attemptId: 'unfinished' })] : []),
+    ];
+    const rb = rebuildDebate(rows), calls = [], saved = [];
+    assert.equal(rb.partialRound, partialReply ? 2 : null);
+    const d = createDebate({ fieldNotes: FN, seats: rb.seats.map((s) => ({ ...s, lastRawCost: 20 })), chairman: rb.chairman,
+      options: rb.options, resume: rb, gate: async () => ({ action: 'continue' }), store: { append: (r) => saved.push(r) },
+      runner: async (vendor, prompt, sid, opts) => {
+        calls.push({ prompt, sid, prevCost: opts.prevCost, id: opts.seat.id });
+        return { text: opts.seat.id === 'chairman' ? VERDICT_OK : text('Ship now'), usage: { input: 1, output: 1 }, sessionId: `fresh-${opts.seat.id}` };
+      } });
+    await d.run();
+    for (const c of calls.filter((c) => c.id !== 'chairman')) {
+      assert.equal(c.sid, null); assert.equal(c.prevCost, undefined);
+      assert.match(c.prompt, /DECISION: Ship\?/);
+      assert.match(c.prompt, /Keep the older correction/); assert.match(c.prompt, /Keep the latest correction/);
+      assert.doesNotMatch(c.prompt, /DISCARDED_PROVIDER_CONTEXT/);
+      const input = c.prompt.split('\n').filter((l) => l.startsWith('{')).map(JSON.parse);
+      assert.deepEqual([...new Set(input.filter((r) => r.kind === 'seat').map((r) => r.round))], [0, 1]);
+    }
+    assert.equal(rb.ledger.filter((a) => a.attemptId === 'unfinished' && a.unknown).length, 1, 'spent or uncertain calls remain accounted for');
+    assert.equal(saved.filter((r) => r.type === 'field-notes').length, 0);
+  }
+});
+
+test('recovery uses fresh projections for seat caps and round admission, and admits a fitting fresh call', async () => {
+  for (const scenario of [
+    { vendor: 'claude', spent: 387000, budget: {}, blocked: true, kind: 'seat-tokens', projected: 14500 },
+    { vendor: 'claude', spent: 387000, budget: { claude: { tokens: 400000 } }, blocked: true, kind: 'tokens', projected: 14500 },
+    { vendor: 'codex', spent: 375000, budget: {}, blocked: false },
+  ]) {
+    const rows = [head({ critiqueRounds: 1, budget: scenario.budget }), ...SEATS.map((seat, i) =>
+      reply(seat, 0, i === 1 ? 'Wait a sprint' : 'Ship now', { usage: {
+        input: seat.vendor === scenario.vendor ? scenario.spent : 1, output: 0, cacheRead: 0, cacheWrite: 0,
+      } }))];
+    const rb = rebuildDebate(rows), calls = [], saved = [];
+    await createDebate({ fieldNotes: FN, seats: rb.seats, chairman: { vendor: 'agy' }, options: rb.options, resume: rb,
+      store: { append: (row) => saved.push(row) }, gate: async () => ({ action: 'continue' }),
+      runner: async (vendor, prompt, sessionId, { seat }) => {
+        calls.push({ vendor, sessionId, id: seat.id });
+        return { text: seat.id === 'chairman' ? VERDICT_OK : text('Ship now'), usage: { input: 1, output: 1 }, sessionId: 'fresh-session' };
+      },
+    }).run();
+    const targetCalls = calls.filter((call) => call.vendor === scenario.vendor && call.id !== 'chairman');
+    assert.equal(targetCalls.length, scenario.blocked ? 0 : 1);
+    if (scenario.blocked) {
+      const refusal = saved.find((row) => row.type === 'budget' && row.vendor === scenario.vendor);
+      assert.equal(refusal.kind, scenario.kind); assert.equal(refusal.projected, scenario.projected);
+    } else assert.equal(targetCalls[0].sessionId, null, 'fresh recovery fits even when a resumed call would not');
+  }
+});
+
+test('synthesis cancellation preserves the discussion stop through replay and export, even before a verdict row', async () => {
+  const rows = [head(), ...SEATS.map((s) => reply(s, 0, 'Ship now')), { type: 'stop', reason: 'consensus', rounds: 1 },
+    { type: 'synthesize', stopReason: 'consensus' }, { type: 'synthesis-cancelled', reason: 'human', rounds: 1 }];
+  const rb = rebuildDebate(rows);
+  assert.equal(rb.stopReason, 'consensus'); assert.equal(rb.synthesis, 'skipped'); assert.equal(rb.verdict.reason, 'human');
+  const { decisionRecord } = await import('../src/export.js');
+  assert.match(decisionRecord(rows, 'review').markdown, /stop_reason: consensus/);
+});
+
+test('dispatch intents survive a hard interruption and become one unknown attempt per unfinished call', async () => {
+  const { ledgerEntries, rollup } = await import('../src/engine.js');
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rt-dispatch-')), store = openDebateDir(root, 'review');
+  let snapshot, dispatched = 0;
+  const pending = [];
+  const d = createDebate({ fieldNotes: FN, seats: SEATS.slice(0, 2), chairman: { vendor: 'claude' }, store,
+    options: { critiqueRounds: 0, unattended: true, budget: { claude: { tokens: 60000 }, codex: { tokens: 60000 } } },
+    gate: async () => ({}), runner: async (_, __, ___, { signal }) => {
+      dispatched++; snapshot = store.readTranscript();
+      assert.equal(snapshot.filter((r) => r.type === 'attempt-start').length, dispatched, 'intent is on disk before the runner');
+      return new Promise((resolve, reject) => { pending.push(resolve); signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true }); });
+    } });
+  const running = d.run();
+  assert.equal(dispatched, 2);
+  const rb = rebuildDebate(snapshot);
+  assert.equal(rb.ledger.length, 2); assert.ok(rb.ledger.every((a) => a.usage === null && a.unknown));
+  assert.equal(rollup(rb.events).unknownAttempts, 2);
+  let resumedCalls = 0;
+  const resumed = createDebate({ fieldNotes: rb.fieldNotes, seats: rb.seats, chairman: { vendor: 'claude' }, resume: rb,
+    options: rb.options, runner: async () => { resumedCalls++; return {}; }, store: { append() {} }, gate: async () => ({}) });
+  assert.equal((await resumed.run()).stopReason, 'budget'); assert.equal(resumedCalls, 0);
+  d.requestStop(); await running;
+  const completed = store.readTranscript();
+  assert.equal(ledgerEntries(completed).length, 2, 'start and settlement never count twice');
+  const settled = { type: 'attempt', attemptId: rb.ledger[0].attemptId, seat: rb.ledger[0].seat, usage: { input: 3, output: 2, usageVersion: 3 } };
+  assert.deepEqual(rollup([...snapshot, settled]).total.tokenCoverage, { reported: 1, of: 2 });
+});
+
+test('failed durable dispatch writes start no provider work', async () => {
+  let calls = 0;
+  const d = createDebate({ fieldNotes: FN, seats: SEATS, options: { unattended: true }, gate: async () => ({}),
+    store: { append(row) { if (row.type === 'attempt-start') throw new Error('Synthetic dispatch write failure'); } },
+    runner: async () => { calls++; return {}; } });
+  await assert.rejects(d.run(), /Synthetic dispatch write failure/);
+  assert.equal(calls, 0);
+});
+
 test('notes before round zero survive replay and export separately from later gate notes', async () => {
   const rows = [head(), { type: 'human', round: -1, text: 'First correction before starting.' },
     { type: 'human', round: -1, text: 'Second correction after another interruption.' },
@@ -97,7 +219,7 @@ test('rebuildDebate: an unfinished transcript is interrupted; a partial round is
   assert.equal(atVerdict.nextRound, 1);
 });
 
-test('the engine resumes from the first incomplete round without a second field-notes row, and resumes recorded sessions in resume mode', async () => {
+test('the engine resumes from the first incomplete round without rewriting notes and seeds fresh provider sessions', async () => {
   const rows = [
     head(),
     reply(SEATS[0], 0, 'Ship now'), reply(SEATS[1], 0, 'Wait a sprint'), reply(SEATS[2], 0, 'Ship now'),
@@ -118,8 +240,8 @@ test('the engine resumes from the first incomplete round without a second field-
   assert.equal(appended[0].type, 'resumed');
   const r1 = calls.filter((c) => /^Round 1 of/m.test(c.prompt));
   assert.equal(r1.length, 3, 'the partial round 1 is re-run for every seat');
-  assert.deepEqual(r1.map((c) => c.sessionId), ['sess-seat-0', 'sess-seat-1', 'sess-seat-2'], 'resume mode continues the recorded sessions');
-  assert.ok(r1.every((c) => /### Seat: /.test(c.prompt)), 'round 1 sees the round-0 replies from the transcript');
+  assert.deepEqual(r1.map((c) => c.sessionId), [null, null, null], 'interrupted provider threads may contain discarded work, so recovery starts clean');
+  assert.ok(r1.every((c) => c.prompt.includes('"kind":"seat"')), 'round 1 sees the round-0 replies from the transcript');
   assert.equal(s.rounds.length, 2, 'round 0 kept, round 1 unanimous: consensus');
   assert.equal(s.stopReason, 'consensus');
   assert.ok(s.verdict.text);

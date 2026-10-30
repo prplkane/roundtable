@@ -30,6 +30,47 @@ async function endpoint(script) {
 }
 const reply = (text, usage = { prompt_tokens: 120, completion_tokens: 30 }, extra = {}) => ({ status: 200, body: { id: 'x', choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: text, ...extra } }], usage } });
 
+test('credential redaction covers the token after HTTP header whitespace normalization', async () => {
+  const key = 'synthetic-credential-probe \t';
+  for (const status of [200, 401]) {
+    const ep = await endpoint((req) => {
+      const received = req.headers.authorization.slice('Bearer '.length);
+      return status === 200 ? reply(received) : { status, body: received };
+    });
+    try {
+      const call = run('hello', null, { endpoint: { url: ep.url, keyEnv: 'TEST_KEY' }, env: { TEST_KEY: key }, model: 'test', timeoutMs: 5000 });
+      if (status === 200) assert.equal((await call).text, '[credential redacted]');
+      else await assert.rejects(call, (e) => e.kind === 'auth' && e.message.includes('[credential redacted]') && !e.message.includes(key.trim()));
+      assert.equal(ep.seen[0].headers.authorization, 'Bearer ' + key.trim());
+    } finally { await ep.close(); }
+  }
+});
+
+test('credential echoes are removed after JSON decoding and before error excerpts are truncated', async () => {
+  const key = 'synthetic-credential-for-testing';
+  const escaped = [...key].map((c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`).join('');
+  for (const result of [reply(`Keep this. ${key}`), { status: 401, body: `{"error":"${escaped}"}` },
+    { body: `invalid {"echo":"${escaped}"` }, { status: 500, body: 'x'.repeat(290) + key },
+    { body: { choices: [{ message: { content: '' }, finish_reason: key }] } }]) {
+    const ep = await endpoint(() => result);
+    try {
+      let response, failure;
+      try {
+        response = await run('hello', null, { endpoint: { url: ep.url, keyEnv: 'TEST_KEY' }, env: { TEST_KEY: key }, model: 'test', timeoutMs: 5000 });
+      } catch (e) { failure = e; }
+      if (result.body?.choices?.[0]?.message?.content?.startsWith('Keep this.')) {
+        assert.ifError(failure);
+        assert.equal(response.text, 'Keep this. [credential redacted]');
+        assert.equal(response.usage.output, 30);
+      } else assert.ok(failure, 'error responses remain failures');
+      const visible = failure ? failure.message + JSON.stringify(failure.raw) : JSON.stringify(response);
+      assert.ok(!visible.includes(key) && !visible.includes(escaped));
+      assert.ok(!visible.includes('synthetic-'), 'no truncated credential prefix');
+      assert.equal(ep.seen[0].headers.authorization, `Bearer ${key}`, 'the intended endpoint still receives its credential');
+    } finally { await ep.close(); }
+  }
+});
+
 test('a call posts one user message to <base>/chat/completions with the model, no tools, and reads text and usage with one meaning', async () => {
   const ep = await endpoint(() => reply('STANCE: opt-1\nfine', { prompt_tokens: 1000, completion_tokens: 50, prompt_tokens_details: { cached_tokens: 400 }, completion_tokens_details: { reasoning_tokens: 20 } }));
   try {
@@ -73,9 +114,21 @@ test('DeepSeek-style usage names the cache hit its own way; content parts are jo
     : reply('', undefined, { tool_calls: [{ id: 'c1', type: 'function', function: { name: 'shell', arguments: '{}' } }] })));
   try {
     assert.equal((await run('parts', null, { endpoint: { url: ep.url }, model: 'm', timeoutMs: 5000 })).text, 'ab');
-    const t = await run('tools', null, { endpoint: { url: ep.url }, model: 'm', timeoutMs: 5000 });
-    assert.equal(t.usedTools, true, 'no tools were offered, so a tool call is a contract violation for the guard');
+    await assert.rejects(run('tools', null, { endpoint: { url: ep.url }, model: 'm', timeoutMs: 5000 }), (e) => e.kind === 'policy' && e.usedTools === true);
   } finally { await ep.close(); }
+});
+
+test('legacy function calls and tool finish reasons reject even a text answer, retaining usage', async () => {
+  for (const representation of ['function', 'finish']) {
+    const ep = await endpoint(() => {
+      const out = reply('This text must not become evidence.', { prompt_tokens: 10, completion_tokens: 5 }, representation === 'function' ? { function_call: { name: 'search', arguments: '{}' } } : {});
+      if (representation === 'finish') out.body.choices[0].finish_reason = 'tool_calls';
+      return out;
+    });
+    try {
+      await assert.rejects(run('q', null, { endpoint: { url: ep.url }, model: 'm' }), (e) => e.kind === 'policy' && e.usage.input === 10 && !e.text);
+    } finally { await ep.close(); }
+  }
 });
 
 test('missing or unusable endpoint usage stays unknown; explicit zero counters are reported', async () => {
@@ -113,6 +166,19 @@ test('failures are classified: nothing listening is network, a slow server is ti
     await assert.rejects(run('html', null, { endpoint: { url: odd.url }, model: 'm', timeoutMs: 5000 }), (e) => e.kind === 'other' && /other than JSON/.test(e.message));
     await assert.rejects(run('empty', null, { endpoint: { url: odd.url }, model: 'm', timeoutMs: 5000 }), (e) => e.kind === 'other' && /empty reply/.test(e.message));
   } finally { await odd.close(); }
+});
+
+test('an endpoint stalled during its body keeps safe transport progress', async () => {
+  const ep = await endpoint(() => ({ writeBody(res) { res.write('{"private":"PRIVATE-MARKER"'); } }));
+  try {
+    await assert.rejects(run('q', null, { endpoint: { url: ep.url }, model: 'm', timeoutMs: 300 }), (e) => {
+      assert.equal(e.kind, 'timeout');
+      assert.equal(e.progress.stage, 'body');
+      assert.ok(e.progress.stdoutBytes > 0);
+      assert.doesNotMatch(JSON.stringify(e.progress) + e.message, /PRIVATE-MARKER/);
+      return true;
+    });
+  } finally { await ep.close(); }
 });
 
 test('an HTTP error carries the status and the body\'s first words, through httpErrorKind, and the seat rules refuse a bad endpoint before any request', async () => {

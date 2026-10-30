@@ -6,6 +6,7 @@
 //   network  the service could not be reached: worth one retry
 //   timeout  the call ran past its time
 //   killed   stopped by the human, the wall clock or a shutdown
+//   policy   the provider boundary could not be trusted: stop this seat for the review
 //   other    anything else: the seat fails for the round, as before
 //
 // classifyError({ message, stdout, stderr, code, label }, now) -> { kind, message, resetsAt, detail }
@@ -40,6 +41,13 @@ export function classifyError({ message = '', stdout = '', stderr = '', code = n
   // the CLI's own last words carry the reason; the wrapper's message frames it
   const text = [message, stderr, stdout.split(/\r?\n/).filter((l) => /error|fail|limit|login|denied|quota/i.test(l)).slice(-3).join('\n')].join('\n');
   const detail = String(message).slice(0, 600);
+  if (code === 'RESEARCH_LIMIT') return { kind: 'budget', message: 'The reported search-operation limit was exceeded. Research stopped before discussion.', resetsAt: null, detail };
+  if (code === 'RESEARCH_INVALID') return { kind: 'format', message: 'Research did not produce usable web evidence. Discussion was not started; check the research details before trying again.', resetsAt: null, detail };
+  if (code === 'TOOL_POLICY') return { kind: 'policy', message: 'Provider tool policy rejected this call. This seat is stopped for the review.', resetsAt: null, detail };
+  if (code === 'PROVIDER_PROTOCOL') return { kind: 'policy', message: 'Provider output could not be validated. This seat is stopped for the review.', resetsAt: null, detail };
+  if (code === 'OUTPUT_LIMIT') return { kind: 'policy', message: 'Provider output exceeded the local size limit. This seat is stopped for the review.', resetsAt: null, detail };
+  if (code === 'ISOLATION_REQUIRED') return { kind: 'policy', message: 'Antigravity cannot disable all shared customizations or MCP discovery. Enable Allow limited isolation explicitly, or choose another provider.', resetsAt: null, detail };
+  if (/unknown (?:option|argument)|unexpected argument|unrecognized (?:option|argument)/i.test(text)) return { kind: 'compatibility', message: `${label} does not support a required CLI option. Update the CLI; Roundtable will not retry with weaker restrictions.`, resetsAt: null, detail };
   if (code === 'ENOENT' || /not found on PATH/i.test(text)) return { kind: 'missing', message: `${label} CLI not found on this machine.`, resetsAt: null, detail };
   if (code === 'KILLED') return { kind: 'killed', message: 'Stopped before it answered.', resetsAt: null, detail };
   if (code === 'TIMEOUT') return { kind: 'timeout', message: `${label} did not answer in time.`, resetsAt: null, detail };

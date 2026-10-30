@@ -12,6 +12,10 @@ const seats = [{ vendor: 'claude', lens: 'risk' }, { vendor: 'codex', lens: 'cos
 const reply = (vendor, question = '') => `STANCE: ${vendor === 'claude' ? 'opt-1' : 'opt-2'}\nAGREE_WITH: []\nDISAGREE: different priorities\nNEW: a new constraint\nASSUMPTIONS: bounded trial\nQUESTION_FOR_HUMAN: ${question}`;
 const verdict = 'RECOMMENDATION: opt-1\nTry it.\nDISSENT: cost prefers to wait\nKILL_CRITERIA: an overrun\nOPEN_QUESTIONS: the launch date';
 const response = (text) => ({ text, usage: { input: 10, output: 5 }, sessionId: 'fake-session' });
+const promptNotes = (prompt) => prompt.split('\n').filter((line) => line.startsWith('{'))
+  .map((line) => JSON.parse(line)).filter((row) => row.kind === 'note');
+const assertPromptNote = (prompt, expected) => assert.ok(promptNotes(prompt)
+  .some((note) => Object.entries(expected).every(([key, value]) => note[key] === value)), 'note retains its content and source attribution');
 
 test('explicit no-question placeholders do not become questions', () => {
   for (const value of ['', 'none', 'None.', '**None.**', '`N/A`', 'N/A.', '—', '- none', 'No question.',
@@ -72,14 +76,14 @@ test('agent and human note sources reach seats, retries, chairman, saved rows, r
     assert.deepEqual(events.filter((e) => e.type === 'human'), notes);
     const later = calls.filter((c) => /^Round [12] of/m.test(c.prompt) || c.prompt.startsWith('You are the chairman'));
     for (const { prompt } of later.filter((c) => memory === 'stateless' || !/^Round 2 of/m.test(c.prompt))) {
-      assert.match(prompt, /Agent coordinator — After round 0[^\n]*: Keep the budget unknown\./);
-      assert.doesNotMatch(prompt, /Human[^\n]*Keep the budget unknown/);
+      assertPromptNote(prompt, { author: 'Agent coordinator', source: 'agent', round: 0, after: 'After round 0', text: 'Keep the budget unknown.' });
+      assert.ok(!promptNotes(prompt).some((n) => n.source === 'human' && n.text === 'Keep the budget unknown.'));
     }
     const fresh = calls.filter((c) => c.prompt.includes('Availability remains unknown.'));
     assert.ok(fresh.length >= 3, 'initial notes reach both seats and the chairman');
-    for (const { prompt } of fresh) assert.match(prompt, /Agent coordinator — Before round 0[^\n]*: Availability remains unknown\./);
+    for (const { prompt } of fresh) assertPromptNote(prompt, { author: 'Agent coordinator', source: 'agent', round: -1, after: 'Before round 0', text: 'Availability remains unknown.' });
     if (memory === 'stateless') assert.ok(calls.filter((c) => c.prompt.includes('did not follow the contract')).every((c) => c.prompt.includes('Availability remains unknown.')));
-    assert.match(calls.at(-1).prompt, /Human — After round 1[^\n]*: I can fund the trial\./);
+    assertPromptNote(calls.at(-1).prompt, { author: 'Human', source: 'human', round: 1, after: 'After round 1', text: 'I can fund the trial.' });
     assert.doesNotMatch(calls.map((c) => c.prompt).join('\n'), /\[object Object\]/);
 
     const transcript = [{ type: 'field-notes', schemaVersion: 3, fieldNotes, seats: state.seats, options: { memory, critiqueRounds: 2 } },
@@ -118,7 +122,7 @@ test('a stop note keeps its source for a separately requested verdict, without s
     resume: { rounds: state.rounds, humanNotes: state.humanNotes, stopReason: state.stopReason },
     runner: async (_, prompt) => { prompts.push(prompt); return response(verdict); },
   }).run();
-  assert.match(prompts.at(-1), /Agent coordinator — After round 1[^\n]*: Stop for the coordinator/);
+  assertPromptNote(prompts.at(-1), { author: 'Agent coordinator', source: 'agent', round: 1, after: 'After round 1', text: 'Stop for the coordinator to check the setup.' });
 });
 
 test('legacy replay normalizes false questions without changing source text or usage', () => {

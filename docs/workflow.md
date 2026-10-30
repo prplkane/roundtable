@@ -3,6 +3,18 @@
 Set up providers, run a review, and export a decision record. For data handling and the
 limits of the security controls, see [SECURITY.md](../SECURITY.md).
 
+Export into a dedicated project folder. Aliases to protected directories and linked record
+or index files are refused; a refusal leaves the destination's existing contents intact.
+
+API endpoints receive the credential you configure. Known echoes of that credential are
+removed from new replies and errors before saving; this cannot prevent a chosen endpoint
+from retaining or deliberately encoding it. Older records are not automatically edited.
+
+Replies and discussion notes reach later seats as quoted input records identified by source
+and round. Their original wording is retained. Duplicate contract headers trigger the normal
+format correction; ordinary Markdown inside a reply is allowed. Quoting does not guarantee
+that a model will ignore misleading instructions in another seat's content.
+
 ## 1. What you need
 
 - **Node 22 or newer.** Check with `node --version`.
@@ -53,6 +65,18 @@ codex login
 A browser opens. Sign in with the ChatGPT account that holds your subscription.
 
 ### Antigravity (Google)
+
+Live Antigravity seats require **Allow limited isolation for Antigravity** in the review
+settings (`options.allowLimitedIsolation: true` in an agent request). The option and consent
+requirement are also in `roundtable agent --help`. Session rules deny documented tools, but
+the CLI cannot disable all shared customizations or MCP discovery.
+Use another provider if that limitation is unsuitable. Reported tool activity still stops
+the seat without a retry. Claude and Codex require their isolation flags to be supported;
+an older CLI fails with an update instruction instead of a weaker fallback.
+Invalid, incomplete or oversized provider streams also stop that seat for the review;
+reported spending is retained, and the failed session is not reused.
+The optional live diagnostic command uses the separate `--allow-limited-isolation` flag
+for the same consent; without it, `doctor --live` skips Antigravity's model call.
 
 The `agy` command comes with the Antigravity IDE. Install the IDE and sign in there. If `agy`
 is not found in a terminal afterwards, let it set up your PATH:
@@ -245,7 +269,10 @@ custom text.
   if its own checks pass.
   Every discussion seat also has an automatic limit of 400,000 tokens per review. If its reported
   spend plus the next projected call exceeds the limit, or any earlier call has missing or partial
-  usage, that seat sits out. The board says **seat cap**, and other seats can continue. This check
+  usage, that seat sits out. The board says **seat cap** for a projected crossing, or **usage unknown**
+  for missing counts, and other seats can continue. When recorded, the earlier timeout or
+  interruption is shown. Unknown spending does not mean the cap was measured as exhausted;
+  check the earlier failure and provider usage before starting more work. This check
   applies to retries and resumed reviews too. An in-flight call can exceed its projection; the cap
   blocks subsequent calls. The chairman is governed by the vendor budget, not a discussion seat's
   cap. Without a vendor token cap, unknown usage does not block the chairman.
@@ -359,6 +386,25 @@ selector shows those settings. Choosing another CLI vendor uses that vendor's de
 
 If the server stops in the middle of a debate, start it again and reopen the same address. The
 board replays what happened and offers **Resume**.
+This includes Ctrl+C and normal server shutdown: they interrupt the review, without recording
+a human Stop. Shutdown closes event streams and waits briefly for cancelled calls to save
+their reported spending. If discussion had already ended, **Write** requests its missing verdict.
+
+Resume after an interruption starts fresh provider conversations using completed rounds and
+all saved notes. This avoids reusing unsaved content left in an old provider thread. It can
+resend more input during recovery; ordinary uninterrupted Resume-memory rounds still reuse
+their conversation. Spending from discarded partial rounds continues to count.
+Stopping a verdict records synthesis cancellation separately from why the discussion ended.
+
+Every provider call first saves a dispatch record. If the server stops before the result is
+saved, that call's usage is **unknown**, not zero. Resume keeps that uncertainty: vendor caps
+and automatic seat caps can refuse further work. Check the provider's own usage before
+deciding how to continue. Stopping the server first stops its engines, so cancellation cannot
+start a new chairman request.
+
+If a storage error stops a running review, fix disk space or permissions and then use
+**Resume**, or **Write** when discussion already finished. The server waits for cancelled
+turns to settle before offering recovery. Recovery never starts a call automatically.
 
 A note entered when resuming before round 0 is saved as **Before round 0**. It reaches the
 restarted blind calls, subsequent stateless calls and the chairman, and remains in replay and
@@ -375,6 +421,11 @@ A corrupt completed line is different: the list says **needs repair**, names the
 blocks resume and export. Restore `transcript.jsonl` from a known good backup and restart the
 server. Keep the damaged file until you have checked the restored record; recovery never
 silently skips a corrupt completed line.
+
+Unreadable pool or calibration settings are also preserved. Restore the affected JSON file
+from a known good copy and restart before saving settings. A failed read is not an empty file.
+History lists reuse small summaries for unchanged transcripts; old replay bodies are evicted
+when no review or connected board needs them. Reopening an evicted review reads it from disk.
 
 ## 5. Keep the cost low
 
@@ -415,6 +466,8 @@ notes, the final position of each seat, the recommendation, dissent, kill criter
 questions, your notes and the usage. The same folder gets a `README.md` index of every record
 (`DECISIONS.md` instead when the folder already has a README that roundtable did not write).
 Roundtable only ever replaces files it wrote; anything else in the way is refused.
+On Linux and macOS, replacements preserve the existing record and index permission bits.
+New files use normal file permissions filtered by your shell's umask, including in shared folders.
 
 A record says **recommended** until you decide. Open **Record your decision** under the verdict. **Your decision** has the
 chairman's pick preselected; choose it, another option or "none of these", add a line on why if
@@ -457,6 +510,10 @@ the OpenAI chat-completions API.
 | Model | Required: the endpoint has no default. Type the id the server knows (`llama3`, `deepseek-chat`, `kimi-k2`...). |
 | Effort | Sent as `reasoning_effort` only when you set a pip; a server without that field answers 400, so leave it on default for most local servers. |
 
+Only valid environment-variable names are saved in browser preferences. Invalid values are
+also removed from older saved drafts when the page loads. Keep the actual key in the server's
+environment; the Key var field is never a place to paste it.
+
 What is different from a CLI seat:
 
 - **Billing is the endpoint's.** A hosted API bills per token to the account whose key you
@@ -478,8 +535,9 @@ What is different from a CLI seat:
 - **One pool per host.** Two seats on `localhost:11434` share a pool; a seat on DeepSeek has
   its own. A host that fails (wrong key, no credit, nothing listening) benches only its own seats.
   The token cap, though, is per vendor: one cap covers every endpoint seat at the table.
-- **No tools are offered** in the request. A reply that carries `tool_calls` anyway is treated
-  like a CLI reaching for a tool: one re-prompt, then the seat fails for the round.
+- **No tools are offered** in the request. A reply that carries `tool_calls`, a legacy
+  `function_call`, or a tool finish reason stops that seat for the review. Its answer is
+  excluded from later discussion; its reported spending still counts.
 - **Response size is bounded.** The complete response body, including JSON metadata, must fit
   within 1 MiB after decompression. A larger success or error response is cancelled and the
   card reports the limit; it is not retried as a network failure. Reduce the endpoint's output
@@ -489,6 +547,49 @@ The chairman can be an endpoint too; its card takes the same fields. The decisio
 names the endpoint on each seat's line (`API http://localhost:11434/v1`) and on the chairman's.
 
 ## 8. Run a debate without the browser
+
+### Optional research before discussion
+
+Enable **Research first with Codex** to gather web evidence before the blind replies. Enter
+a separate **Public search question** and review it for private details. Only this question
+goes into research; your field notes and discussion notes are sent later to the selected seats.
+The first Codex seat supplies the research model, effort and login profile; if there is none,
+a Codex chairman supplies them, otherwise the installed CLI uses its default model and login.
+This is one additional subscription call, included in the quota projection and vendor budget.
+The setup estimate also reserves 12,000 input tokens for shared evidence in each discussion
+and verdict call. After research, admission checks use the saved source bundle's UTF-8 size
+divided by three as an additive token estimate, including resumed conversations and repairs.
+Measured dollar baselines are adjusted for that extra input. These are conservative planning
+allowances, not exact token counts or guaranteed spending limits.
+
+Set **Search limit** (1–8 reported operations) and **Time limit** (30–600 seconds). An operation
+can contain several queries or page visits, and can begin before Codex reports it. Roundtable
+stops the call when a reported operation exceeds the limit; it cannot undo upstream work or
+guarantee a provider billing ceiling. Local commands, files, MCP and delegation remain forbidden.
+
+The board saves up to eight sources with URLs, excerpts, publication dates where reported,
+and the time the bundle was gathered. Citations and excerpts are supplied by Codex, not
+independently verified by Roundtable. Every seat and the chairman gets the identical saved
+bundle, with tools disabled during discussion. The source panel, agent state, field-notes
+file and Markdown export include it. Research spending appears as **Codex · shared research**.
+
+Research failure or interruption ends the review before discussion. Check the details and
+provider usage before explicitly starting a new review. Resume never repeats unfinished
+research; completed bundles are reused without refetching pages.
+The agent state reports a fixed failure description and safe progress fields; open the board
+for the original provider error details. Saved failures receive the same filtering.
+
+For the agent client, add this to the request's `options` (leave it out to keep research off):
+
+```json
+{
+  "research": {
+    "query": "Public evidence for a staged release",
+    "maxSearches": 4,
+    "timeoutMs": 120000
+  }
+}
+```
 
 Use the JSON client for coding agents. It returns one compact object per command and waits for
 input instead of answering questions automatically. From a checkout:
@@ -618,6 +719,12 @@ it does not claim your records are gone. A setup-load failure offers **Reload**.
 
 ### Error logs
 
+Provider failure **Details** show whether output arrived, the last observed stage, elapsed
+and idle time, and the exit code when available. A timeout after reasoning is evidence that
+the call started; it does not identify why the provider stalled. Save the error log before
+retrying. A complete usage report received before the stall still counts, while missing
+usage continues to block capped calls. Timeouts are never automatically retried.
+
 Errors include a reference such as `RT-0123456789abcdef`. **Save error log**, available on
 setup and review screens, downloads a JSON file you can share for diagnosis. Note what you
 were doing and the reference ID. Nothing is sent to an assistant or maintainer automatically.
@@ -664,8 +771,8 @@ there is no current snapshot. Refresh with an authenticated JSON `POST /api/pref
 | A red "out" banner on the board | A vendor ran out of quota or lost its login mid-debate. Its seats are skipped from then on (no call, no tokens). If fewer than two seats are left, the debate stops and the chairman writes from what was said. |
 | A seat shows "no reply" in red | Its call failed this round; the card gives a next step, with the CLI's own words under "details". Network failures may retry once if the budget and time limit allow it. The others carry on. |
 | The verdict failed, or was not written | **Write the verdict with** a vendor of your choice, under the bar. If the chairman's vendor ran out, another one is preselected. |
-| "reconnecting" banner | The board lost the server. The debate keeps running there; the board catches up when the connection is back. |
-| A seat is "re-prompted" | Its reply broke the format or it tried to use a tool. It gets one retry. |
+| "reconnecting" banner | The board lost the server. The debate keeps running there; the board catches up when the connection is back. The banner clears even while waiting for input with no new events. |
+| A seat is "re-prompted" | Its reply broke the format. It gets one format repair. Tool activity instead stops the seat without a retry. |
 | "address already in use" | Another server is on that port. Stop it, or start with a different `PORT`. |
 | The board says the debate is unknown | The server was restarted. Reopen the address; the board replays from disk and offers Resume. |
 | A vendor's remaining quota shows nothing | Antigravity never reports it; type the figure from its credits page. Codex shows only a weekly window on some plans. |

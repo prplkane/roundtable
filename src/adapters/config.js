@@ -35,7 +35,7 @@
 //              it. Without a profile the seat shares the CLI's real state directory.
 //  usedTools   (parsed output) => boolean: did the agent reach for a tool or run a command.
 //              Roundtable is for thinking, not doing; the engine treats tool use as a contract
-//              violation (one re-prompt, then the seat fails for the round). For jsonl output
+//              violation that stops that seat for the review. For jsonl output
 //              it receives the event list, for json output the object.
 //  isolation   what keeps an instance from inheriting shared context.
 //              Every instance also runs in its own empty working directory (store.seatDir), so
@@ -48,6 +48,11 @@ const CODEX_TOOL_FEATURES = ['shell_tool', 'unified_exec', 'apps', 'plugins', 'b
   'goals', 'sleep_tool', 'hooks'];
 export const CODEX_NO_TOOLS = ['-c', 'mcp_servers={}', '-c', 'web_search="disabled"',
   ...CODEX_TOOL_FEATURES.flatMap((f) => ['-c', `features.${f}=false`])];
+const CODEX_ISOLATION = ['--ignore-user-config', '--ignore-rules', '--strict-config'];
+const AGY_DENY_TOOLS = ['--settings', JSON.stringify({ toolPermission: 'strict', permissions: {
+  allow: [], ask: [], deny: ['read_file(*)', 'write_file(*)', 'read_url(*)', 'execute_url(*)', 'command(*)', 'mcp(*)'],
+} })];
+const toolBlock = (block) => ['tool_use', 'server_tool_use', 'mcp_tool_use'].includes(block?.type);
 
 export const ADAPTERS = {
   claude: {
@@ -65,11 +70,11 @@ export const ADAPTERS = {
     // two-seat, two-round debate it cut the shared cached part from 2,156 to 1,230 tokens and
     // raised the cost by about 15%.
     args: ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'plan',
-      '--tools', '', '--disable-slash-commands', '--setting-sources', 'local', '--strict-mcp-config'],
+      '--tools', '', '--disable-slash-commands', '--setting-sources', 'local', '--strict-mcp-config', '--safe-mode', '--permission-prompts', 'none'],
     // `--bare` would also skip CLAUDE.md discovery and auto-memory, but it skips keychain reads
-    // too and can report "not logged in", so isolation is by working directory.
+    // too and can report "not logged in". Safe mode preserves login while ignoring customizations.
     home: { env: 'CLAUDE_CONFIG_DIR' },
-    isolation: 'empty cwd per instance, --setting-sources local; own CLAUDE_CONFIG_DIR only for a seat with a named account profile; --bare unusable with keychain login',
+    isolation: 'empty cwd per instance; safe mode skips memory, hooks, plugins and customizations while preserving login; no built-in tools or MCP servers',
     resume: (id, base) => [...base, '--resume', id],
     model: (m) => ['--model', m],
     effort: (e) => ['--effort', e],
@@ -95,7 +100,8 @@ export const ADAPTERS = {
     costIsCumulative: true,
     cacheSemantics: 'additive', // input_tokens is often 2 next to thousands of cache reads
     // a tool_use content block in any assistant message, or more than one turn in the result
-    usedTools: (events) => events.some((e) => e.type === 'assistant' && (e.message?.content || []).some((c) => c?.type === 'tool_use'))
+    usedTools: (events) => events.some((e) => e.type === 'assistant' && Array.isArray(e.message?.content) && e.message.content.some(toolBlock))
+      || events.some((e) => e.type === 'stream_event' && toolBlock(e.event?.content_block))
       || events.some((e) => e.type === 'result' && typeof e.num_turns === 'number' && e.num_turns > 1),
     quota: 'per-call', // see quota.js
     usageUrl: 'https://claude.ai/settings/usage',
@@ -112,12 +118,12 @@ export const ADAPTERS = {
     // NO_TOOLS: no MCP server (the user's config enables node_repl, which runs JavaScript outside
     // the shell sandbox), no web search, and no tool-bearing feature, shell included, so a seat
     // has nothing to call before the wrapper ever looks. All as -c so resume takes them too.
-    args: ['exec', '--json', '--sandbox', 'read-only', '--skip-git-repo-check', '-c', 'project_doc_max_bytes=0', ...CODEX_NO_TOOLS, '-'],
+    args: ['exec', '--json', '--sandbox', 'read-only', '--skip-git-repo-check', ...CODEX_ISOLATION, '-c', 'project_doc_max_bytes=0', ...CODEX_NO_TOOLS, '-'],
     // `exec resume` does not accept --sandbox; the same policy goes through -c.
     resume: (id) => ['exec', 'resume', id, '--json', '--skip-git-repo-check',
-      '-c', 'sandbox_mode="read-only"', '-c', 'project_doc_max_bytes=0', ...CODEX_NO_TOOLS, '-'],
+      ...CODEX_ISOLATION, '-c', 'sandbox_mode="read-only"', '-c', 'project_doc_max_bytes=0', ...CODEX_NO_TOOLS, '-'],
     home: { env: 'CODEX_HOME' },
-    isolation: 'empty cwd per instance, -c project_doc_max_bytes=0; own CODEX_HOME only for a seat with a named account profile',
+    isolation: 'empty cwd per instance; user config and rules ignored, strict config, read-only sandbox, tool feature restrictions and reported-tool guard',
     model: (m) => ['-m', m],
     // Same path as the sandbox policy on resume: one argv element, TOML-quoted.
     effort: (e) => ['-c', `model_reasoning_effort="${e}"`],
@@ -142,7 +148,7 @@ export const ADAPTERS = {
     cacheSemantics: 'subset', // the Codex protocol computes uncached input as input - cached
     // any completed item that is not the message or its reasoning: command_execution, file
     // changes, MCP tool calls, web searches
-    usedTools: (events) => events.some((e) => /^item\.(completed|started)$/.test(e.type) && e.item?.type && !['agent_message', 'reasoning'].includes(e.item.type)),
+    usedTools: (events) => events.some((e) => /^item\.(completed|started|updated)$/.test(e.type) && e.item?.type && !['agent_message', 'reasoning'].includes(e.item.type)),
     quota: 'app-server',
     usageUrl: 'https://chatgpt.com/settings/usage',
     colour: 'olive',
@@ -153,9 +159,10 @@ export const ADAPTERS = {
     kind: 'cli',
     label: 'Antigravity',
     binary: 'agy',
-    args: ['--output-format', 'json', '--mode', 'plan', '--disable-slash-commands'],
+    args: ['--output-format', 'json', '--mode', 'plan', '--disable-slash-commands', ...AGY_DENY_TOOLS],
+    limitedIsolation: true,
     home: null, // no documented environment variable for agy's state directory
-    isolation: 'empty cwd per instance; no flag found to skip GEMINI.md discovery and no state-directory variable',
+    isolation: 'limited isolation: session settings deny documented tools; MCP discovery and shared customization loading cannot be disabled',
     resume: (id, base) => [...base, '--conversation', id],
     model: (m) => ['--model', m],
     effort: (e) => ['--effort', e],
@@ -163,12 +170,12 @@ export const ADAPTERS = {
     effortInModel: /-(low|medium|high)$/,    // `agy models` ids end in the level: gemini-4-argon-high
     modelHints: [], // filled from `agy models` (catalogue.js)
     pool: 'Google AI credits (every id in the agy catalogue, Claude and GPT-OSS included, draws from it)',
-    // `-p=<prompt>` on argv; above ARGV_LIMIT chars switch to stream-json on stdin
-    // (Windows command lines cap at 32k).
-    promptVia: 'argv-or-stdin',
+    // Always stream stdin: prompt text stays off the process command line and intermediate
+    // tool events are available even when the final result omits them.
+    promptVia: 'stdin',
     argvFlag: '-p=',
     stdinArgs: ['--output-format', 'stream-json', '--input-format', 'stream-json',
-      '--mode', 'plan', '--disable-slash-commands'],
+      '--mode', 'plan', '--disable-slash-commands', ...AGY_DENY_TOOLS],
     stdinWrap: (prompt) => JSON.stringify({ event: 'user', message: { role: 'user', content: prompt } }) + '\n',
     output: 'json',
     paths: {
@@ -185,7 +192,9 @@ export const ADAPTERS = {
     costIsCumulative: false,
     cacheSemantics: 'unknown', // two identical 12k prompts reported no cache read
     // more than one turn, or a tool the headless mode had to deny
-    usedTools: (obj) => (typeof obj?.num_turns === 'number' && obj.num_turns > 1) || (Array.isArray(obj?.denied_actions) && obj.denied_actions.length > 0),
+    usedTools: (obj, events = []) => (typeof obj?.num_turns === 'number' && obj.num_turns > 1)
+      || (Array.isArray(obj?.denied_actions) && obj.denied_actions.length > 0)
+      || events.some((e) => e.tool_info != null || e.subagent_info != null || e.step?.tool_info != null || e.step?.subagent_info != null),
     quota: null,
     usageUrl: 'https://antigravity.google/g1-activity', // the CLI's own "AI credits activity" link
     colour: 'teal',

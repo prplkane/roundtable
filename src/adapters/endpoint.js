@@ -17,13 +17,14 @@ import { ADAPTERS } from './config.js';
 import { normaliseUsage, usageCounters } from './common.js';
 import { registerCall } from './spawn.js';
 import { checkEndpointUrl, KEY_ENV_RE } from '../seats.js';
+import { safeProgress, progressText } from '../progress.js';
 
 const cfg = ADAPTERS.api;
 export const MAX_RESPONSE_BYTES = 1024 * 1024;
 
 // fetch exposes decoded bytes, including for compressed responses. Bound those bytes before
 // decoding or parsing, on errors as well as successful replies, and close an oversized stream.
-async function responseText(res) {
+async function responseText(res, onBytes = () => {}) {
   if (!res.body) return '';
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -37,6 +38,7 @@ async function responseText(res) {
       const { value, done } = await reader.read();
       if (done) break;
       bytes += value.byteLength;
+      onBytes(bytes);
       if (bytes > MAX_RESPONSE_BYTES) throw tooLarge();
       text += decoder.decode(value, { stream: true });
     }
@@ -95,11 +97,22 @@ export function pickUsage(u) {
 }
 
 export async function run(prompt, sessionId = null, opts = {}) {
+  const t0 = Date.now(), timeoutMs = opts.timeoutMs ?? 300_000;
+  let firstOutputMs, lastOutputAt = t0, stdoutBytes = 0, stage = 'waiting';
+  const progress = (outcome) => safeProgress({ elapsedMs: Date.now() - t0, timeoutMs, firstOutputMs,
+    idleMs: Date.now() - lastOutputAt, stdoutBytes, stderrBytes: 0, stage, outcome });
   const ep = opts.endpoint || {};
   const url = checkEndpointUrl(ep.url);
   const host = new URL(url).host;
   const label = `API ${host}`;
-  const fail = (message, extra = {}) => Object.assign(new Error(`${label}: ${message}`), { kind: 'other', resetsAt: null, ...extra });
+  let credential = '';
+  const redact = (value) => credential ? String(value).split(credential).join('[credential redacted]') : String(value);
+  // Decode ordinary JSON escapes before excerpting error bodies, so escaped echoes and keys
+  // crossing the excerpt boundary cannot leak. This is accidental-copy protection, not a
+  // defence against an endpoint deliberately encoding a secret it already received.
+  const excerpt = (value, size) => redact(String(value).replace(/\\u[0-9a-fA-F]{4}|\\["\\/bfnrt]/g,
+    (escape) => JSON.parse(`"${escape}"`))).slice(0, size).replace(/\s+/g, ' ').trim();
+  const fail = (message, extra = {}) => Object.assign(new Error(redact(`${label}: ${message}`)), { kind: 'other', resetsAt: null, progress: progress(), ms: Date.now() - t0, ...extra });
   if (!opts.model) throw fail('no model id for this seat.');
   const env = opts.env || process.env; // opts.env: a test's environment, never the server's
   const headers = { 'content-type': 'application/json', accept: 'application/json' };
@@ -107,42 +120,46 @@ export async function run(prompt, sessionId = null, opts = {}) {
     if (!KEY_ENV_RE.test(ep.keyEnv)) throw fail(`"${ep.keyEnv}" is not the name of an environment variable.`);
     const key = env[ep.keyEnv];
     if (!key) throw fail(`${ep.keyEnv} is not set in the environment roundtable was started from.`, { kind: 'auth' });
+    // HTTP removes trailing header whitespace; redact the token the endpoint can receive too.
+    credential = String(key).trim();
     headers.authorization = `Bearer ${key}`;
   }
   const body = { model: opts.model, messages: [{ role: 'user', content: prompt }], stream: false };
   if (opts.effort) body.reasoning_effort = opts.effort; // only when set: a server without the field answers 400
 
-  const timeoutMs = opts.timeoutMs ?? 300_000;
   const call = registerCall(opts.tag ?? null);
-  const t0 = Date.now();
   let res, text;
   try {
     res = await fetch(`${url}/chat/completions`, {
       method: 'POST', headers, body: JSON.stringify(body), redirect: 'error', // a redirect would carry the key elsewhere
       signal: AbortSignal.any([call.signal, AbortSignal.timeout(timeoutMs)]),
     });
-    text = await responseText(res);
+    firstOutputMs = Date.now() - t0; lastOutputAt = Date.now(); stage = 'headers';
+    text = await responseText(res, (bytes) => { stdoutBytes = bytes; lastOutputAt = Date.now(); stage = 'body'; });
   } catch (e) {
     const cause = e?.cause || e;
-    if (call.signal.aborted) throw fail('stopped before it answered.', { kind: 'killed', code: 'KILLED' });
-    if (e?.name === 'TimeoutError' || cause?.name === 'TimeoutError') throw fail(`did not answer in ${Math.round(timeoutMs / 1000)} s.`, { kind: 'timeout', code: 'TIMEOUT' });
+    if (call.signal.aborted) throw fail('stopped before it answered.', { kind: 'killed', code: 'KILLED', progress: progress('cancelled') });
+    if (e?.name === 'TimeoutError' || cause?.name === 'TimeoutError') throw fail(`did not answer in time. ${progressText(progress('timeout'))} Save the error log before retrying.`, { kind: 'timeout', code: 'TIMEOUT', progress: progress('timeout') });
     if (e?.code === 'RESPONSE_TOO_LARGE') throw fail(e.message, { code: e.code });
     throw fail(`could not reach ${host} (${cause?.code || cause?.message || e.message}).`, { kind: 'network' });
   } finally { call.release(); }
   const ms = Date.now() - t0;
-  const raw = { url: `${url}/chat/completions`, model: opts.model, status: res.status, ms }; // never the headers
+  const raw = { url: redact(`${url}/chat/completions`), model: redact(opts.model), status: res.status, ms }; // never the headers
 
   if (!res.ok) {
-    const c = httpErrorKind(res.status, text.slice(0, 300).replace(/\s+/g, ' ').trim(), res.headers.get('retry-after'));
-    throw Object.assign(new Error(`${label}: ${c.message}`), { kind: c.kind, resetsAt: c.resetsAt, raw });
+    const c = httpErrorKind(res.status, excerpt(text, 300), res.headers.get('retry-after'));
+    throw fail(c.message, { kind: c.kind, resetsAt: c.resetsAt, raw });
   }
   let data;
-  try { data = JSON.parse(text); } catch { throw fail(`answered with something other than JSON (${text.slice(0, 120).replace(/\s+/g, ' ')}).`, { raw }); }
+  try { data = JSON.parse(text); } catch { throw fail(`answered with something other than JSON (${excerpt(text, 120)}).`, { raw }); }
   const message = data?.choices?.[0]?.message;
-  const reply = contentText(message).trim();
-  const usedTools = Array.isArray(message?.tool_calls) && message.tool_calls.length > 0;
+  const reply = redact(contentText(message)).trim();
+  const usedTools = (Array.isArray(message?.tool_calls) && message.tool_calls.length > 0) || message?.function_call != null
+    || ['tool_calls', 'function_call'].includes(data?.choices?.[0]?.finish_reason);
   const counters = normaliseUsage(cfg, pickUsage(data?.usage));
   const usage = counters ? { ...counters, cost: null, ms } : null;
+  if (usedTools) throw fail('reported prohibited tool activity. This seat is stopped for the review.', { code: 'TOOL_POLICY', kind: 'policy', usedTools: true, usage });
   if (!reply && !usedTools) throw fail(`empty reply (finish_reason ${data?.choices?.[0]?.finish_reason || 'unknown'}).`, { raw, usage });
-  return { text: reply, usage, sessionId: null, quota: null, usedTools, raw };
+  stage = 'completed';
+  return { text: reply, usage, sessionId: null, quota: null, usedTools, raw, progress: progress('exited') };
 }

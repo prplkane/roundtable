@@ -22,16 +22,22 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   Missing or unusable token counts block further calls to that vendor under a vendor token cap,
   including after a restart; already dispatched calls may finish. Discussion seats also have an
   automatic cap of 400,000 tokens per review (60,000 for optional personas). Missing or partial
-  usage blocks further calls for that seat. The chairman follows the vendor budget.
+  usage blocks further calls for that seat. The explanation identifies a recorded timeout or
+  interruption without treating missing usage as zero or measured cap exhaustion. The chairman
+  follows the vendor budget.
   Unknown usage and partial totals are labelled, and reported dollar costs are kept separately.
   These checks use estimates and available usage reports, not a provider-enforced billing
   ceiling: a call already running can consume more than projected.
+  A flushed dispatch record is saved before each call. After an interruption, a dispatch
+  without its matching result is unknown usage and cannot silently reset a capped review.
 - **An API endpoint seat is the one case where Roundtable itself sends a request.** You name a
   base URL, a model and the *name* of the environment variable holding the key (never the key;
   a pasted key is refused on shape). At call time the key is read from the environment you
   started Roundtable from and sent as a bearer to that URL only, with redirects refused. It is
   not deliberately added to transcripts, logs or the board. Endpoint response and error text
-  can be displayed and recorded, so use an endpoint you trust not to echo credentials.
+  can be displayed and recorded. Known credential echoes are redacted from decoded replies
+  and error excerpts before recording; deliberately encoded copies may evade this filter.
+  Existing records are not rewritten. Use an endpoint you trust with the credential.
   Plain `http` is accepted for local names and private IP literals; a hosted
   API must be `https`. A DNS name starting with a private-address prefix, such as
   `10.api.example.com`, is still a hosted name and requires HTTPS. Local names rely on your
@@ -44,6 +50,9 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   including an active chairman. It prevents new rounds, retries, fallback calls and automatic
   synthesis. Saved replies and reported usage remain. A provider may already have processed a
   dispatched request; cancelling locally does not guarantee a billing reversal upstream.
+  Server shutdown interrupts active reviews without recording human Stop or starting synthesis.
+  Event streams close; settled calls retain reported spending before exit. Unsettled dispatches
+  remain unknown on restart. Saved discussions offer Resume, or Write if discussion had ended.
   Finish with verdict is a separate action: it cancels unfinished discussion calls, then permits
   the chairman under the existing budget and time limits. It requires a completed, usable round.
 - **Network:** the browser loads the board, styles and fonts locally; it does not fetch a remote
@@ -73,11 +82,27 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   beside it and atomically replaces the transcript with its complete prefix and a recovery
   notice. Backups contain the same private debate data and belong in your backup/deletion
   policy. Corrupt completed lines block resume and export until restored from a backup.
+  A storage failure cancels and settles active turns before exposing Resume or a missing
+  verdict. Repair the storage problem first; recovery never retries a provider call on its own.
+  Resuming an interrupted discussion creates fresh provider sessions because old threads can
+  contain unsaved work. Completed rounds and saved notes supply their context; all prior spend
+  remains in the ledger. Cancelling synthesis preserves the discussion's original stop cause.
+- **Local settings:** unreadable calibration or pool JSON is logged and preserved. Restore the
+  file and restart before saving changes; writes use temporary files and atomic replacement.
+- **Provider output:** reply and verdict normalization uses linear scans, including Markdown
+  decorations and optional persona filtering. Browser rendering still treats this as text.
+  Later prompts quote replies and notes in records with application-assigned provenance;
+  duplicate contract headers fail validation. This improves attribution but does not guarantee
+  a model will resist instructions embedded in quoted content. Model output never grants approval.
 - **Diagnostic logs:** `_diagnostics/` in the data folder holds at most two 256 KiB files.
   Entries use fixed error/action categories, reference IDs, timestamps, provider names,
   runtime versions, fixed field names, seat numbers and source locations. No raw messages,
   prompts, replies, titles, URLs, account/model identifiers, credentials or personal paths are
   copied into these logs.
+  Failed calls also retain bounded timing, byte/event counts, exit outcomes and a fixed last
+  stage such as waiting, reasoning or completion. These observations cannot establish an
+  upstream service's cause. Complete usage received before a timeout still counts; missing
+  usage remains unknown. No automatic timeout retry is added.
   Browser reports and downloads require the same launch token and origin checks as writes;
   reports accept only known categories and bounded numbers. Logging is limited to 120 entries
   per minute. A tab can retain up to 20 sanitized events in session storage until delivered;
@@ -93,17 +118,49 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   resume and verdict requests can make calls under the same budgets and limits as the board.
   Writes are never automatically retried. JSON output contains private review content; treat
   request files, answer files and saved command output like transcripts.
+  Research snapshots project known fields only: fixed failure descriptions, bounded progress
+  and validated source records. Raw CLI error text remains in board/transcript details, not
+  the agent snapshot; saved older failures receive the same projection.
   Notes sent by the client carry `source: agent`; board notes default to `source: human`.
   This is declared attribution, not an authenticated identity or proof of human approval.
   It grants no extra permissions. Legacy notes without a source retain their original label.
-- **Tool restrictions depend on the installed CLI.** Claude seats are configured with no tool
-  and no MCP server; Codex seats with
-  the sandbox read-only, no MCP server, no web search and no tool feature; Antigravity seats in
-  plan mode; its MCP servers cannot be disabled by flag. Any tool use a CLI still reports fails
-  the seat. The same check applies to the chairman. This is defense in depth, not an OS security
-  sandbox provided by Roundtable. The flags per CLI are in `src/adapters/config.js`.
+- **Tool restrictions depend on the installed CLI.** Claude uses safe mode, an empty tool
+  list, no MCP servers and no permission prompts. Codex ignores user configuration and rules,
+  uses strict configuration, a read-only sandbox, no MCP servers, no web search and disabled
+  tool features. These flags require a compatible CLI; unsupported options fail without a
+  weaker fallback. Antigravity uses session-only deny rules for documented file, command,
+  URL and MCP tools. Its shared customizations and MCP discovery cannot be disabled, so live
+  Antigravity calls require explicit `allowLimitedIsolation: true` consent. No saved provider
+  settings are changed. All prompts use stdin, not the process command line.
+  The mandatory guard terminates an owned CLI when a prohibited tool event is reported,
+  stops that seat for the review, retains known or unknown spending and excludes its answer
+  from later prompts. It applies to repairs, recovery, API tool replies and the chairman;
+  `strictTools: false` is refused and cannot disable it in old records. Streams are bounded
+  to 8 MiB combined stdout/stderr and a pending event to 1 MiB. Invalid, incomplete or oversized
+  streams stop the seat for the review, discard its session and retain reported spending.
+  Detection can arrive after an operation has started and cannot undo it. Undisclosed remote
+  actions are not observable. These are provider restrictions and detection, not an OS
+  security sandbox supplied by Roundtable. Flags are in `src/adapters/config.js`.
+- **Optional web research has a separate policy.** Explicit research consent starts one fresh
+  Codex CLI call with live web search enabled; other tool restrictions remain. Only the
+  separately entered search question goes into that call. Search terms and visited pages are
+  handled by the provider, so review the question for private details. The local wall clock,
+  output limits and reported search-operation limit are enforced. One reported operation can
+  contain multiple queries/page visits, and an excess operation may already have started when
+  its event arrives. This is not a provider-enforced search or billing ceiling. Research
+  spending joins the review's vendor budget and is shown separately from discussion seats.
+  Up to eight source URLs, dates and excerpts are saved as provider-supplied, unverified data;
+  every seat and the chairman receives that same bundle. Source text cannot authorize tools
+  or human decisions. Failed or interrupted research stops before discussion and is never
+  automatically rerun; completed evidence is reused without fetching it again. Ordinary
+  discussion and verdict calls always retain the no-tools policy.
 
 ## The local HTTP boundary
+
+This is a trusted personal-machine application. Other local users and processes can read the
+board and its launch token; loopback is not OS-user authentication. A trusted local client can
+select available server environment variables as endpoint credentials and choose destinations.
+Do not run it as a shared-host service or under an account with greater authority than its user.
 
 A page from any site can try to reach `localhost`. So every request must name this server in
 `Host`, and a present `Origin` must be this server's page; every request that changes anything
@@ -111,6 +168,10 @@ is `POST`, `application/json`, at most 256 KB, and must carry the launch token p
 server's startup line (the served page gets it in a meta tag). Every field is typed and bounded
 (`src/validate.js`). Exports write only into files Roundtable wrote (a signature in the record's
 front matter, a marked region in the index) and refuse the home directory and filesystem roots.
+Protected-directory checks resolve symlinks and junctions. Record and index destinations must
+be regular files or absent; temporary files are created exclusively before atomic replacement.
+POSIX replacements preserve existing permission bits; new exports use `0666` filtered by the
+process umask. Choose a private export directory or restrictive umask for private decisions.
 Every response carries a Content-Security-Policy that lets only this server's own scripts run in
 the page, keeps fetches and the event stream same-origin, forbids framing, and disables content
 sniffing, so a reply that slipped past the board's escaping could not read the launch token.
@@ -130,6 +191,9 @@ buttons prevent duplicate submissions in that page; they are not a server-side i
 guarantee. The launch token remains required for every write, including retries initiated by
 the user. Resume notes supplied before the first complete round are also private transcript
 data and are included in subsequent prompts, replay and exports.
+
+The read-only event stream acknowledges reconnects immediately, including when no events
+were missed. Reconnecting or replaying a board does not dispatch provider calls.
 
 ## Reporting
 

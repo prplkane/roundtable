@@ -202,10 +202,18 @@ test('a hidden mood unlocks only for the board, then runs on the lightest model 
     assert.equal(moodLine(agent[0].mood), code);
   }
   const { filterReply } = await import('../src/seats.js');
-  const stripping = HIDDEN_MOODS.find((h) => h.strip);
+  const stripping = HIDDEN_MOODS.find((h) => h.stripParentheticals);
   assert.ok(stripping, 'one hidden mood cleans its replies in code');
   assert.equal(filterReply({ hidden: stripping.art }, 'AGREE_WITH: []\n- Mrrp mew (a translation)\n- Meow'), 'AGREE_WITH: []\n- Mrrp mew\n- Meow', 'bracketed asides go, the header stays');
   assert.equal(filterReply({ preset: 'grill' }, '- keep (this)'), '- keep (this)', 'every other seat is untouched');
+  assert.equal(filterReply({ hidden: stripping.art }, 'a \n (one) b (two) c (unfinished'), 'a b c (unfinished');
+});
+
+test('only identifier-shaped key variable preferences survive persistence', async () => {
+  const { keyEnvName } = await import('../src/seats.js');
+  for (const value of ['EXAMPLE-NOT-A-KEY', 'lowercase', 'X'.repeat(65), {}, null]) assert.equal(keyEnvName(value), '');
+  assert.equal(keyEnvName(' EXAMPLE_API_KEY '), 'EXAMPLE_API_KEY');
+  assert.equal(keyEnvName('_KEY_2'), '_KEY_2');
 });
 
 test('a hidden mood on agy runs the lightest Gemini the account lists', async () => {

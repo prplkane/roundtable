@@ -38,6 +38,7 @@ export function stopExplanation(reason, context) {
     'all-failed': 'No seat returned a usable reply in the last round.',
     'seats-down': 'Too few providers remained available for another discussion round.',
     budget: 'The budget prevented another call.',
+    'research-failed': 'Research did not produce a usable saved source bundle. Discussion was not started.',
   };
   return labels[reason] || 'The discussion has ended.';
 }

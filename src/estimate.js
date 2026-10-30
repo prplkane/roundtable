@@ -7,6 +7,14 @@
 
 export const EFFORT_MULTIPLIER = { low: 0.7, medium: 1, high: 1.4, xhigh: 1.8, ultra: 2.2, max: 2.6 };
 
+export function unknownUsageMessage(cause) {
+  const first = cause === 'timeout' ? 'An earlier call timed out before reporting token usage.'
+    : cause === 'network' ? 'An earlier call lost its connection before reporting token usage.'
+    : ['killed', 'interrupted'].includes(cause) ? 'An earlier call was interrupted before reporting token usage.'
+    : 'An earlier call did not report complete token usage.';
+  return `${first} Further calls are blocked because spending is unknown. Check the earlier failure and provider usage before starting more work.`;
+}
+
 // How much of a vendor's pool one token of a model draws, relative to the vendor's heaviest
 // model (1). Guesses from list-price ratios: Opus : Sonnet : Haiku about 1 : 0.2 : 0.05;
 // Gemini Pro-class : Flash about 1 : 0.2. An id that matches nothing weighs 1 (the safe side).
@@ -30,6 +38,20 @@ export const FALLBACK = {
 const GENERIC = { fresh: { input: 15000, output: 1300 }, resumed: { input: 25000, output: 1100 } };
 const CHAIRMAN_INPUT_FACTOR = 1.6; // the chairman reads the whole transcript in one fresh call
 
+// Setup has no source bundle yet. Reserve an allowance per discussion/verdict call; after
+// research, use the saved bundle's UTF-8 size at three bytes per estimated input token.
+// This adds conservatism to historical baselines, not a tokenizer or a billing ceiling.
+export const RESEARCH_INPUT_RESERVE = 12000;
+export function researchInputTokens(sources = null) {
+  if (!Array.isArray(sources)) return RESEARCH_INPUT_RESERVE;
+  if (!sources.length) return 0;
+  const records = sources.map(({ id, url, title, excerpt, publishedAt, gatheredAt }) =>
+    JSON.stringify({ kind: 'web_source', id, url, title, publishedAt, gatheredAt, text: excerpt })
+      .replace(/[\u0085\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`));
+  return Math.ceil(new TextEncoder().encode(records.join('\n')).length / 3);
+}
+const evidenceCost = (cost, baseline, tokens) => cost == null ? 0 : cost * 0.8 * tokens / baseline.input;
+
 // median for dollar figures, kept to the cent
 function median100(xs) { return Math.round(median(xs.map((x) => x * 100))) / 100; }
 
@@ -44,6 +66,7 @@ function median(xs) {
 export function baselinesFrom(rows) {
   const acc = {};
   for (const r of rows || []) {
+    if (r.kind === 'research') continue; // web evidence gathering has a different context size
     if (!r.usage || !r.seat?.vendor) continue;
     if (r.type !== 'reply' && r.type !== 'verdict' && r.type !== 'attempt') continue;
     if (typeof r.sessionId === 'string' && r.sessionId.startsWith('fake-')) continue; // a scripted seat
@@ -76,11 +99,12 @@ function baseFor(vendor, kind, baselines) {
   return (FALLBACK[vendor] || GENERIC)[kind];
 }
 
-// Upper-bound projection for one debate: every seat answers round 0 fresh and every critique
+// Projection for one debate: every seat answers round 0 fresh and every critique
 // round fresh again (memory 'stateless', the default) or resumed ('resume'); the chairman makes
 // one long fresh call. Effort scales output tokens only.
-export function project({ seats, chairman, critiqueRounds = 3, baselines = {}, memory = 'stateless' }) {
+export function project({ seats, chairman, critiqueRounds = 3, baselines = {}, memory = 'stateless', research = null, sources = null }) {
   const bySeat = {}, byVendor = {};
+  const extra = research ? researchInputTokens(sources) : 0;
   const add = (vendor, id, calls, model) => {
     const sum = calls.reduce((a, c) => ({ input: a.input + c.input, output: a.output + c.output }), { input: 0, output: 0 });
     const weight = modelWeight(model);
@@ -104,16 +128,21 @@ export function project({ seats, chairman, critiqueRounds = 3, baselines = {}, m
     const m = EFFORT_MULTIPLIER[s.effort] ?? 1;
     const fresh = baseFor(s.vendor, 'fresh', baselines), resumed = baseFor(s.vendor, 'resumed', baselines);
     const cf = costFor(s.vendor, s.model, 'fresh'), cr = costFor(s.vendor, s.model, 'resumed');
-    const calls = [{ input: fresh.input, output: fresh.output * m, cost: cf == null ? undefined : cf * (0.8 + 0.2 * m) }];
+    const calls = [{ input: fresh.input + extra, output: fresh.output * m, cost: cf == null ? undefined : cf * (0.8 + 0.2 * m) + evidenceCost(cf, fresh, extra) }];
     const later = memory === 'resume' ? { b: resumed, c: cr } : { b: fresh, c: cf };
-    for (let r = 0; r < critiqueRounds; r++) calls.push({ input: later.b.input, output: later.b.output * m, cost: later.c == null ? undefined : later.c * (0.8 + 0.2 * m) });
+    for (let r = 0; r < critiqueRounds; r++) calls.push({ input: later.b.input + extra, output: later.b.output * m, cost: later.c == null ? undefined : later.c * (0.8 + 0.2 * m) + evidenceCost(later.c, later.b, extra) });
     add(s.vendor, s.id, calls, s.model);
   }
   if (chairman?.vendor) {
     const m = EFFORT_MULTIPLIER[chairman.effort] ?? 1;
     const fresh = baseFor(chairman.vendor, 'fresh', baselines);
     const cc = costFor(chairman.vendor, chairman.model, 'fresh');
-    add(chairman.vendor, 'chairman', [{ input: fresh.input * CHAIRMAN_INPUT_FACTOR, output: fresh.output * 1.5 * m, cost: cc == null ? undefined : cc * CHAIRMAN_INPUT_FACTOR }], chairman.model);
+    add(chairman.vendor, 'chairman', [{ input: fresh.input * CHAIRMAN_INPUT_FACTOR + extra, output: fresh.output * 1.5 * m, cost: cc == null ? undefined : cc * CHAIRMAN_INPUT_FACTOR + evidenceCost(cc, fresh, extra) }], chairman.model);
+  }
+  if (research) {
+    const selected = (seats || []).find((s) => s.vendor === 'codex') || (chairman?.vendor === 'codex' ? chairman : {});
+    const fresh = baseFor('codex', 'fresh', baselines), m = EFFORT_MULTIPLIER[selected.effort] ?? 1;
+    add('codex', 'research', [{ input: fresh.input * CHAIRMAN_INPUT_FACTOR, output: fresh.output * 1.5 * m }], selected.model);
   }
   const total = Object.values(byVendor).reduce((a, v) => a + v.total, 0);
   return { bySeat, byVendor, total, critiqueRounds };
@@ -214,7 +243,7 @@ export function projectedWindows(calib, vendor, seatRows) {
 // What one round is likely to draw per vendor, before it runs: each seat's fresh or resumed
 // baseline (fresh at round 0 and in stateless memory), effort on the output share. Used by the
 // engine's budget gate. Returns { [vendor]: { tokens, cost|null, seats } }.
-export function projectRound({ seats, round, baselines = {}, memory = 'stateless' }) {
+export function projectRound({ seats, round, baselines = {}, memory = 'stateless', researchTokens = 0 }) {
   const out = {};
   for (const s of seats || []) {
     const kind = round === 0 || memory !== 'resume' ? 'fresh' : 'resumed';
@@ -222,9 +251,9 @@ export function projectRound({ seats, round, baselines = {}, memory = 'stateless
     const m = EFFORT_MULTIPLIER[s.effort] ?? 1;
     const own = baselines?.[`${s.vendor}:${s.model || 'default'}`]?.[kind];
     const cb = own?.nCost > 0 ? own : baselines?.[s.vendor]?.[kind];
-    const cost = cb && cb.nCost > 0 ? cb.cost * (0.8 + 0.2 * m) : null;
+    const cost = cb && cb.nCost > 0 ? cb.cost * (0.8 + 0.2 * m) + evidenceCost(cb.cost, b, researchTokens) : null;
     const v = (out[s.vendor] ??= { tokens: 0, cost: null, seats: 0 });
-    v.tokens += Math.round(b.input + b.output * m);
+    v.tokens += Math.round(b.input + researchTokens + b.output * m);
     v.seats++;
     if (cost != null) v.cost = Math.round(((v.cost || 0) + cost) * 100) / 100;
   }
@@ -232,14 +261,14 @@ export function projectRound({ seats, round, baselines = {}, memory = 'stateless
 }
 
 // The chairman's one long fresh call, same units.
-export function projectChairman({ chairman, baselines = {} }) {
+export function projectChairman({ chairman, baselines = {}, researchTokens = 0 }) {
   if (!chairman?.vendor) return {};
   const b = baseFor(chairman.vendor, 'fresh', baselines);
   const m = EFFORT_MULTIPLIER[chairman.effort] ?? 1;
   const own = baselines?.[`${chairman.vendor}:${chairman.model || 'default'}`]?.fresh;
   const cb = own?.nCost > 0 ? own : baselines?.[chairman.vendor]?.fresh;
-  const cost = cb && cb.nCost > 0 ? Math.round(cb.cost * CHAIRMAN_INPUT_FACTOR * 100) / 100 : null;
-  return { [chairman.vendor]: { tokens: Math.round(b.input * CHAIRMAN_INPUT_FACTOR + b.output * 1.5 * m), cost, seats: 1 } };
+  const cost = cb && cb.nCost > 0 ? Math.round((cb.cost * CHAIRMAN_INPUT_FACTOR + evidenceCost(cb.cost, b, researchTokens)) * 100) / 100 : null;
+  return { [chairman.vendor]: { tokens: Math.round(b.input * CHAIRMAN_INPUT_FACTOR + researchTokens + b.output * 1.5 * m), cost, seats: 1 } };
 }
 
 // Would running `next` ({vendor: {tokens, cost}}) on top of `spent` cross `budget`

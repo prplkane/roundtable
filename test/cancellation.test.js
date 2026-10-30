@@ -203,7 +203,7 @@ for (const phase of ['first call', 'format retry', 'fallback']) {
     assert.equal(aborted, true);
     assert.deepEqual(cancelled, ['human']);
     assert.equal(chairCalls, phase === 'first call' ? 1 : 2);
-    assert.equal(state.stopReason, 'human');
+    assert.equal(state.stopReason, 'consensus', 'synthesis cancellation preserves the completed discussion reason');
     assert.equal(state.verdict.skipped, true);
     assert.equal(state.verdict.reason, 'human');
     assert.equal(ceremonyOutcome(events.at(-1)), 'cancelled');
@@ -211,7 +211,8 @@ for (const phase of ['first call', 'format retry', 'fallback']) {
     const attempt = rows.filter((r) => r.type === 'attempt').at(-1);
     assert.equal(attempt.cancelReason, 'human');
     assert.equal(attempt.usage.input, 3, 'cancelled spend is retained');
-    assert.equal(rebuildDebate(rows).stopReason, 'human', 'Stop supersedes the earlier consensus on reload');
+    assert.equal(rebuildDebate(rows).stopReason, 'consensus', 'the discussion reason is preserved on reload');
+    assert.equal(rows.filter((r) => r.type === 'synthesis-cancelled').length, 1);
   });
 }
 
