@@ -2,6 +2,66 @@
 
 ## Unreleased
 
+- Add optional Codex web research before discussion, with an explicit public search question,
+  time limit and reported search-operation limit. Save one cited evidence bundle for every
+  seat, recovery and export; show research spending separately. Failures stop before discussion,
+  interrupted research never automatically reruns, and debate tools remain disabled.
+  Project safe research fields in agent snapshots, including older saved failures. Include
+  shared source context in setup estimates and admission checks for discussion and verdicts.
+
+- Save safe provider progress on timeout, cancellation and failure, including first output,
+  last stage, idle time and byte counts. Show it in failure details and diagnostic downloads;
+  preserve complete usage received before a stalled exit without retrying unknown spending.
+
+- Enforce the provider tool guard on every discussion and verdict call, including recovered
+  reviews. Stop reported tool activity without a repair; retain spending and exclude rejected
+  text from later prompts. Inspect bounded CLI streams while running, strengthen Claude and
+  Codex isolation flags, send Antigravity prompts on stdin and require explicit consent to
+  Antigravity's remaining isolation limits with session-only tool denial rules.
+  Invalid, incomplete or oversized streams stop the seat without retry or session reuse.
+  Agent help documents Antigravity's explicit consent option and remaining isolation limits.
+
+- Clear the board's reconnecting state as soon as its event stream reconnects, including
+  while waiting for human input with no new events to replay.
+
+- Explain when an earlier timeout or interruption left a seat's spending unknown. Show that
+  cause on the blocked reply and distinguish unknown usage from a projected cap crossing.
+
+- Recover interrupted discussions in fresh provider sessions seeded with completed rounds
+  and saved notes, retaining earlier spending and deadlines. Preserve discussion completion
+  reasons when a later verdict is cancelled.
+
+- Resolve protected export directories through filesystem aliases, refuse linked record/index
+  files, and exclusively create temporary files. Public exports now require an empty staging
+  directory (an existing `.git` is preserved) and never delete destination contents.
+  Preserve existing export/index permission bits on POSIX; new files respect the process umask.
+
+- Redact known endpoint credentials from decoded replies and error excerpts before recording
+  them. Endpoint configuration continues to belong to the trusted local user.
+
+- Quote peer replies, repair text and discussion notes as attributed input records. Reject
+  duplicate reply and verdict headers while preserving ordinary Markdown in content.
+
+- Preserve Resume on server shutdown without recording a human Stop; close event streams and
+  retain cancelled-call spending. Accept emphasis around whole reply and verdict header lines
+  while preserving punctuation inside option labels.
+
+### Review fixes
+
+- Normalize replies, verdict headers, option punctuation and persona parentheticals in linear
+  time, including adversarial whitespace and Unicode input. Preserve exact option labels
+  ending in quotes, stars or punctuation before applying formatting tolerance.
+- Flush a dispatch intent before every provider call; unfinished attempts remain unknown
+  after restart and cannot bypass admission caps. Settled calls are counted once.
+- Stop engines before cancelling server calls and refuse dispatch during shutdown.
+- Rebuild failed reviews after cancelled turns settle so repaired storage can resume without
+  restarting the server. Keep unknown spend and transcript-recovery warnings.
+- Read history summaries asynchronously, cache unchanged records, bound inactive replays and
+  avoid adding global pool/quota events to idle finished records.
+- Remove invalid key-variable values before saving or restoring browser preferences.
+- Preserve unreadable pool/calibration files, report their failure and block writes until
+  repair and restart; replace valid settings atomically.
+
 ### Security and usage
 
 - Require HTTPS for hosted endpoints, including names with private-address-like prefixes.

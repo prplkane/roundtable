@@ -3,6 +3,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { PROFILE_RE } from '../seats.js';
+import { safeProgress } from '../progress.js';
 
 const WIN = process.platform === 'win32';
 
@@ -63,21 +64,39 @@ export function registerCall(tag = null) {
 
 // Run a CLI once. Resolves with {stdout, stderr, code, ms}; rejects on timeout (code TIMEOUT),
 // on a kill through killAll (code KILLED) or on a spawn error.
-export function runProcess({ file, prefix }, args, { stdin = null, cwd, timeoutMs = 300_000, env, tag = null } = {}) {
+export function runProcess({ file, prefix }, args, { stdin = null, cwd, timeoutMs = 300_000, env, tag = null, onStdout, maxOutputBytes = 8 * 1024 * 1024 } = {}) {
   return new Promise((resolve, reject) => {
     const t0 = Date.now();
     const child = spawn(file, [...prefix, ...args], { cwd, env, windowsHide: true, detached: !WIN, stdio: ['pipe', 'pipe', 'pipe'] });
-    let out = '', err = '', done = false;
+    let out = '', err = '', done = false, outputBytes = 0, stdoutBytes = 0, stderrBytes = 0, firstOutputMs, lastOutputAt = t0;
+    const progress = (outcome, exitCode) => safeProgress({ elapsedMs: Date.now() - t0, timeoutMs, stdoutBytes, stderrBytes,
+      firstOutputMs, idleMs: Date.now() - lastOutputAt, outcome, exitCode });
     const finish = (fn) => { if (done) return; done = true; clearTimeout(timer); live.delete(child); fn(); };
-    live.set(child, { tag, onKill: () => finish(() => reject(Object.assign(new Error('killed: the debate was stopped or the server shut down'), { code: 'KILLED', stdout: out, stderr: err }))) });
-    child.stdout.setEncoding('utf8').on('data', (d) => { out += d; });
-    child.stderr.setEncoding('utf8').on('data', (d) => { err += d; });
-    const timer = setTimeout(() => finish(() => {
+    live.set(child, { tag, onKill: () => finish(() => reject(Object.assign(new Error('killed: the debate was stopped or the server shut down'), { code: 'KILLED', stdout: out, stderr: err, ms: Date.now() - t0, progress: progress('cancelled') }))) });
+    const stop = (e) => finish(() => {
+      const metadata = progress(e.code === 'TOOL_POLICY' ? 'policy' : e.code === 'OUTPUT_LIMIT' ? 'output-limit' : 'protocol');
       killTree(child);
-      reject(Object.assign(new Error(`timed out after ${timeoutMs} ms`), { code: 'TIMEOUT', stdout: out, stderr: err }));
+      reject(Object.assign(e, { stdout: out, stderr: err, ms: metadata.elapsedMs, progress: metadata }));
+    });
+    const receive = (d, stdout) => {
+      if (done) return;
+      outputBytes += Buffer.byteLength(d);
+      if (stdout) stdoutBytes += Buffer.byteLength(d); else stderrBytes += Buffer.byteLength(d);
+      lastOutputAt = Date.now();
+      firstOutputMs ??= lastOutputAt - t0;
+      if (outputBytes > maxOutputBytes) { stop(Object.assign(new Error('Provider output exceeded the local size limit.'), { code: 'OUTPUT_LIMIT' })); return; }
+      if (stdout) out += d; else err += d;
+      try { if (stdout) onStdout?.(d); } catch (e) { stop(e); }
+    };
+    child.stdout.setEncoding('utf8').on('data', (d) => receive(d, true));
+    child.stderr.setEncoding('utf8').on('data', (d) => receive(d, false));
+    const timer = setTimeout(() => finish(() => {
+      const metadata = progress('timeout');
+      killTree(child);
+      reject(Object.assign(new Error(`timed out after ${timeoutMs} ms`), { code: 'TIMEOUT', stdout: out, stderr: err, ms: metadata.elapsedMs, progress: metadata }));
     }), timeoutMs);
-    child.on('error', (e) => finish(() => reject(e)));
-    child.on('close', (code) => finish(() => resolve({ stdout: out, stderr: err, code, ms: Date.now() - t0 })));
+    child.on('error', (e) => finish(() => reject(Object.assign(e, { stdout: out, stderr: err, ms: Date.now() - t0, progress: progress('spawn-error') }))));
+    child.on('close', (code) => finish(() => resolve({ stdout: out, stderr: err, code, ms: Date.now() - t0, progress: progress('exited', code) })));
     child.stdin.on('error', () => {}); // CLI may exit before reading stdin
     child.stdin.end(stdin ?? '');
   });

@@ -6,6 +6,62 @@ import { createHash, randomUUID } from 'node:crypto';
 import { openDebateDir, normaliseRows, isSynthetic } from './store.js';
 import { ledgerEntries, rollup } from './engine.js';
 import { baselinesFrom } from './estimate.js';
+import { readdir, stat } from 'node:fs/promises';
+import { decisionRecord } from './export.js';
+
+// Cache small summaries, never transcript bodies. Changed records are read asynchronously;
+// a cold history scan yields between files so active reviews and Stop remain responsive.
+export function createHistoryIndex(root, { onWarning = () => {}, limit = 1000 } = {}) {
+  const summaries = new Map();
+  let pending = null;
+  const signature = (s) => `${s.mtimeMs}:${s.ctimeMs}:${s.size}:${s.ino}`;
+  async function scan() {
+    // Misses must not evict hits that this same enumeration has yet to visit. Otherwise a
+    // history just above the cache limit rereads every file on every request.
+    const previous = new Map(summaries);
+    const dirs = await readdir(root, { withFileTypes: true });
+    const ids = dirs.filter((d) => d.isDirectory() && /^[a-z0-9-]+$/.test(d.name)).map((d) => d.name);
+    const present = new Set(ids), result = [];
+    for (const id of summaries.keys()) if (!present.has(id)) summaries.delete(id);
+    for (const slug of ids) {
+      const file = path.join(root, slug, 'transcript.jsonl');
+      let before;
+      try {
+        before = await stat(file);
+        const key = signature(before), cached = previous.get(slug);
+        if (cached?.key === key) {
+          summaries.delete(slug); summaries.set(slug, cached);
+          while (summaries.size > limit) summaries.delete(summaries.keys().next().value);
+          result.push(cached.value); continue;
+        }
+        const warnings = [];
+        const store = openDebateDir(root, slug, { create: false });
+        if (!store) continue;
+        const rows = await store.readTranscriptAsync({ onWarning: (w) => warnings.push(w) });
+        if (!rows.some((r) => r.type === 'field-notes')) continue;
+        const { meta, summary } = decisionRecord(rows, slug, { warnings, metadataOnly: true });
+        const value = { slug, ...summary, date: slug.slice(0, 10), updated: before.mtimeMs,
+          status: meta.status, chosen: meta.chosen, recommended: meta.recommended, accepted: meta.accepted };
+        const after = await stat(file);
+        if (signature(after) === key) {
+          summaries.delete(slug); summaries.set(slug, { key, value });
+          while (summaries.size > limit) summaries.delete(summaries.keys().next().value);
+        }
+        result.push(value);
+      } catch (error) {
+        if (error.code === 'ENOENT') continue;
+        summaries.delete(slug); onWarning(error, slug);
+        result.push({ slug, decision: slug, date: slug.slice(0, 10), updated: before?.mtimeMs || 0,
+          state: 'corrupt', status: 'corrupt', warning: error.message });
+      }
+    }
+    return result.sort((a, b) => b.updated - a.updated);
+  }
+  return {
+    list() { return pending ||= scan().finally(() => { pending = null; }); },
+    invalidate(id) { summaries.delete(id); },
+  };
+}
 
 export function dataDirectory({ fake = false, env = process.env, platform = process.platform, home = os.homedir() } = {}) {
   if (env.ROUNDTABLE_DEBATES_DIR) return path.resolve(env.ROUNDTABLE_DEBATES_DIR);

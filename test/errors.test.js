@@ -4,6 +4,18 @@ import { classifyError, resetTime, POOL_FATAL } from '../src/adapters/errors.js'
 
 const NOW = new Date(2026, 9, 21, 12, 0).getTime();
 
+test('invalid or oversized provider output remains terminal regardless of error-like text', () => {
+  for (const code of ['PROVIDER_PROTOCOL', 'OUTPUT_LIMIT']) {
+    for (const text of ['network error', 'quota exceeded', 'authentication failed', 'unknown option']) {
+      const result = classifyError({ code, message: text, stdout: text, stderr: text });
+      assert.equal(result.kind, 'policy');
+      assert.match(result.message, /stopped for the review/);
+      assert.equal(result.resetsAt, null);
+      assert.equal(POOL_FATAL.has(result.kind), false, 'only the affected seat stops');
+    }
+  }
+});
+
 test('a Codex usage limit is quota, with the reset time it names', () => {
   const line = '{"type":"turn.failed","error":{"message":"You’ve hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Oct 27th, 2026 12:51 PM."}}';
   const c = classifyError({ message: `Codex: empty reply (${line})`, label: 'Codex' }, NOW);

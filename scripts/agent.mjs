@@ -24,6 +24,8 @@ const HELP = {
     effort: 'effort low and the lightest model in status for the seats of a small review. Give the chairman one effort step more than the seats (medium when they run low): it judges the arguments, and at low effort it dismisses the hardest objection in a word. Raise one seat, not all, when the decision is hard to reverse.',
     context: 'constraints, known, assumed, reversibility and deadline go into every prompt. Fill them only with facts the user stated; put guesses under assumed, never under known. Leave a field empty rather than invent it.',
     unattended: 'options.unattended true skips every pause: no wait after the blind round, and the seats are told to state what they would have asked as assumptions instead of asking. Off by default; set it only when nobody will answer, since wait then never returns waiting.',
+    isolation: 'Live Antigravity requires options.allowLimitedIsolation=true. Set it only when the user has agreed to its limits: session rules deny documented tools, but the CLI cannot disable all shared customizations or MCP discovery. Choose another provider otherwise. Reported prohibited tool activity still stops the seat.',
+    research: 'Only when the user requests web research: options.research={query:"public search question",maxSearches:4,timeoutMs:120000}. Adds one fresh Codex CLI call before discussion; only this query goes into research. The first Codex seat supplies the model/profile, then a Codex chairman, otherwise the CLI default. All seats receive the same saved provider-supplied sources. Reported search operations are bounded, but an operation may start before its report arrives. Failed or interrupted research never reruns automatically.',
     agreement: 'When gate.reopenCalls is present, every seat already agrees. Empty answers and no message go straight to the verdict. Any answer text or message runs one more round at reopenCalls calls. Send text only if it could change a seat\'s position; a fact that confirms what the seats already said is better left for the verdict.',
   },
 };
@@ -92,7 +94,7 @@ try {
         const seconds = Number(flags.seconds || 25);
         if (!Number.isInteger(seconds) || seconds < 1 || seconds > 30) throw new Error('Wait seconds must be a whole number from 1 to 30.');
         result = await request(`${route}/state`);
-        if (['running', 'verdict'].includes(result.status)) {
+        if (['researching', 'running', 'verdict'].includes(result.status)) {
           const controller = new AbortController(), timer = setTimeout(() => controller.abort(), seconds * 1000);
           let reader;
           try {

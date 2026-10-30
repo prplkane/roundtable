@@ -1,8 +1,89 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { parseReply, validateReply, matchStance, optionId, validateVerdict } from '../src/contract.js';
 
 const OPTS = ['Ship now', 'Wait a sprint'];
+
+test('whole-line emphasis preserves reply and verdict values, including literal closing punctuation', () => {
+  for (const marker of ['*', '**', '_', '__']) {
+    for (const value of ['opt-1', 'Ship*', 'Wait_']) {
+      const options = ['Ship*', 'Wait_', 'Ship', 'Wait'];
+      const pick = value === 'Wait_' ? 'opt-2' : 'opt-1';
+      const reply = validateReply(`${marker}STANCE: ${value}${marker}\nDISAGREE: none\nNEW: none\nASSUMPTIONS: none`, { options, round: 0 });
+      assert.equal(reply.ok, true, `${marker}: ${value}`);
+      assert.equal(reply.parsed.stanceKey, pick);
+      const verdict = validateVerdict(`${marker}RECOMMENDATION: ${value}${marker}\nDISSENT: none\nKILL_CRITERIA: none\nOPEN_QUESTIONS: none`, options);
+      assert.equal(verdict.ok, true, `${marker}: ${value}`);
+      assert.equal(verdict.pick, pick);
+    }
+  }
+  assert.equal(parseReply('**STANCE:** Ship**').stance, 'Ship**', 'a closed header leaves the value intact');
+  assert.equal(parseReply('STANCE: Ship**').stance, 'Ship**', 'an undecorated header leaves the value intact');
+});
+
+test('provider text normalization remains bounded for adversarial whitespace, markup and Unicode', { timeout: 15000 }, () => {
+  // A child timeout detects a regex regression without hanging the whole offline suite.
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import { parseReply, optionId, humanQuestion, matchStance, verdictSections } from './src/contract.js';
+    import { filterReply, HIDDEN_MOODS } from './src/seats.js';
+    const n = 160000, spaces = ' '.repeat(n);
+    const cat = HIDDEN_MOODS.find(h => h.stripParentheticals);
+    for (const ws of [' ', '\\u2003']) {
+      parseReply('STANCE: opt-1\\n' + ws.repeat(n) + 'x');
+      parseReply('STANCE' + ws.repeat(n) + 'x');
+    }
+    for (const punctuation of ['.', ';', '"', '*']) optionId('x' + punctuation.repeat(n) + 'x', ['Trial', 'Wait']);
+    assert.equal(optionId('"'.repeat(n) + 'Trial' + '"'.repeat(n), ['Trial', 'Wait']), 'opt-1');
+    for (const separator of ['\\u2028', '\\u2029', '\\r']) {
+      verdictSections('RECOMMENDATION' + spaces + 'x' + separator + 'y');
+      assert.equal(humanQuestion('none: ' + spaces + 'x' + separator + 'y'), 'none: ' + spaces + 'x' + separator + 'y');
+      matchStance('other: ' + spaces + 'x' + separator + 'y', ['Trial', 'Wait']);
+    }
+    assert.equal(filterReply({hidden:cat.art}, 'a' + spaces + 'x'), 'a' + spaces + 'x');
+    assert.equal(filterReply({hidden:cat.art}, '('.repeat(n) + 'x'), '('.repeat(n) + 'x');
+    assert.equal(parseReply('  \\\`\\\`\\\`json\\r\\nSTANCE: opt-1\\r\\nNEW: none\\r\\n\\\`\\\`\\\` ').stance, 'opt-1');
+  `], { timeout: 6000, encoding: 'utf8', windowsHide: true });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('exact punctuation-bearing labels win before formatting tolerance, also in verdicts', () => {
+  const labels = ['Wait a "sprint"', '"Quoted"', 'Ship*', 'A;', 'Wait (later)'];
+  for (const label of labels) {
+    assert.equal(optionId(label, [label, 'Other']), 'opt-1');
+    assert.equal(optionId('opt-1: ' + label, [label, 'Other']), 'opt-1');
+    assert.equal(validateVerdict('RECOMMENDATION: ' + label + '\nDISSENT: None.\nKILL_CRITERIA: None.\nOPEN_QUESTIONS: None.', [label, 'Other']).pick, 'opt-1');
+  }
+  assert.equal(optionId('"Trial".', ['Trial', 'Other']), 'opt-1');
+  assert.equal(optionId('**opt-1**', ['Trial', 'Other']), 'opt-1');
+  assert.equal(optionId('opt-1: Other', ['Trial', 'Other']), null);
+  const punctuated = ['Ship*', 'Ship', '"Quoted"', 'Quoted'];
+  for (const value of ['"Ship*".', "'Ship*';", '**Ship***', '`Ship*`']) {
+    assert.equal(optionId(value, punctuated), 'opt-1', 'formatting cannot select the unpunctuated option');
+    const reply = validateReply('STANCE: ' + value + '\nDISAGREE: none\nNEW: none\nASSUMPTIONS: none', { options: punctuated, round: 0 });
+    assert.equal(reply.parsed.stanceKey, 'opt-1');
+    assert.equal(validateVerdict('RECOMMENDATION: ' + value + '\nDISSENT: None.\nKILL_CRITERIA: None.\nOPEN_QUESTIONS: None.', punctuated).pick, 'opt-1');
+  }
+  assert.equal(optionId('**"Quoted"**', punctuated), 'opt-3');
+  for (const header of ['STANCE:', '**STANCE:**', '**STANCE**:']) {
+    const parsed = validateReply(header + ' * Ship\nDISAGREE: none\nNEW: none\nASSUMPTIONS: none', { options: ['* Ship', 'Ship'], round: 0 });
+    assert.equal(parsed.parsed.stanceKey, 'opt-1', 'header decoration cannot remove label punctuation');
+  }
+  for (const header of ['RECOMMENDATION:', '**RECOMMENDATION:**', '**RECOMMENDATION**:']) {
+    assert.equal(validateVerdict(header + ' * Ship\nDISSENT: None.\nKILL_CRITERIA: None.\nOPEN_QUESTIONS: None.', ['* Ship', 'Ship']).pick, 'opt-1');
+  }
+  assert.equal(validateVerdict('RECOMMENDATION **opt-1**\nDISSENT None.\nKILL_CRITERIA None.\nOPEN_QUESTIONS None.', OPTS).pick, 'opt-1');
+});
+
+test('Unicode line separators inside a placeholder explanation remain conservative questions', async () => {
+  const { humanQuestion } = await import('../src/contract.js');
+  for (const separator of ['\r', '\u2028', '\u2029']) {
+    const text = 'None: treat the' + separator + 'detail as an assumption';
+    assert.equal(humanQuestion(text), text);
+  }
+});
 
 test('parses a well-formed reply', () => {
   const r = validateReply([

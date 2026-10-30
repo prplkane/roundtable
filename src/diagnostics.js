@@ -2,6 +2,7 @@
 import { mkdirSync, appendFileSync, readFileSync, renameSync, lstatSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { safeProgress } from './progress.js';
 
 const CODES = new Set(['request-failed', 'provider-failed', 'call-cancelled', 'reply-invalid', 'engine-failed', 'export-failed',
   'transcript-warning', 'status-failed', 'storage-failed', 'server-crash', 'server-start',
@@ -9,8 +10,9 @@ const CODES = new Set(['request-failed', 'provider-failed', 'call-cancelled', 'r
 export const BROWSER_CODES = new Set([...CODES].filter((c) => c.startsWith('browser-')));
 const ACTIONS = new Set(['setup', 'pick-folder', 'history', 'delete', 'clear-finished', 'preflight', 'preview', 'create', 'events', 'state', 'continue', 'finish', 'stop', 'hold',
   'resume', 'export', 'synthesize', 'accept', 'pools', 'diagnostics', 'catalogue', 'quota', 'calibration', 'startup', 'unknown']);
-const KINDS = new Set(['quota', 'auth', 'missing', 'network', 'timeout', 'killed', 'format', 'budget', 'other']);
+const KINDS = new Set(['quota', 'auth', 'missing', 'network', 'timeout', 'killed', 'format', 'budget', 'policy', 'compatibility', 'other']);
 const SYSTEM_CODES = new Set(['ENOENT', 'EACCES', 'EPERM', 'ENOSPC', 'EIO', 'EISDIR', 'EROFS', 'EMFILE', 'ENFILE',
+  'TOOL_POLICY', 'OUTPUT_LIMIT', 'PROVIDER_PROTOCOL', 'CLI_EXIT', 'ISOLATION_REQUIRED', 'RESEARCH_LIMIT', 'RESEARCH_INVALID',
   'EADDRINUSE', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'TIMEOUT', 'KILLED', 'TRANSCRIPT_CORRUPT', 'TRANSCRIPT_TAIL',
   'SEAT_LENS_REQUIRED', 'SEAT_LENS_DUPLICATE', 'SEAT_MOOD_REQUIRED']);
 const FILES = new Set(['server.js', 'store.js', 'history.js', 'engine.js', 'export.js', 'validate.js', 'estimate.js',
@@ -38,6 +40,8 @@ function fields(input) {
     action: ACTIONS.has(input?.action) ? input.action : 'unknown' };
   if (['claude', 'codex', 'agy', 'api'].includes(input?.vendor)) out.vendor = input.vendor;
   if (KINDS.has(input?.kind)) out.kind = input.kind;
+  const progress = safeProgress(input?.progress);
+  if (Object.keys(progress).length) out.progress = progress;
   if (SYSTEM_CODES.has(input?.systemCode)) out.systemCode = input.systemCode;
   if (['lens', 'moodText'].includes(input?.field)) out.field = input.field;
   if (['human', 'wall-clock'].includes(input?.cancelReason)) out.cancelReason = input.cancelReason;

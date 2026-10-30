@@ -114,6 +114,8 @@ test('the JSON agent checks without calls, answers grouped questions, rejects st
     assert.equal(status.board, `${srv.base}/#${id}`);
     const help = (await agent('--help')).result;
     assert.ok(help.recipe?.lenses && help.recipe?.context, 'the help carries the small-review recipe');
+    assert.match(help.recipe.isolation, /options\.allowLimitedIsolation=true/);
+    assert.match(help.recipe.isolation, /user has agreed/);
 
     // Resume before round zero, stop at a gate, then reload from disk. All three CLI note
     // paths retain their source; a direct board-style request still defaults to human.
@@ -224,6 +226,14 @@ test('a board that reconnects gets what it missed as new events; a fresh board g
     // The board watches until the first gate, then its connection drops.
     const before = await readEvents(await stream(), (e) => e.type === 'gate');
     assert.ok(before.lastId, 'every event carries an id');
+    // No event has been missed: the browser still needs headers now so EventSource can open
+    // and clear its reconnecting state without a human action advancing the review.
+    const idle = await fetch(`${srv.base}/api/debates/${slug}/events`, {
+      headers: { 'last-event-id': before.lastId }, signal: AbortSignal.timeout(2000),
+    });
+    assert.equal(idle.status, 200);
+    assert.match(idle.headers.get('content-type'), /text\/event-stream/);
+    await idle.body.cancel();
     // Another client moves the review on, and it finishes while the board is away.
     await readEvents(await stream(), (e) => e.type === 'done' && !e.replayed, async (e) => { if (e.type === 'gate') await post(`/api/debates/${slug}/continue`); });
     const missed = await readEvents(await stream({ 'last-event-id': before.lastId }), (e) => e.type === 'done');
@@ -731,7 +741,7 @@ test('Stop cancels all work at a gate and during automatic or manual verdicts', 
       assert.match((await cancelled.json()).warning, /Question answers were not submitted/);
       const ended = await readEvents(await fetch(`${srv.base}${route}/events`, { headers: { 'last-event-id': before.revision } }), (e) => e.type === 'done');
       assert.equal(ended.at(-1).cancelled, true);
-      assert.equal(ended.at(-1).reason, 'human');
+      assert.equal(ended.at(-1).reason, atGate ? 'human' : before.stopReason);
       assert.equal(ended.at(-1).synthesis, 'skipped');
       const file = path.join(root, slug, 'transcript.jsonl');
       const rows = () => readFileSync(file, 'utf8').trim().split('\n').map(JSON.parse);
@@ -755,7 +765,7 @@ test('Stop cancels all work at a gate and during automatic or manual verdicts', 
       srv = await startFakeServer(root);
       const replay = await getState(slug);
       assert.equal(replay.status, 'done');
-      assert.equal(replay.stopReason, 'human');
+      assert.equal(replay.stopReason, atGate ? 'human' : before.stopReason);
       assert.equal(replay.verdict.status, 'skipped');
       assert.deepEqual(replay.actions, ['verdict'], 'only an explicit request can start another call');
     }

@@ -18,11 +18,24 @@ export function hiddenMood(text) {
   const word = String(text || '').trim().toLowerCase();
   return word ? HIDDEN_MOODS.find((h) => h.codes.includes(word)) || null : null;
 }
-// A hidden mood may also clean its replies in code (strip: a pattern to delete), for what a
-// cheap model will not leave out however it is asked.
+// Remove complete parentheticals in one pass, preserving unmatched openings. A regex that
+// searches again after every unmatched opening or whitespace character can stall the server.
 export function filterReply(mood, text) {
   const h = mood?.hidden && HIDDEN_MOODS.find((x) => x.art === mood.hidden);
-  return h?.strip ? String(text).replace(new RegExp(h.strip, 'g'), '') : text;
+  if (!h?.stripParentheticals) return text;
+  const body = String(text), parts = [];
+  let from = 0, search = 0;
+  while (search < body.length) {
+    const open = body.indexOf('(', search);
+    if (open < 0) break;
+    const close = body.indexOf(')', open + 1);
+    if (close < 0) break;
+    let start = open;
+    while (start > from && /\s/.test(body[start - 1])) start--;
+    parts.push(body.slice(from, start));
+    from = search = close + 1;
+  }
+  return parts.join('') + body.slice(from);
 }
 // The cheapest model each CLI offers (adapters/models.js marks claude's and codex's lightest).
 // agy: Flash-low over gpt-oss-120b-medium, measured on a hidden-mood prompt: the same input,
@@ -137,6 +150,11 @@ function normaliseMood(m, { hidden = false } = {}) {
 // with the browser, so the card can say the same thing the server will.
 
 export const KEY_ENV_RE = /^[A-Z_][A-Z0-9_]{0,63}$/; // an identifier: a pasted key is refused on shape alone
+// Browser preferences must never retain an invalid value while the form reports its error.
+export function keyEnvName(value) {
+  const name = typeof value === 'string' ? value.trim() : '';
+  return KEY_ENV_RE.test(name) ? name : '';
+}
 
 // On this machine or on a private network: loopback, link-local, RFC 1918, ULA, a bare LAN
 // name, or the local-only suffixes. Plain http is allowed only here, so a key never crosses the

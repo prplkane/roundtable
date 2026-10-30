@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { dataDirectory, acquireDataLock, checkedHistoryPath, removeHistory, createUsageStore } from '../src/history.js';
+import { dataDirectory, acquireDataLock, checkedHistoryPath, removeHistory, createUsageStore, createHistoryIndex } from '../src/history.js';
 import { slugFor } from '../src/store.js';
 
 const temporary = () => mkdtempSync(path.join(os.tmpdir(), 'rt-history-'));
@@ -12,6 +12,39 @@ function saved(root, id, rows) {
   writeFileSync(path.join(dir, 'transcript.jsonl'), rows.map(JSON.stringify).join('\n') + '\n');
   return dir;
 }
+
+test('history summaries are cached, refreshed and asynchronously read without retaining replays', async () => {
+  const root = temporary();
+  const head = (decision) => ({ type: 'field-notes', schemaVersion: 3, fieldNotes: { decision, options: ['Trial', 'Wait'] }, seats: [], chairman: { vendor: 'claude' } });
+  saved(root, 'one', [head('First')]);
+  const index = createHistoryIndex(root, { limit: 2 });
+  let yielded = false; const tick = new Promise((resolve) => setImmediate(() => { yielded = true; resolve(); }));
+  const first = await index.list(); assert.equal(yielded, true); await tick;
+  const second = await index.list(); assert.equal(second[0], first[0], 'unchanged summaries are reused');
+  assert.equal('rounds' in first[0] && Array.isArray(first[0].rounds), false, 'no transcript/round bodies in the index');
+  writeFileSync(path.join(root, 'one', 'transcript.jsonl'), JSON.stringify(head('A changed decision')) + '\n');
+  assert.equal((await index.list())[0].decision, 'A changed decision');
+  saved(root, 'two', [head('Second')]); saved(root, 'three', [head('Third')]);
+  const overLimit = await index.list();
+  const again = await index.list();
+  assert.equal(overLimit.length, 3, 'cache bound does not hide records');
+  assert.ok(again.filter((row) => overLimit.includes(row)).length >= 2, 'misses do not evict upcoming hits');
+  const third = await index.list();
+  assert.ok(third.filter((row) => again.includes(row)).length >= 2, 'a history above the limit does not thrash');
+  removeHistory(root, 'one'); assert.equal((await index.list()).some((x) => x.slug === 'one'), false);
+});
+
+test('history summaries show corruption and torn tails without repairing the transcript', async () => {
+  const root = temporary(), errors = [];
+  const header = JSON.stringify({ type: 'field-notes', fieldNotes: { decision: 'Synthetic', options: ['Trial', 'Wait'] }, seats: [] });
+  const dir = saved(root, 'torn', []), file = path.join(dir, 'transcript.jsonl'), original = header + '\n{"type":';
+  writeFileSync(file, original);
+  const index = createHistoryIndex(root, { onWarning: (e) => errors.push(e) });
+  assert.match((await index.list())[0].warning, /incomplete final line/);
+  assert.equal(readFileSync(file, 'utf8'), original);
+  writeFileSync(file, header + '\nnot json\n');
+  assert.equal((await index.list())[0].state, 'corrupt'); assert.equal(errors.length, 1);
+});
 
 test('default history lives in the OS data folder, with separate live and demo paths', () => {
   const root = temporary(), home = path.join(root, 'home');

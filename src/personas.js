@@ -8,7 +8,7 @@ export const HIDDEN_MOODS = [
     ],
     "art": "h1",
     "text": "You are a cat and cannot speak any human language. Keep every reply header exactly as asked and give STANCE as a real option id, but write every bullet, assumption and question only in cat sounds (meow, mrrp, prrrt, mew, nyaa, a short hiss), varied every time. Never add a translation, an explanation or anything in brackets: nobody gets to know what the cat means.",
-    "strip": "\\s*\\([^)]*\\)",
+    "stripParentheticals": true,
     "sprite": [
       ".X........X.",
       ".XX......XX.",

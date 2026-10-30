@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createDebate, rollup, positions } from '../src/engine.js';
+import { classifyError } from '../src/adapters/errors.js';
 
 const FIELD_NOTES = { decision: 'Ship the new checkout?', options: ['Ship now', 'Wait a sprint'], constraints: 'two devs' };
 const SEATS = [
@@ -42,6 +43,7 @@ function fakeRunner(script) {
 const GOOD_VERDICT = 'RECOMMENDATION: opt-1\nShip it.\nTALLY:\n- opt-1: risk\nDISSENT: cost wanted a sprint\nKILL_CRITERIA:\n- errors above 2%\nOPEN_QUESTIONS:\n- is the deadline movable?';
 const autoGate = async () => ({ action: 'continue' });
 const stub = () => ({ append() {}, writeFieldNotes() {}, writeVerdict() {} });
+const inputs = (prompt, kind) => prompt.split('\n').filter((l) => l.startsWith('{')).map((l) => JSON.parse(l)).filter((r) => !kind || r.kind === kind);
 
 test('a note before resumed round zero reaches fresh seats, stateless retries and later rounds, and every chairman', async () => {
   for (const memory of ['stateless', 'resume']) {
@@ -80,6 +82,25 @@ const disagreeForever = (vendor, round) => {
   if (round === 'reprompt') return reply('Ship now');
   return reply(vendor === 'claude' ? 'Ship now' : vendor === 'codex' ? 'Wait a sprint' : 'other: split it');
 };
+
+test('a timed-out seat explains its earlier missing usage and never disguises it as a measured cap exhaustion', async () => {
+  const fr = fakeRunner(disagreeForever), events = [];
+  let calls = 0;
+  const d = createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS, chairman: { vendor: 'claude' }, gate: autoGate,
+    store: stub(), options: { critiqueRounds: 1 }, emit: (_, event) => events.push(event),
+    runner: async (vendor, ...args) => {
+      if (vendor === 'codex') { calls++; throw Object.assign(new Error('fixture timeout'), { code: 'TIMEOUT' }); }
+      return fr.runner(vendor, ...args);
+    } });
+  const state = await d.run();
+  assert.equal(calls, 1, 'no call is made while earlier usage is unknown');
+  const refusal = state.rounds[1].find((r) => r.seat.vendor === 'codex');
+  assert.match(refusal.errors[0], /earlier call timed out before reporting token usage/);
+  assert.match(refusal.errors[0], /spending is unknown/);
+  const block = events.find((e) => e.kind === 'seat-tokens-unknown');
+  assert.equal(block.cause, 'timeout'); assert.equal(block.spent, 0); assert.equal(block.cap, 400000);
+  assert.equal(state.verdict.failed, false, 'other providers can finish');
+});
 
 test('a budget-skipped chairman keeps its configuration available to the live recovery controls', async () => {
   const chairman = { vendor: 'claude', model: 'sonnet', effort: 'low', account: 'review' };
@@ -132,7 +153,7 @@ test('Stop during manual synthesis keeps its note with the completed round and p
   const inFlight = new Promise((resolve) => { entered = resolve; });
   const finishCall = new Promise((resolve) => { release = resolve; });
   const d = createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS, chairman: { vendor: 'claude' },
-    synthesisOnly: true, resume: { rounds: prior.rounds, humanNotes: prior.humanNotes, ledger: [] },
+    synthesisOnly: true, resume: { rounds: prior.rounds, humanNotes: prior.humanNotes, ledger: [], stopReason: prior.stopReason },
     options: { networkRetryMs: 1 }, store: { append: (row) => rows.push(row) }, gate: autoGate,
     runner: async () => { calls++; entered(); await finishCall; throw Object.assign(new Error('network fixture'), { kind: 'network', usage: { input: 1, output: 1 } }); },
   });
@@ -140,7 +161,9 @@ test('Stop during manual synthesis keeps its note with the completed round and p
   assert.ok(rows.some((r) => r.type === 'human' && r.round === 0 && r.text === 'Stop this synthesis.'));
   release(); const state = await running;
   assert.equal(calls, 1); assert.equal(state.verdict.skipped, true);
-  assert.equal(state.stopReason, 'human');
+  assert.equal(state.stopReason, prior.stopReason, 'cancelling synthesis preserves why the discussion ended');
+  assert.ok(rows.some((r) => r.type === 'synthesis-cancelled'));
+  assert.ok(!rows.some((r) => r.type === 'stop'), 'synthesis does not overwrite the discussion stop');
 });
 
 test('round cap: stops after round 0 plus critiqueRounds', async () => {
@@ -277,7 +300,7 @@ test('anonymisation: later rounds carry lens labels only, never vendors, never t
   assert.equal(r1.length, 3);
   for (const c of r1) {
     assert.doesNotMatch(c.prompt, /claude|codex|agy|antigravity|openai|google|anthropic/i);
-    const lensesShown = ['risk', 'cost', 'customer'].filter((l) => c.prompt.includes(`### Seat: ${l}`));
+    const lensesShown = inputs(c.prompt, 'seat').map((r) => r.lens);
     const own = SEATS.find((s) => s.vendor === c.vendor).lens;
     assert.equal(lensesShown.length, 2);
     assert.ok(!lensesShown.includes(own), `${c.vendor} saw its own reply`);
@@ -286,7 +309,7 @@ test('anonymisation: later rounds carry lens labels only, never vendors, never t
   // round 0 is blind: fresh sessions, no peer text
   for (const c of fr.calls.filter((c) => c.round === 0)) {
     assert.equal(c.sessionId, null);
-    assert.doesNotMatch(c.prompt, /### Seat:/);
+    assert.equal(inputs(c.prompt, 'seat').length, 0);
   }
 });
 
@@ -305,7 +328,7 @@ test('re-prompt once on a contract violation, then give up', async () => {
   assert.match(codexCalls[1].prompt, /missing STANCE line/);
   // stateless (the default): the re-prompt is self-contained, so it carries the offending reply
   // after the same stable prefix, and resumes nothing
-  assert.match(codexCalls[1].prompt, /### Your reply\nI just think we should ship\./);
+  assert.equal(inputs(codexCalls[1].prompt, 'own_reply')[0].text, 'I just think we should ship.');
   assert.ok(codexCalls[1].prompt.indexOf('--- FIELD NOTES ---') < codexCalls[1].prompt.indexOf('did not follow'), 'stable prefix first');
   assert.ok(codexCalls.every((c) => c.sessionId === null));
   const r0 = s.rounds[0].find((r) => r.seat.vendor === 'codex');
@@ -341,7 +364,7 @@ test('chairman is a fresh session of a vendor that did not deliberate in that se
   assert.equal(last.vendor, 'codex');
   assert.equal(last.sessionId, null, 'chairman must not resume a deliberating session');
   assert.match(last.prompt, /chairman/i);
-  assert.match(last.prompt, /### risk/);
+  assert.ok(inputs(last.prompt, 'seat').some((r) => r.lens === 'risk'));
   assert.doesNotMatch(last.prompt, /claude|agy/i);
 });
 
@@ -397,7 +420,7 @@ test('two instances of one vendor are independent: own sessions, own moods, each
   assert.equal(r0[1].opts.effort, undefined);
   assert.equal(r0[1].opts.model, 'gpt-6.1-sol');
   // in round 1, seat-1 sees seat-0's text under its lens only; never a vendor, id or label
-  assert.match(r1[1].prompt, /### Seat: risk\n[\s\S]*from risk: the other side is wrong/);
+  assert.match(inputs(r1[1].prompt, 'seat').find((r) => r.lens === 'risk').text, /from risk: the other side is wrong/);
   assert.doesNotMatch(r1[1].prompt, /codex|claude|seat-0|Codex 1/i);
   assert.doesNotMatch(r1[1].prompt, /from cost:/, 'a seat is not shown its own earlier reply');
   // the chairman gets lens labels only, too
@@ -418,11 +441,11 @@ test('stateless rounds (the default): fresh calls, own last reply first, then th
     const own = SEATS.find((x) => x.vendor === c.vendor).lens;
     assert.doesNotMatch(c.prompt, /claude|codex|agy|antigravity|openai|google|anthropic/i);
     const iNotes = c.prompt.indexOf('--- FIELD NOTES ---'), iContract = c.prompt.indexOf('Reply with ONLY these lines');
-    const iOwn = c.prompt.indexOf(`### Your reply in round 0\nSTANCE:`), iOthers = c.prompt.indexOf('### Seat: '), iNote = c.prompt.indexOf('Mind the deadline');
+    const iOwn = c.prompt.indexOf('{"kind":"own_reply"'), iOthers = c.prompt.indexOf('{"kind":"seat"'), iNote = c.prompt.indexOf('Mind the deadline');
     assert.ok(iNotes > 0 && iContract > iNotes && iOwn > iContract && iOthers > iOwn && iNote > iOthers, `order: notes, contract, own, others, note (${[iNotes, iContract, iOwn, iOthers, iNote]})`);
-    assert.match(c.prompt, new RegExp(`### Your reply in round 0\\n[\\s\\S]*${own} says round 0`), 'the seat sees its own last reply');
-    assert.ok(!c.prompt.includes(`### Seat: ${own}`), 'and not as a peer');
-    for (const other of SEATS.filter((x) => x.vendor !== c.vendor)) assert.match(c.prompt, new RegExp(`### Seat: ${other.lens}\\n[\\s\\S]*${other.lens} says round 0`));
+    assert.ok(inputs(c.prompt, 'own_reply')[0].text.includes(`${own} says round 0`), 'the seat sees its own last reply');
+    assert.ok(!inputs(c.prompt, 'seat').some((r) => r.lens === own), 'and not as a peer');
+    for (const other of SEATS.filter((x) => x.vendor !== c.vendor)) assert.ok(inputs(c.prompt, 'seat').find((r) => r.lens === other.lens).text.includes(`${other.lens} says round 0`));
     assert.match(c.prompt, /^Round 1 of 2\./m);
   }
   // round 2 carries round-1 text, not round-0 text; the round-0 note carries forward, labelled
@@ -431,13 +454,13 @@ test('stateless rounds (the default): fresh calls, own last reply first, then th
   const r2 = fr.calls.find((c) => c.round === 2 && c.vendor === 'codex');
   assert.match(r2.prompt, /cost says round 1/);
   assert.doesNotMatch(r2.prompt, /says round 0/);
-  assert.match(r2.prompt, /- Human — After round 0 \(latest\): Mind the deadline/);
+  assert.ok(inputs(r2.prompt, 'note').some((r) => r.author === 'Human' && r.round === 0 && r.latest && r.text === 'Mind the deadline'));
   // transcript rows say every call was fresh and carry the session the CLI reported
   const replies = rows.filter((r) => r.type === 'reply');
   assert.equal(replies.length, 9);
   assert.ok(replies.every((r) => r.fresh === true && r.sessionId === `sess-${r.seat.id}`));
   // round 0 itself is unchanged
-  for (const c of fr.calls.filter((c) => c.round === 0)) assert.doesNotMatch(c.prompt, /### Seat:|### Your reply/);
+  for (const c of fr.calls.filter((c) => c.round === 0)) assert.equal(inputs(c.prompt).length, 0);
 });
 
 test('resume mode keeps the thread: later rounds resume the session and carry no own reply', async () => {
@@ -496,7 +519,7 @@ test('the engine emits seat states: thinking, replied, reprompted, failed, timed
   assert.ok(ev2.some((e) => e.type === 'seat-state' && e.seat.lens === 'customer' && e.state === 'failed'));
 });
 
-test('tool-use guard: one re-prompt that says tools are not allowed, then the seat fails for the round', async () => {
+test('tool-use guard: one violation stops the seat without retry, context reuse or a disabling option', async () => {
   const { d, fr, events } = debate((v, round, prior) => {
     if (v !== 'codex') return disagreeForever(v, round);
     if (round === 0) return { text: reply('Wait a sprint'), usedTools: true };          // round 0: tools once, then clean
@@ -506,24 +529,71 @@ test('tool-use guard: one re-prompt that says tools are not allowed, then the se
   }, { options: { critiqueRounds: 1 } });
   const s = await d.run();
   const codex = fr.calls.filter((c) => c.vendor === 'codex');
-  assert.equal(codex.length, 4);
-  assert.match(codex[1].prompt, /Tools are not allowed at this table/);
-  assert.match(codex[1].prompt, /used tools or ran commands/);
+  assert.equal(codex.length, 1);
   const r0 = s.rounds[0].find((r) => r.seat.vendor === 'codex');
-  assert.equal(r0.valid, true, 'the clean second answer counts');
-  assert.equal(r0.reprompted, true);
+  assert.equal(r0.valid, false, 'a tool-assisted answer is rejected immediately');
+  assert.equal(r0.reprompted, false);
   assert.equal(r0.usedTools, true, 'the row remembers the first attempt');
-  assert.equal(r0.toolFail, false);
+  assert.equal(r0.toolFail, true);
+  assert.equal(r0.text, '');
+  assert.equal(r0.sessionId, null);
   const r1 = s.rounds[1].find((r) => r.seat.vendor === 'codex');
   assert.equal(r1.failed, true);
   assert.equal(r1.toolFail, true);
   assert.equal(r1.stanceKey, 'other: no reply');
-  assert.match(r1.errors[0], /used tools again/);
+  assert.match(r1.errors[0], /provider-policy failure/);
   assert.ok(events.some((e) => e.type === 'seat-state' && e.seat.lens === 'cost' && e.round === 1 && e.state === 'failed'));
-  // strictTools off: the same replies pass
+  // Legacy or direct callers cannot disable the guard.
   const { d: lax } = debate((v, round) => ({ text: disagreeForever(v, round), usedTools: true }), { options: { critiqueRounds: 0, strictTools: false } });
   const s2 = await lax.run();
-  assert.ok(s2.rounds[0].every((r) => r.valid && !r.reprompted));
+  assert.ok(s2.rounds[0].every((r) => !r.valid && !r.reprompted && r.toolFail));
+  assert.equal(s2.options.strictTools, true);
+});
+
+test('a protocol failure with known usage neither retries nor reuses the previous session', async () => {
+  const rows = [];
+  const fr = fakeRunner((vendor, round) => {
+    if (vendor === 'codex' && round === 1) {
+      const failure = { code: 'PROVIDER_PROTOCOL', message: 'network error in a truncated event' };
+      throw Object.assign(new Error(failure.message), failure, classifyError(failure), { usage: { input: 17, output: 3 }, sessionId: 'rejected-session' });
+    }
+    return disagreeForever(vendor, round);
+  });
+  const state = await createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS, runner: fr.runner, gate: autoGate,
+    store: { append: (row) => rows.push(row) }, options: { critiqueRounds: 2, memory: 'resume', networkRetryMs: 0 } }).run();
+  const calls = fr.calls.filter((call) => call.vendor === 'codex');
+  assert.equal(calls.length, 2, 'one successful call and one terminal failure, with no retry or later call');
+  assert.equal(calls[1].sessionId, 'sess-seat-1');
+  assert.equal(state.rounds[1][1].sessionId, null);
+  assert.equal(state.rounds[2][1].sessionId, null);
+  assert.equal(state.rounds[1][1].text, '');
+  const failed = rows.find((row) => row.type === 'attempt' && row.errorKind === 'policy');
+  assert.equal(failed.usage.input, 17, 'known spending survives rejection');
+});
+
+test('policy failures survive recovery and rejected historical text cannot reach a fresh chairman', async () => {
+  const marker = 'REJECTED_TOOL_EVIDENCE';
+  for (const memory of ['stateless', 'resume']) {
+    const fr = fakeRunner((v, round) => v === 'codex' ? { text: reply('Wait a sprint', { new: marker }), usedTools: true } : disagreeForever(v, round));
+    const rows = [];
+    const s = await createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS, runner: fr.runner, gate: autoGate,
+      store: { append: (r) => rows.push(r) }, options: { critiqueRounds: 1, memory } }).run();
+    assert.equal(fr.calls.filter((c) => c.vendor === 'codex').length, 1);
+    assert.ok(fr.calls.every((c) => !c.prompt.includes(marker)));
+    const failed = rows.find((r) => r.type === 'attempt' && r.errorKind === 'policy');
+    assert.equal(failed.usage.input, 10);
+    // Older versions saved text from a tool-assisted repair as valid: exclude it without
+    // rewriting the user's saved record, including on manual synthesis.
+    const oldRounds = s.rounds.map((rs) => rs.map((r) => r.seat.vendor === 'codex' ? { ...r, text: marker, failed: false, valid: true, usedTools: true } : r));
+    const recovered = fakeRunner(disagreeForever);
+    await createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS, runner: recovered.runner, gate: autoGate, store: stub(), synthesisOnly: true,
+      options: { memory, strictTools: false }, resume: { rounds: oldRounds, humanNotes: [], ledger: rows.filter((r) => r.type === 'attempt') } }).run();
+    assert.ok(recovered.calls.every((c) => !c.prompt.includes(marker)));
+    const interrupted = fakeRunner(disagreeForever);
+    await createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS, runner: interrupted.runner, gate: autoGate, store: stub(), options: { critiqueRounds: 0 },
+      resume: { rounds: [], humanNotes: [], ledger: [failed] } }).run();
+    assert.equal(interrupted.calls.filter((c) => c.vendor === 'codex').length, 0, 'the durable attempt blocks a seat even without its reply row');
+  }
 });
 
 test('budget cap: a round whose projection would cross the vendor cap is not run; the gate names the vendor', async () => {
@@ -734,10 +804,10 @@ test('every human note carries forward, labelled: rounds 1 to 3 and a stateless 
   await d.run();
   for (const r of [1, 2, 3]) {
     const p = fr.calls.find((c) => c.round === r && c.vendor === 'claude').prompt;
-    assert.match(p, /- Human — After round 0[^\n]*: Traffic doubled last month/, `round ${r} keeps the round-0 note`);
+    assert.ok(inputs(p, 'note').some((n) => n.author === 'Human' && n.round === 0 && n.text === notes[0]), `round ${r} keeps the round-0 note`);
   }
   const r3 = fr.calls.find((c) => c.round === 3 && c.vendor === 'claude').prompt;
-  assert.match(r3, /- Human — After round 0: Traffic doubled last month\n- Human — After round 1 \(latest\): Budget is fixed/);
+  assert.deepEqual(inputs(r3, 'note').map((n) => [n.round, n.latest, n.text]), [[0, false, notes[0]], [1, true, notes[1]]]);
   const reprompt = fr.calls.find((c) => c.round === 'reprompt' && c.vendor === 'codex').prompt;
   assert.match(reprompt, /Traffic doubled last month/);
   assert.match(reprompt, /Budget is fixed/);
@@ -753,16 +823,14 @@ test('resume mode sends only the notes the thread has not seen', async () => {
 });
 
 // S8: the chairman is checked; the wall clock is one absolute deadline.
-test('a chairman that uses tools is re-prompted once, then its verdict is recorded failed', async () => {
+test('a chairman that uses tools fails immediately and preserves its attempt accounting', async () => {
   const rows = [];
   const fr = fakeRunner((v, round) => (round === 'verdict' ? { text: GOOD_VERDICT, usedTools: true } : disagreeForever(v, round)));
   const d = createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS, runner: fr.runner, gate: autoGate, store: { append: (r) => rows.push(r) }, emit() {}, options: { critiqueRounds: 0 } });
   const s = await d.run();
   const chair = fr.calls.filter((c) => c.round === 'verdict');
-  assert.equal(chair.length, 2, 'one re-prompt');
-  assert.match(chair[1].prompt, /did not follow the required format/);
-  assert.match(chair[1].prompt, /Tools are not allowed/);
-  assert.doesNotMatch(chair[1].prompt, /--- TRANSCRIPT/, 'the re-prompt fixes the form; the transcript stays out');
+  assert.equal(chair.length, 1, 'no policy repair');
+  assert.ok(rows.some((r) => r.type === 'attempt' && r.kind === 'verdict' && r.errorKind === 'policy' && r.usage));
   assert.equal(s.verdict.failed, true);
   assert.ok(rows.some((r) => r.type === 'verdict' && r.failed === true));
 });
@@ -1115,7 +1183,7 @@ test('seat cap: a seat that would pass its own token cap sits out; a hidden mood
 
 test('a chairman whose first attempt has nothing to keep is re-prompted with the whole question, not just the format', async () => {
   let n = 0;
-  const fr = fakeRunner((v, round) => (round === 'verdict' ? (n++ === 0 ? { text: "I'll create a plan file and put the RECOMMENDATION there.", usedTools: true } : GOOD_VERDICT) : disagreeForever(v, round)));
+  const fr = fakeRunner((v, round) => (round === 'verdict' ? (n++ === 0 ? 'My RECOMMENDATION is not formatted.' : GOOD_VERDICT) : disagreeForever(v, round)));
   const d = createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS, runner: fr.runner, gate: autoGate, store: stub(), emit() {}, options: { critiqueRounds: 0 } });
   const s = await d.run();
   const chair = fr.calls.filter((c) => c.round === 'verdict');

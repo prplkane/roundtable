@@ -122,6 +122,17 @@
           <div class="field"><label class="label help-label" data-help="wall" tabindex="0" for="wall" aria-describedby="help-wall">Wall clock (min)</label><input id="wall" type="number" min="1" max="180" value="30" aria-describedby="help-wall"></div>
           <div class="field"><label class="label help-label" data-help="memory" tabindex="0" for="memory" aria-describedby="help-memory">Memory</label><select id="memory" aria-describedby="help-memory"><option value="stateless">stateless: fresh call per round</option><option value="resume">resume: re-send the thread</option></select></div>
           <div class="field field-check"><label class="label help-label" data-help="unattended" tabindex="0" for="unattended" aria-describedby="help-unattended">Unattended</label><label class="check"><input id="unattended" type="checkbox" aria-describedby="help-unattended"><span class="switch" aria-hidden="true"></span><span class="switch-text" data-off="off" data-on="armed"></span></label></div>
+          <div class="field"><label class="check"><input id="limited-isolation" type="checkbox">Allow limited isolation for Antigravity</label><p class="hint">Antigravity tool rules deny operations, but shared customizations and MCP discovery cannot be disabled. Reported tool activity still stops the seat.</p></div>
+        </div>
+      </section>
+
+      <section class="panel" id="research-setup">
+        <div class="panel-title"><label class="check"><input id="research-enabled" type="checkbox">Research first with Codex</label></div>
+        <p class="hint">One extra subscription call gathers sources for every seat. Estimates include space for shared sources in later replies. Discussion then runs with tools disabled.</p>
+        <div id="research-fields" hidden>
+          <div class="field"><label class="label" for="research-query">Public search question</label><textarea id="research-query" maxlength="2000" rows="2" placeholder="What should be checked on the web?"></textarea><p class="hint">Only this question goes into research; review it for private details before starting.</p></div>
+          <div class="fields fields-row"><div class="field"><label class="label" for="research-searches">Search limit</label><input id="research-searches" type="number" min="1" max="8" value="4"></div><div class="field"><label class="label" for="research-time">Time limit (seconds)</label><input id="research-time" type="number" min="30" max="600" value="120"></div></div>
+          <p class="hint">The search limit counts operations reported by Codex; an operation can contain several queries or page visits. An excess operation may start before its report arrives. Sources and excerpts are supplied by Codex and are not independently checked.</p>
         </div>
       </section>
 
@@ -149,6 +160,8 @@
         <table id="usage"><thead><tr><th class="label">Pool / seat</th><th class="label">In</th><th class="label">Cache</th><th class="label">Out</th><th class="label">Cost</th><th class="label">Time</th><th class="label" title="Input tokens, cache included, that this seat sent in the latest round">Round in</th></tr></thead><tbody></tbody></table>
         </details>
       </section>
+
+      <section id="research-panel" class="panel" hidden aria-labelledby="research-heading"><div class="panel-title"><span id="research-heading">Shared web evidence</span></div><div id="research-body"></div></section>
 
       <section id="questions-panel" class="panel questions-panel" hidden aria-labelledby="questions-heading">
         <div class="panel-title"><span id="questions-heading">Questions for you</span><span id="questions-count" class="hint"></span></div>

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync, statSync, chmodSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { decisionRecord, updateIndex, validateTarget, recordPath, exportDebate, chosenOption, parseVerdict, ownsRecord } from '../src/export.js';
@@ -155,6 +155,25 @@ test('exportDebate refuses what it did not write: a record collision, a foreign 
   const legacyRecord = decisionRecord(rows(), slug).markdown.replace(`roundtable: ${slug}\n`, '').replace('Recommended by a roundtable', 'Decided by a roundtable');
   assert.ok(ownsRecord(legacyRecord, slug));
   assert.ok(!ownsRecord(legacyRecord, 'another-slug'));
+});
+
+test('POSIX exports follow umask for new files and preserve existing shared permissions', { skip: process.platform === 'win32' }, () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'rt-export-mode-'));
+  const previous = process.umask(0o022);
+  try {
+    const out = exportDebate(rows(), 'shared-record', dir);
+    const mode = (file) => statSync(file).mode & 0o777;
+    assert.equal(mode(out.path), 0o644);
+    assert.equal(mode(out.indexPath), 0o644);
+    chmodSync(out.path, 0o640); chmodSync(out.indexPath, 0o664);
+    process.umask(0o077);
+    exportDebate(rows(VERDICT, 'human'), 'shared-record', dir);
+    assert.equal(mode(out.path), 0o640, 'existing record access survives a stricter current umask');
+    assert.equal(mode(out.indexPath), 0o664, 'the shared index keeps group write access');
+    const added = exportDebate(rows(), 'new-private-record', dir);
+    assert.equal(mode(added.path), 0o600, 'new files still respect a private umask');
+    assert.equal(mode(added.indexPath), 0o664);
+  } finally { process.umask(previous); }
 });
 
 test('exportDebate writes the record and the index, and re-exporting overwrites both', () => {
