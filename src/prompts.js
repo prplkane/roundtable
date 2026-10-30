@@ -15,7 +15,9 @@ const NO_TOOLS = 'Answer from this prompt only. Do not use any tools, do not rea
 // parser can read them. The instructions themselves stay English: shorter, and every model reads them.
 const LANGUAGE = 'Write in the language of the DECISION line (for example, Russian if it is written in Russian). Keep every section header exactly as shown, in English.';
 
-export function contractText(options) {
+// unattended: nobody answers questions in this review, so the seat is told to assume instead of
+// ask; the question line leaves the contract, which also keeps its tokens out of every call.
+export function contractText(options, unattended = false) {
   return [
     'Reply with ONLY these lines, in this order, nothing before or after:',
     'Aim for 140 words total. Use short, specific bullets; do not repeat the field notes.',
@@ -28,8 +30,10 @@ export function contractText(options) {
     'NEW:',
     '- up to 2 short bullets of new evidence or angles, or "none"',
     'ASSUMPTIONS:',
-    '- up to 3 short bullets: what must be true for your stance',
-    'QUESTION_FOR_HUMAN: <optional; one unanswered question that would change your stance; omit this entire line if none, never write a placeholder or commentary; do not repeat an answered question>',
+    ...(unattended
+      ? ['- up to 3 short bullets: what must be true for your stance, including whatever you would have asked the human; nobody answers questions in this review, so never write QUESTION_FOR_HUMAN']
+      : ['- up to 3 short bullets: what must be true for your stance',
+        'QUESTION_FOR_HUMAN: <optional; one unanswered question that would change your stance; ask as soon as a missing goal or constraint matters, not at the end; omit this entire line if none, never write a placeholder or commentary; do not repeat an answered question>']),
     '',
     'If you have nothing new to add and no change of stance, reply with the single word PASS instead.',
   ].join('\n');
@@ -48,7 +52,7 @@ export function fieldNotesText(fn) {
   return lines.join('\n');
 }
 
-export function round0Prompt({ fieldNotes, lens, mood, seatCount, notes = [] }) {
+export function round0Prompt({ fieldNotes, lens, mood, seatCount, notes = [], unattended = false }) {
   return [
     `You are one of ${seatCount} seats at a roundtable deciding a question. You speak through the lens: ${lens}.`,
     moodIntro(mood),
@@ -60,14 +64,14 @@ export function round0Prompt({ fieldNotes, lens, mood, seatCount, notes = [] }) 
     '--- END ---',
     '',
     ...notesBlock(notes),
-    contractText(fieldNotes.options),
+    contractText(fieldNotes.options, unattended),
   ].join('\n');
 }
 
 // The part of a stateless prompt that is the same for one seat in every round: who it is, the
 // field notes and the contract. It goes first so a vendor's prompt cache can serve it; what
 // changes each round follows it (statelessRoundPrompt, statelessRepromptText).
-export function statelessPrefix({ fieldNotes, lens, mood, seatCount }) {
+export function statelessPrefix({ fieldNotes, lens, mood, seatCount, unattended = false }) {
   return [
     `You are one of ${seatCount} seats at a roundtable deciding a question. You speak through the lens: ${lens}.`,
     moodIntro(mood),
@@ -77,7 +81,7 @@ export function statelessPrefix({ fieldNotes, lens, mood, seatCount }) {
     fieldNotesText(fieldNotes),
     '--- END ---',
     '',
-    contractText(fieldNotes.options),
+    contractText(fieldNotes.options, unattended),
   ].join('\n');
 }
 
@@ -138,7 +142,7 @@ export function statelessRepromptText({ prefix, round, maxRound, text, errors, e
 
 // Resume mode: the seat's own thread already holds every earlier round, notes included, so only
 // the notes given since its last call are new (sending all again would pay for them twice).
-export function roundPrompt({ round, maxRound, others, notes, options, mood }) {
+export function roundPrompt({ round, maxRound, others, notes, options, mood, unattended = false }) {
   const parts = [
     `Round ${round} of ${maxRound}. The other seats replied as follows in round ${round - 1}, identified by lens only.`,
     moodIntro(mood),
@@ -153,12 +157,12 @@ export function roundPrompt({ round, maxRound, others, notes, options, mood }) {
     'Critique what you disagree with, concede what you now accept, and add only what is new. Do not repeat your own earlier points.',
     'Changing your stance is allowed and should be explicit. Forced consensus is not the goal.',
     '',
-    contractText(options),
+    contractText(options, unattended),
   );
   return parts.join('\n');
 }
 
-export function repromptText(errors, options, extra = []) {
+export function repromptText(errors, options, extra = [], unattended = false) {
   return [
     'Your last reply did not follow the contract:',
     ...errors.map((e) => `- ${e}`),
@@ -167,11 +171,11 @@ export function repromptText(errors, options, extra = []) {
     'Reply again, following the contract exactly. Same content, correct form.',
     NO_TOOLS,
     '',
-    contractText(options),
+    contractText(options, unattended),
   ].join('\n');
 }
 
-export function chairmanPrompt({ fieldNotes, rounds, humanNotes, initialNotes = [] }) {
+export function chairmanPrompt({ fieldNotes, rounds, humanNotes, initialNotes = [], unattended = false }) {
   const parts = [
     'You are the chairman of a roundtable. You did not take part in the debate. Your job is to write the verdict.',
     'Be sceptical. Judge the arguments, not the votes: seats agreeing is not evidence, and a majority can share one unsupported premise.',
@@ -198,12 +202,15 @@ export function chairmanPrompt({ fieldNotes, rounds, humanNotes, initialNotes = 
     'Aim for 220 words total. Keep the reasoning specific; do not repeat the field notes or whole seat replies.',
     LANGUAGE,
     `RECOMMENDATION: <on this line only: one option id (${optionIds(fieldNotes.options).map((o) => o.id).join(' | ')}), or none if the evidence does not support a pick yet>`,
-    'then the rationale on the lines below it, in at most four sentences.',
-    'DISSENT: the strongest argument against the recommendation, stated fairly in at most two sentences, with the lens that made it. Never erase it.',
+    'Below the option id, write two short paragraphs, at most four sentences total. First answer the person directly, naming the suggested approach and any condition it depends on. After a blank line, explain the decisive reasons. Do not lead the prose with lens names or a report of who won.',
+    'For philosophical or reflective questions, give a nuanced conclusion rather than treating the options as an exhaustive binary. A synthesis can use none when no single listed option fits; explain it in the answer.',
+    'If a missing goal or fact could change the answer, make the conclusion explicitly conditional. Use none when you cannot justify a pick. Do not bury that uncertainty in the questions.',
+    'DISSENT: the strongest argument against the recommendation, stated fairly in at most two sentences, with the lens that made it. Preserve substantive dissent; use None. only if there is none.',
     'KILL_CRITERIA:',
-    '- up to 3 bullets, one sentence each: observable evidence that would overturn the recommendation',
+    '- up to 3 bullets, one sentence each: evidence or a changed condition that would change the answer. Do not invent arbitrary thresholds; use None. if nothing specific is supported.',
     'OPEN_QUESTIONS:',
-    '- up to 3 bullets, one sentence each: what the human still has to find out, including any QUESTION_FOR_HUMAN left unanswered',
+    '- up to 3 bullets for the human. Prefix each with NEEDED: when the answer could change the conclusion, or OPTIONAL: for further exploration. Include material unanswered QUESTION_FOR_HUMAN questions; never repeat answered ones. Use the literal None. when no questions remain. Do not fill a quota.',
+    ...(unattended ? ['Nobody answered during this review: every QUESTION_FOR_HUMAN above is still open. Put the ones that matter under OPEN_QUESTIONS and never read silence as agreement.'] : []),
     'Do not restate the tally; it is counted from the replies.',
   );
   return parts.join('\n');
@@ -235,7 +242,9 @@ export function verdictRepromptText({ options, text, errors, extra = [], context
     '',
     'Write it again with the same content, in exactly these sections:',
     `RECOMMENDATION: <on this line only: one option id (${optionIds(options).map((o) => `${o.id} = ${o.label}`).join(' | ')}), or none>`,
-    'then the rationale on the lines below it, in at most four sentences.',
+    'Below the option id, write two short paragraphs, at most four sentences total. First answer the person directly, naming the suggested approach and any condition it depends on. After a blank line, explain the decisive reasons. Do not lead the prose with lens names or a report of who won.',
+    'For philosophical or reflective questions, give a nuanced conclusion rather than treating the options as an exhaustive binary. A synthesis can use none when no single listed option fits; explain it in the answer.',
+    'If a missing goal or fact could change the answer, make the conclusion explicitly conditional. Use none when you cannot justify a pick. Do not bury that uncertainty in the questions.',
     'DISSENT:', 'KILL_CRITERIA:', 'OPEN_QUESTIONS:',
     'Every section must have content. Nothing before or after.',
   ].join('\n');

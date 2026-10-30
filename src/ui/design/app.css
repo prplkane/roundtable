@@ -91,6 +91,7 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); font: v
   .help-popover, .help-label { transition: none; transform: none; }
   .text-reveal-word { animation: none !important; opacity: 1; text-shadow: none; }
   .cursor, .led-thinking { animation: none; }
+  .switch, .switch::after { transition: none; }
 }
 
 html { scroll-padding-bottom: calc(var(--board-bar-height, 0px) + 52px); }
@@ -156,10 +157,13 @@ td .seat-dot { margin-right: var(--space-2); vertical-align: -2px; }
 .group-title { font: var(--weight-strong) var(--text-xs) var(--font-mono); letter-spacing: var(--tracking-label); text-transform: uppercase; display: flex; flex-wrap: wrap; gap: var(--space-1); justify-content: space-between; padding: 0 var(--space-1); }
 .group-title .count { color: var(--color-text-muted); }
 .group.span { grid-column: 1 / -1; }
-.group.span .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: var(--space-3); }
+.group.empty { border-style: dashed; }
+.group.empty .group-title .count { font-weight: var(--weight-regular); text-transform: none; letter-spacing: 0; }
+.group.thinking .cards { flex-direction: row; flex-wrap: wrap; }
+.group.thinking .card { flex: 1 1 220px; }
 .cards { display: flex; flex-direction: column; gap: var(--space-2); }
 
-.card { background: var(--color-surface); border: var(--border-width) solid var(--color-border); border-left: 4px solid var(--seat); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); }
+.card { background: var(--color-surface); border: var(--border-width) solid var(--color-border); border-left: 4px solid var(--seat); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); transition: background-color 0.5s ease; }
 .card-head { display: flex; align-items: baseline; gap: var(--space-2); flex-wrap: wrap; }
 .card-head .vendor { font: var(--weight-strong) var(--text-xs) var(--font-mono); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--seat); display: inline-flex; align-items: center; gap: 6px; }
 .card-head .lens { font-weight: var(--weight-strong); }
@@ -204,10 +208,22 @@ td .seat-dot { margin-right: var(--space-2); vertical-align: -2px; }
 .question-answer label { display: flex; flex-direction: column; gap: 6px; }
 .question-answer label strong { font-size: var(--text-base); line-height: 1.5; }
 .question-answer textarea { font-size: var(--text-base); }
-.question-sources { font: var(--text-xs) var(--font-mono); color: var(--color-warn); }
+.question-sources { font: var(--text-xs) var(--font-mono); color: var(--color-warn); display: flex; flex-wrap: wrap; align-items: center; gap: 4px var(--space-2); }
+.asker { display: inline-flex; align-items: center; gap: 6px; color: var(--color-text); }
+.asker .seat-dot { display: inline-block; width: 4px; height: 14px; background: var(--seat); flex: none; }
+.asker .card-avatar { width: 18px; height: 18px; }
 .question-actions { padding: var(--space-3); justify-content: space-between; }
 .card pre { margin: 0; white-space: pre-wrap; font: var(--text-sm)/1.5 var(--font-mono); color: var(--color-text-muted); max-height: 220px; overflow: auto; }
 .card.pending { opacity: 0.7; }
+/* compact: a card is its head and stance until clicked; the stance stays as the one line that reads on its own */
+.rounds.compact .card[data-key] { cursor: pointer; }
+.rounds.compact .card[data-key]:not(.expanded) :is(.argument-section, .question, pre, .fail-detail) { display: none; }
+.rounds.compact .card[data-key] .seat-stance { flex-direction: row; align-items: baseline; gap: var(--space-2); }
+.rounds.compact .card[data-key] .seat-stance::after { margin-left: auto; font: var(--text-xs) var(--font-mono); color: var(--color-text-muted); }
+.rounds.compact .card[data-key]:not(.expanded) .seat-stance { padding: 2px 0 0; border-bottom: 0; }
+.rounds.compact .card[data-key]:not(.expanded) .seat-stance strong { font-size: var(--text-base); }
+.rounds.compact .card[data-key]:not(.expanded) .seat-stance::after { content: "▸ read"; }
+.rounds.compact .card[data-key].expanded .seat-stance::after { content: "▾ fold"; }
 .card.pending .lens::after { content: " working"; color: var(--color-text-muted); font-weight: var(--weight-regular); }
 .human-note { grid-column: 1 / -1; border: var(--border-width) dashed var(--color-border-strong); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); font-size: var(--text-sm); }
 .human-note b { font: var(--weight-strong) var(--text-xs) var(--font-mono); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--color-accent); margin-right: var(--space-2); }
@@ -226,15 +242,34 @@ td .seat-dot { margin-right: var(--space-2); vertical-align: -2px; }
 .card[data-position="passed"], tr[data-position="passed"] td { background: color-mix(in srgb, var(--color-text-muted) 6%, var(--color-surface)); }
 .card-head .led { align-self: center; }
 
-/* Verdict (brand milestone) */
+/* Conclusion and supporting detail */
 .verdict { box-shadow: var(--shadow-overlay); border-color: var(--color-border-strong); }
 .verdict-body { padding: var(--space-3); display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
 .verdict-body .section { display: flex; flex-direction: column; gap: var(--space-1); }
-.verdict-body .section.wide { grid-column: 1 / -1; }
+.verdict-body > .wide { grid-column: 1 / -1; }
+.verdict-body .section { min-width: 0; }
+.verdict-body h3 { margin: 0; }
 .verdict-body .section p, .verdict-body .section ul { margin: 0; }
+.verdict-body .section p { white-space: pre-line; }
 .verdict-body .section ul { padding-left: 1.1em; }
 .verdict-body pre { white-space: pre-wrap; margin: 0; font: var(--text-sm)/1.5 var(--font-mono); }
 .verdict-meta { grid-column: 1 / -1; font: var(--text-xs) var(--font-mono); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--color-text-muted); }
+
+.verdict-title { gap: var(--space-2); flex-wrap: wrap; }
+.verdict-title .btn { margin-left: auto; }
+.result-copy { padding: 0 var(--space-3); }
+.result-copy:has(#copy-result-status:empty) { display: none; }
+.result-copy .hint { display: block; margin-top: var(--space-2); }
+#copy-result-text { display: block; width: 100%; min-height: 180px; max-height: 45vh; resize: vertical; margin: var(--space-2) 0; }
+.verdict-answer > p:first-of-type { font-size: 1.1em; line-height: 1.65; max-width: 80ch; }
+.verdict-pick { margin-top: var(--space-1) !important; }
+.verdict-questions { padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-sm); }
+.verdict-needed { border-left: 3px solid var(--color-warn); }
+.verdict-details { min-width: 0; border-top: 1px solid var(--color-border); }
+.verdict-details > summary { padding: var(--space-2) 0; cursor: pointer; font-size: var(--text-sm); }
+.verdict-support { display: flex; flex-direction: column; gap: var(--space-3); padding-top: var(--space-2); }
+.verdict-positions .hint { display: block; }
+.verdict-meta { overflow-wrap: anywhere; }
 
 .export-bar { display: flex; gap: var(--space-2); align-items: center; padding: var(--space-2) var(--space-3); border-top: var(--border-width) solid var(--color-border); flex-wrap: wrap; }
 .export-bar input { flex: 1; min-width: 240px; padding: var(--space-1) var(--space-2); font-size: var(--text-sm); }
@@ -257,7 +292,7 @@ td .seat-dot { margin-right: var(--space-2); vertical-align: -2px; }
 @media (max-width: 720px) {
   main { padding: var(--space-4); padding-bottom: max(140px, calc(var(--board-bar-height, 0px) + 52px)); }
   .fields, .fields-row, .verdict-body { grid-template-columns: 1fr; }
-  .groups, .group.span .cards { grid-template-columns: minmax(0, 1fr); }
+  .groups { grid-template-columns: minmax(0, 1fr); }
   #seats th:last-child, #seats td:last-child { display: none; }
   .humanbar-form { flex-wrap: wrap; }
   .humanbar-form input { flex-basis: 100%; }
@@ -319,7 +354,21 @@ td .seat-dot { margin-right: var(--space-2); vertical-align: -2px; }
 .kind-tag { font: var(--text-xs) var(--font-mono); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--color-text-muted); border: var(--border-width) solid var(--color-border-strong); border-radius: var(--radius-sm); padding: 0 var(--space-1); white-space: nowrap; line-height: 18px; }
 .kind-tag.api { color: var(--v); border-color: var(--v); }
 .chair-role { margin: 0 0 var(--space-1); font-size: var(--text-sm); color: var(--color-text-muted); }
-.rules { grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: var(--border-width) solid var(--color-border); }
+.rules { grid-template-columns: repeat(5, minmax(0, 1fr)); border-top: var(--border-width) solid var(--color-border); }
+/* Unattended: an arming switch. The checkbox stays for the keyboard and screen readers; the
+   switch is its face. Off: a plain slide. On: danger colour and the hazard stripe, since the
+   table will not wait for anyone once it is armed. */
+.field-check .check { display: inline-flex; align-items: center; gap: var(--space-2); min-height: 24px; position: relative; cursor: pointer; font: var(--weight-strong) var(--text-xs) var(--font-mono); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--color-text-muted); }
+.field-check input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; }
+.switch { flex: none; width: 38px; height: 20px; border: 1px solid var(--color-border-strong); border-radius: 2px; background: var(--color-surface); box-shadow: var(--shadow-hard-action); position: relative; transition: background-color 0.15s ease, border-color 0.15s ease; }
+.switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; background: var(--color-text-muted); transition: transform 0.15s ease, background-color 0.15s ease; }
+.switch-text::before { content: attr(data-off); }
+.field-check input:checked + .switch { border-color: var(--color-danger); background-color: var(--color-surface-raised); background-image: var(--pattern-hazard); background-size: 6px 100%; background-repeat: no-repeat; }
+.field-check input:checked + .switch::after { transform: translateX(18px); background: var(--color-danger); }
+.field-check input:checked ~ .switch-text { color: var(--color-danger); }
+.field-check input:checked ~ .switch-text::before { content: attr(data-on); }
+.field-check input:focus-visible + .switch { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.field-check .check:hover .switch { border-color: var(--color-danger); }
 @media (max-width: 720px) { .rules { grid-template-columns: 1fr 1fr; } }
 
 /* Field notes: options as chips, the rest behind "More context" */

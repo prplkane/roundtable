@@ -43,9 +43,47 @@
 
 ### Local operation and interface
 
+- Present the final answer and its reasons before supporting detail. Distinguish material
+  clarifications from optional questions, and collapse panel positions and run metadata.
+- Add Copy result with a manual clipboard fallback. Keep the agent verdict contract and full
+  exports unchanged; old reviews remain readable without another model call.
+- Ask for a direct, conditional conclusion when important facts are missing, and allow a
+  nuanced synthesis for reflective questions. Do not manufacture questions or thresholds.
+
 - Keep optional cat and alien personas in the public build, with their prompts and artwork in
   a readable catalogue. The public-tree test checks the catalogue before publication.
 - Add preview status and clear feedback and support links to the README.
+- Lay out a round as one column per option, in option order, from the first reply on. A reply
+  lands at the foot of its column and nothing else moves; seats still thinking wait in a strip
+  under the columns. Before, cards regrouped as each reply arrived and the page jumped.
+- Tint a card against the majority as soon as replies arrive (provisional, "so far" in the
+  tooltip) and settle the tint at the end of the round, instead of colouring only then.
+- Show one banner with a **Reload** button when the board belongs to an earlier server
+  session, and stop retrying from that page. Before, a board left open across a restart
+  reported a page error and retried its diagnostics every 15 seconds, refused each time.
+- Tell the chairman of an unattended review that any seat question is still open, so it lands
+  under its open questions instead of reading as agreement.
+- Recommend the chairman one effort step above the seats, in the agent recipe and the guide:
+  the verdict is the call that decides, and a low-effort chairman dismisses the hardest
+  objection in a word.
+- Play a distinct rising cue when the table stops for you (after the blind round and for a
+  seat's question), so a review left in another tab can call you back. The gavel sounds stay
+  for opening and ending.
+- Add an **Unattended** switch to the round settings, off by default: the review skips every
+  pause, and the seats are told to state what they would have asked as assumptions instead of
+  asking, since nobody answers; the question line leaves their contract, so its tokens leave
+  every call too. For a review nobody will watch. The JSON client takes it as
+  `options.unattended`.
+- Explain each mood on hover: the mood list, the mood on a reply card and the mood of a seat
+  that asked a question all carry its one-line description.
+- Add a **Compact** switch in the header: every card folds to its seat and stance, so a round
+  reads as who chose what; a click on a card opens that reply. The switch is remembered.
+- Name every seat that asked a question above its answer field (name, lens and mood, with a
+  persona's avatar), not only the lens. Seats still see each other by lens only.
+- Show the effort a blank seat really runs at when the CLI's own default is known:
+  "default (max)" for Codex, read from its config.
+- Optional personas on Antigravity run on the lightest Gemini the account lists (Flash Lite
+  where offered, otherwise Flash at low), instead of a fixed id.
 
 - Seats and the chairman reply in the language of the decision; section headers stay English.
 - Add **Choose…** beside both export fields: it opens the system's own folder dialog, so the

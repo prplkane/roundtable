@@ -234,3 +234,26 @@ test('a mixed-vendor record labels its dollar total as partial', () => {
   assert.match(markdown, /\| \*\*debate\*\* \|[^\n]*\$0\.10 \(partial: 2 of 7 calls report a cost\) \|/);
   assert.match(markdown, /\| Claude · risk \|[^\n]*\| \$0\.10 \|/, 'a seat whose every call reports a cost is not marked');
 });
+
+
+test('human-readable paragraphs and question hints preserve the structured record and abstention', () => {
+  const text = 'RECOMMENDATION: opt-2\nWait until support is ready.\n\nA delay keeps the change reversible.\nDISSENT: Delay has a cost.\nKILL_CRITERIA:\n- The rollback no longer works.\nOPEN_QUESTIONS:\n- NEEDED: Is support ready?\n- OPTIONAL: Who will share the lessons?';
+  const source = rows(text);
+  source[0].schemaVersion = 3;
+  const before = JSON.stringify(source);
+  const output = decisionRecord(source, 'clear-conclusion');
+  assert.equal(output.meta.recommended, 'Wait a sprint');
+  assert.equal(output.meta.accepted, null);
+  assert.match(output.markdown, /\*\*Wait a sprint\*\* \(opt-2\)/);
+  assert.match(output.markdown, /Wait until support is ready\./);
+  assert.match(output.markdown, /A delay keeps the change reversible\./);
+  for (const header of ['Tally', 'Recommendation', 'Dissent', 'Kill criteria', 'Open questions', 'Usage']) assert.ok(output.markdown.includes(`## ${header}\n`), header);
+  assert.match(output.markdown, /NEEDED: Is support ready\?/);
+  assert.match(output.markdown, /OPTIONAL: Who will share the lessons\?/);
+  assert.equal(JSON.stringify(source), before, 'formatting does not rewrite the stored source');
+  source.find((row) => row.type === 'verdict').text = text.replace('RECOMMENDATION: opt-2', 'RECOMMENDATION: none');
+  const abstain = decisionRecord(source, 'clear-conclusion');
+  assert.equal(abstain.meta.status, 'split');
+  assert.equal(abstain.meta.recommended, 'no pick');
+  assert.equal(abstain.meta.accepted, null);
+});

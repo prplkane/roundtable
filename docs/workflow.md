@@ -226,6 +226,11 @@ custom text.
   own last reply and the others' replies. This avoids resending the full conversation, but
   token use and cost still vary. `resume` retains a conversation and can grow the context each
   round. Neither setting controls the provider's logging or retention policy.
+- **Unattended**, off by default: the table never waits for you. The pause after the blind
+  round is skipped, and the seats are told that nobody answers questions, so they state what
+  they would have asked as an assumption instead; the question line leaves their contract, which
+  also keeps its tokens out of every call. Turn it on only for a review nobody will watch;
+  otherwise leave it off, so the board can stop for you and play its waiting sound.
 - **Budget caps**, in the quota panel: an optional token or dollar ceiling per vendor. The
   engine checks projected usage before each round and every provider attempt, including network
   retries, re-prompts and a fallback chairman. It counts reported usage and calls still in
@@ -279,10 +284,12 @@ animation nor the sounds.
    always waits for you. This is the best moment to step in: correct a wrong assumption, add a
    fact, answer a seat's question. Type in the bar at the bottom and press **Continue**, or just
    press Continue.
+   **Compact** in the header folds every card to its seat and stance, so a round reads as who
+   chose what; click a card to open that reply. The browser remembers the choice.
 2. **Critique rounds.** Each seat sees the others' replies under their lens names and argues.
    Between rounds the countdown runs; type to hold it.
 3. **Questions for you.** Answer in one area above the replies. Identical questions share a field
-   and list all asking lenses; distinct questions stay separate. Send all answers together, add
+   and list every seat that asked (name, lens and mood); distinct questions stay separate. Send all answers together, add
    a general note, or continue with unknowns left blank. Final-round questions also wait before
    the verdict. Explicit no-question placeholders such as `None.` or `none, treat available
    hours as an explicit unknown` do not create a pause. Ambiguous wording still waits for you.
@@ -318,9 +325,29 @@ remaining time. If it expires, the board says that no answer was assumed.
 
 ### The verdict
 
-The chairman writes the recommendation, the tally per seat, the strongest dissent, kill
-criteria (what would prove the decision wrong) and open questions. Everything is saved in
-`debates/<date-and-question>/`: the transcript, the field notes and the verdict.
+The board shows a **Conclusion**: the answer first, then its reasons, the main reservation and
+what could change it. A missing goal or fact that could change the answer must be stated as a
+condition, with **Clarification needed from you** below it. These questions are for you; a
+finished review does not wait for answers or start another call automatically. Optional further
+exploration, final panel positions and run details are under **Discussion details**. Panel
+positions count the seats' final eligible replies; agreement is not a confidence score.
+
+The chairman can give a nuanced or combined answer to a reflective question. If no single
+listed option fits, it can recommend `none` and explain the conclusion. **Record your decision**
+then starts with "none of these" selected. You still make the decision.
+
+**Copy result** copies the readable conclusion, reasons, reservations and follow-up questions,
+without the transcript, usage figures or local paths. If clipboard access is blocked, a selected
+text box lets you copy manually. **Export record** keeps the full structured decision record.
+Older saved verdicts still display; their unclassified questions remain visible as **Questions
+for you**. They are not silently treated as optional. Updated wording applies to new reviews;
+opening an old review does not regenerate it or spend tokens.
+
+The stored verdict keeps `RECOMMENDATION`, `DISSENT`, `KILL_CRITERIA` and `OPEN_QUESTIONS`.
+The first recommendation line remains an option id or `none`. New question bullets use
+`NEEDED:` or `OPTIONAL:` within `OPEN_QUESTIONS`; an absent item uses `None.`. These are
+presentation hints, not new required fields or retry conditions. The transcript, field notes
+and verdict remain in `debates/<date-and-question>/`.
 
 When discussion ends, its comment controls close. The board first says **writing verdict**, then
 **Review finished** or **Review ended · no verdict**. **Record your decision** opens a separate
@@ -354,6 +381,8 @@ silently skips a corrupt completed line.
 - Start with two seats and zero critique rounds: three planned calls, including the verdict.
   One critique round with three seats makes seven calls before retries.
 - Lighter models (Sonnet, Flash) or lower effort for seats that only need to poke holes.
+- Spend the effort on the chairman instead: one step above the seats is one call's worth of
+  extra thinking, on the call that decides.
 - A light chairman: it makes the longest single call.
 - Keep memory on `stateless`.
 - Set a budget cap per vendor when you are near a limit.
@@ -495,11 +524,17 @@ while the agent keeps working. An agent should offer the link, not open it. Use 
 is already running; start one only when `status` cannot reach it.
 
 `wait` returns at a question or completion, or after 25 seconds (configurable from 1 to 30 with
-`--seconds`). It does not continue a round. Read `status`, answer only from supplied facts, and
+`--seconds`). It does not continue a round. With `"unattended": true` in `options` the review
+never pauses: `wait` only ever returns at completion, and the seats assume instead of asking. Read `status`, answer only from supplied facts, and
 ask the user for missing facts. Empty answers leave questions open. Stale-round answers fail
 without being sent. Writes are never retried automatically. Use `stop` to abort all calls,
 `resume` for an interrupted review, or `verdict` to request a missing verdict. Acceptance and
 export stay explicit user decisions.
+
+The readable board conclusion does not change the agent response or verdict contract. Read the
+original verdict sections and option id as before; `NEEDED:` and `OPTIONAL:` inside
+`OPEN_QUESTIONS` distinguish material unknowns from further exploration. They do not reopen a
+finished review. Ask the user for missing facts before starting any requested follow-up.
 
 Use `agent finish` when the user wants to end discussion and get a verdict. It requires a
 completed round with a usable reply and can start a chairman call. Use `agent stop` to abort
@@ -528,7 +563,7 @@ on stdin. Keep real request and answer files outside a public repository.
     { "vendor": "claude", "lens": "risk", "mood": { "preset": "grill" }, "model": "sonnet", "effort": "low" },
     { "vendor": "claude", "lens": "cost", "mood": { "preset": "builder" }, "model": "sonnet", "effort": "low" }
   ],
-  "chairman": { "vendor": "claude", "model": "sonnet", "effort": "low" },
+  "chairman": { "vendor": "claude", "model": "sonnet", "effort": "medium" },
   "options": { "critiqueRounds": 0, "memory": "stateless", "budget": { "claude": { "tokens": 120000 } } }
 }
 ```
@@ -548,8 +583,10 @@ costs far more than one more sentence of context. `agent --help` repeats this re
 - **Moods.** Pair one sceptical seat (`grill`) with one practical seat (`builder`). Use
   `steelman` when the user already leans one way, and `contrarian` when the seats would
   otherwise agree too early.
-- **Effort and model.** `effort` low and the lightest model that `status` lists. Raise effort
-  for one seat, not all, when the decision is hard to reverse.
+- **Effort and model.** `effort` low and the lightest model that `status` lists for the seats.
+  Give the chairman one effort step more than the seats (medium when they run low): it judges
+  the arguments rather than counting them, and at low effort it tends to dismiss the hardest
+  objection in a word. Raise one seat, not all, when the decision is hard to reverse.
 - **Context.** `constraints`, `known`, `assumed`, `reversibility` and `deadline` go into every
   prompt. Fill them only with facts the user stated. A guess belongs under `assumed`, never
   under `known`, and an empty field is better than an invented one.

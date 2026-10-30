@@ -100,3 +100,23 @@ test('the verdict grammar: every section, and an id or none alone on the first r
   assert.equal(validateVerdict('RECOMMENDATION: opt-1\nWhy.\nDISSENT: x\nKILL_CRITERIA:\n- y\nOPEN_QUESTIONS:\n- z', OPTS).ok, true);
 });
 
+
+
+test('answer paragraphs and question priority do not change the verdict grammar or trigger retries', () => {
+  for (const pick of ['opt-1', 'none']) {
+    const text = `RECOMMENDATION: ${pick}\nStart only if the change is reversible.\n\nA pilot limits the initial cost.\nDISSENT: None.\nKILL_CRITERIA: None.\nOPEN_QUESTIONS:\n- NEEDED: Is rollback tested?\n- OPTIONAL: Who can share the results?`;
+    assert.deepEqual(validateVerdict(text, OPTS), { ok: true, errors: [], pick });
+    assert.equal(validateVerdict(text.replace(/OPEN_QUESTIONS:[\s\S]*/, 'OPEN_QUESTIONS: None.'), OPTS).ok, true);
+    assert.equal(validateVerdict(text.replace(/NEEDED: |OPTIONAL: /g, ''), OPTS).ok, true, 'old or untagged questions are still valid');
+  }
+});
+
+
+test('verdict headings accept bold punctuation without treating closing stars as content', () => {
+  const plain = 'RECOMMENDATION: opt-2\nWait for the support team.\nDISSENT: Delay costs time.\nKILL_CRITERIA: None.\nOPEN_QUESTIONS: None.';
+  const bold = plain.replace(/^(RECOMMENDATION|DISSENT|KILL_CRITERIA|OPEN_QUESTIONS):/gm, '**$1:**');
+  assert.deepEqual(validateVerdict(bold, OPTS), { ok: true, errors: [], pick: 'opt-2' });
+  const separate = bold.replace('**RECOMMENDATION:** opt-2', '**RECOMMENDATION:**\nopt-2');
+  assert.deepEqual(validateVerdict(separate, OPTS), { ok: true, errors: [], pick: 'opt-2' });
+  assert.deepEqual(validateVerdict(plain.replace('opt-2', '**opt-2**'), OPTS), { ok: true, errors: [], pick: 'opt-2' });
+});

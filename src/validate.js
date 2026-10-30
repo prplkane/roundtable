@@ -67,6 +67,7 @@ export function validateDebateRequest(body, { adapters }) {
   // with no context: refuse the table rather than run it on half-prompts
   if (options_.memory === 'resume' && [...body.seats, body.chairman].some((s) => s && adapters[s.vendor]?.kind === 'api')) fail('memory', 'resume needs a session to continue, and an API endpoint seat has none; use stateless');
   if (o.strictTools != null) { if (typeof o.strictTools !== 'boolean') fail('strictTools', 'true or false'); options_.strictTools = o.strictTools; }
+  if (o.unattended != null) { if (typeof o.unattended !== 'boolean') fail('unattended', 'true or false'); options_.unattended = o.unattended; }
   if (o.budget != null) {
     if (typeof o.budget !== 'object' || Array.isArray(o.budget)) fail('budget', 'an object');
     options_.budget = {};

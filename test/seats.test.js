@@ -207,3 +207,12 @@ test('a hidden mood unlocks only for the board, then runs on the lightest model 
   assert.equal(filterReply({ hidden: stripping.art }, 'AGREE_WITH: []\n- Mrrp mew (a translation)\n- Meow'), 'AGREE_WITH: []\n- Mrrp mew\n- Meow', 'bracketed asides go, the header stays');
   assert.equal(filterReply({ preset: 'grill' }, '- keep (this)'), '- keep (this)', 'every other seat is untouched');
 });
+
+test('a hidden mood on agy runs the lightest Gemini the account lists', async () => {
+  const { lightestModel, LIGHTEST } = await import('../src/seats.js');
+  const here = ['gemini-4-argon-low', 'gemini-3.8-flash-high', 'gemini-3.8-flash-low', 'claude-opus-5-5-low', 'gpt-oss-120b-medium'];
+  assert.equal(lightestModel('agy', here.map((id) => ({ id }))), 'gemini-3.8-flash-low');
+  assert.equal(lightestModel('agy', [...here, 'gemini-3.8-flash-lite-medium', 'gemini-3.8-flash-lite-low']), 'gemini-3.8-flash-lite-low', 'Flash Lite where offered');
+  assert.equal(lightestModel('agy', []), LIGHTEST.agy, 'no list yet: the measured default');
+  assert.equal(lightestModel('claude', here), LIGHTEST.claude);
+});

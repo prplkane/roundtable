@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { groupQuestions, answerMessage, argumentHtml, remainingWindow, cancellationReason, stopExplanation, ceremonyOutcome } from '../src/review-view.js';
+import { groupQuestions, answerMessage, argumentHtml, remainingWindow, cancellationReason, stopExplanation, ceremonyOutcome, verdictView, verdictResultText } from '../src/review-view.js';
 
 test('questions share an answer only when their wording matches; distinct questions and sources survive', () => {
-  const questions = [{ lens: 'risk', question: 'What is the budget?' }, { lens: 'cost', question: '  What is the budget? ' }, { lens: 'evidence', question: 'Is the budget approved?' }];
+  const questions = [{ lens: 'risk', seat: 'seat-0', question: 'What is the budget?' }, { lens: 'cost', seat: 'seat-1', question: '  What is the budget? ' }, { lens: 'evidence', seat: 'seat-2', question: 'Is the budget approved?' }];
   const grouped = groupQuestions(questions);
   assert.equal(grouped.length, 2);
   assert.deepEqual(grouped[0].sources, ['risk', 'cost']);
+  assert.deepEqual(grouped[0].seats, ['seat-0', 'seat-1'], 'the asking seats, for the board to name them');
+  assert.deepEqual(groupQuestions([{ lens: 'risk', question: 'Why?' }])[0].seats, [], 'an older gate without seat ids');
   const text = answerMessage(questions, [{ id: 'q1', text: 'Not decided.' }], 'Keep the pilot reversible.');
   assert.match(text, /Question \(risk, cost\): What is the budget\?\nAnswer: Not decided/);
   assert.ok(text.endsWith('Keep the pilot reversible.'));
@@ -68,4 +70,75 @@ test('agent state: a unanimous round 0 says what answering would cost; other gat
   assert.equal(agreed.gate.reopenCalls, 3, 'one more call per seat if the agent sends any text');
   const open = reviewSnapshot(board({ round: 0, mode: 'blocking', stop: null, questions: [], reopenable: false }));
   assert.equal(open.gate.reopenCalls, undefined);
+});
+
+
+const CONCLUSION = `RECOMMENDATION: opt-1
+Run a small pilot if the change can be reversed.
+
+The pilot can answer the adoption question before a wider rollout.
+It also keeps the initial cost bounded.
+DISSENT: A pilot delays the wider benefit (customer).
+KILL_CRITERIA:
+- The pilot cannot be reversed without losing records.
+OPEN_QUESTIONS:
+- NEEDED: Can records be restored?
+  Has that been checked?
+- OPTIONAL: Which team could document the lessons?
+`;
+const CHOICES = ['Run a pilot', 'Roll out everywhere'];
+
+test('a readable conclusion preserves the pick, answer, reasoning and classified questions', () => {
+  const view = verdictView(CONCLUSION, CHOICES);
+  assert.equal(view.pick, 'opt-1');
+  assert.equal(view.option, CHOICES[0]);
+  assert.equal(view.answer, 'Run a small pilot if the change can be reversed.');
+  assert.deepEqual(view.reasons, ['The pilot can answer the adoption question before a wider rollout.\nIt also keeps the initial cost bounded.']);
+  assert.deepEqual(view.questions, {
+    needed: ['Can records be restored? Has that been checked?'],
+    optional: ['Which team could document the lessons?'], unclassified: [],
+  });
+  assert.deepEqual(view.reconsider, ['The pilot cannot be reversed without losing records.']);
+});
+
+test('legacy prose and unclassified questions remain intact, never silently downgraded to optional', () => {
+  const legacy = '**RECOMMENDATION:**\nRoll out everywhere, provided support is ready.\nTALLY:\n- Roll out everywhere: risk\nDISSENT: A pilot is cheaper.\nKILL_CRITERIA: none\nOPEN_QUESTIONS:\n- Is support ready?';
+  const view = verdictView(legacy, CHOICES);
+  assert.equal(view.pick, null);
+  assert.equal(view.answer, 'Roll out everywhere, provided support is ready.');
+  assert.deepEqual(view.questions, { needed: [], optional: [], unclassified: ['Is support ready?'] });
+  assert.deepEqual(view.reconsider, []);
+  const oldId = verdictView(legacy.replace('Roll out everywhere, provided support is ready.', 'opt-2\nThe support team can cover it.'), CHOICES);
+  assert.equal(oldId.pick, 'opt-2');
+  assert.equal(oldId.answer, 'The support team can cover it.');
+});
+
+test('none remains an abstention or synthesis; empty sections do not fabricate concerns', () => {
+  const text = 'RECOMMENDATION: none\nCombine the approaches only after the goal is clear.\n\nNeither listed option captures that condition.\nDISSENT: None.\nKILL_CRITERIA:\n- None.\nOPEN_QUESTIONS:\n- NEEDED: What outcome matters?\n- OPTIONAL: None.';
+  const view = verdictView(text, CHOICES);
+  assert.equal(view.pick, 'none');
+  assert.equal(view.option, null);
+  assert.deepEqual(view.dissent, []);
+  assert.deepEqual(view.reconsider, []);
+  assert.deepEqual(view.questions, { needed: ['What outcome matters?'], optional: [], unclassified: [] });
+  assert.match(verdictResultText(text, CHOICES), /No single option recommended\./);
+  assert.doesNotMatch(verdictResultText(text, CHOICES), /Suggested option|Further exploration|Main reservation/);
+});
+
+test('only explicit empty values disappear; non-English and uncertain questions are preserved', () => {
+  const text = CONCLUSION.replace(/OPEN_QUESTIONS:[\s\S]*/, 'OPEN_QUESTIONS:\n- **NEEDED:** Какой результат важнее?\n- OPTIONAL: None of these measures captures trust; what would?\n- How should we measure it?');
+  const view = verdictView(text, CHOICES);
+  assert.deepEqual(view.questions.needed, ['Какой результат важнее?']);
+  assert.match(view.questions.optional[0], /^None of these measures/);
+  assert.deepEqual(view.questions.unclassified, ['How should we measure it?']);
+  assert.equal(verdictView(CONCLUSION.replace(/OPEN_QUESTIONS:[\s\S]*/, 'OPEN_QUESTIONS: None.'), CHOICES).questions.needed.length, 0);
+});
+
+test('copy result retains the conclusion and caveats without tally, protocol labels or run metadata', () => {
+  const text = CONCLUSION.replace('DISSENT:', 'TALLY:\n- opt-2: incorrect generated tally\nDISSENT:');
+  const copy = verdictResultText(text, CHOICES, 'How should we test the change?');
+  assert.ok(copy.startsWith('How should we test the change?\n\nAnswer\nRun a small pilot'));
+  for (const expected of ['Suggested option: Run a pilot', 'Why\nThe pilot', 'Main reservation', 'What could change this', 'Clarification needed from you', 'Can records be restored?', 'Further exploration (optional)']) assert.ok(copy.includes(expected), expected);
+  assert.doesNotMatch(copy, /RECOMMENDATION:|TALLY:|opt-1|opt-2|incorrect generated tally|NEEDED:|OPTIONAL:|verdict\.md/);
+  assert.equal(verdictResultText('An old unstructured answer.', CHOICES), 'An old unstructured answer.');
 });

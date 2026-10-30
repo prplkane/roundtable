@@ -142,7 +142,7 @@ export function verdictSections(text) {
   const sections = {};
   let cur = null;
   for (const line of String(text || '').split(/\r?\n/)) {
-    const m = line.match(/^\s*(?:[*#_-]+\s*)?(RECOMMENDATION|TALLY|DISSENT|KILL_CRITERIA|OPEN_QUESTIONS)\s*[*_]*\s*:?\s*(.*)$/i);
+    const m = line.match(/^\s*(?:[*#_-]+\s*)?(RECOMMENDATION|TALLY|DISSENT|KILL_CRITERIA|OPEN_QUESTIONS)\s*[*_]*\s*:?\s*(?:[*_]+(?=\s|$)\s*)?(.*)$/i);
     if (m) { cur = m[1].toUpperCase(); sections[cur] = m[2] ? [m[2]] : []; } else if (cur) sections[cur].push(line);
   }
   return sections;
