@@ -8,6 +8,9 @@ import { PREFLIGHT_TTL_MS } from '/src/preflight.js';
 import { createBrowserDiagnostics, requestAction } from '/ui/diagnostics.js';
 import { installHelp, revealText, MOOD_HELP } from '/ui/help.js';
 import { installCeremony } from '/ui/ceremony.js';
+import { scribeMarkup, startScribe, stopScribe } from '/ui/scribe.js';
+import { icon } from '/ui/icons.js';
+import { loaderMarkup } from '/ui/loader.js';
 import { noteRecord, noteLabel } from '/src/notes.js';
 import { progressText } from '/src/progress.js';
 import { unlock as unlockSound, setSound, soundEnabled, playCue } from '/ui/sound.js';
@@ -135,8 +138,10 @@ const S = {
   verdict: null, status: 'idle', startedAt: null, stopReason: null, pending: new Set(), quota: {}, calib: {}, pools: {}, chairman: null, configuredChairman: null,
   conn: {}, // seat id -> connection state (idle, thinking, replied, reprompted, failed, timed-out), from seat-state events
   positions: [], // per round: seat id -> agreed | disagreed | neutral | passed | null, from round-done
-  compact: false, // cards show their seat and stance only (remembered); expanded: the reply keys opened by a click
-  expanded: new Set(),
+  folded: new Set(), // reply keys folded to their seat and stance by a click on the card head
+  // Folds the person set by hand, so a redraw on the next event keeps them: roundOpen by round
+  // index (unset: the latest round is open), openDetails by reply key and details class.
+  roundOpen: {}, openDetails: new Set(),
   unattended: false, // the review skips every pause (from its options, so a replay from disk knows too)
   draft: [], // setup screen: the seat rows being edited
   budget: {}, // setup screen: vendor -> { tokens, usd } caps
@@ -304,9 +309,9 @@ async function setup() {
 // table would take from it when a units-per-token rate was given.
 function poolEntry(vendor, weightedTokens) {
   const pl = S.pools[vendor];
-  const shown = pl ? `<span><b>${esc(pl.remaining.toLocaleString())} ${esc(pl.unit)}</b> remaining, entered ${agoText(pl.at)}${pl.note ? `, ${esc(pl.note)}` : ''}</span>${pl.perToken ? `<span>this table ≈ ${esc(Math.round(weightedTokens * pl.perToken).toLocaleString())} ${esc(pl.unit)}, ${pct(Math.min(1, weightedTokens * pl.perToken / (pl.remaining || 1)))} of it</span>` : ''}` : '<span>no figure entered</span>';
-  return `<p class="pool-note">${shown}</p>
-    <details class="pool-edit"><summary>Enter the remaining figure from the usage page</summary>
+  const shown = pl ? `<p class="pool-note"><b>${esc(pl.remaining.toLocaleString())} ${esc(pl.unit)}</b> left, entered ${agoText(pl.at)}${pl.note ? `, ${esc(pl.note)}` : ''}.${pl.perToken ? ` This table takes about ${esc(Math.round(weightedTokens * pl.perToken).toLocaleString())} ${esc(pl.unit)}, ${pct(Math.min(1, weightedTokens * pl.perToken / (pl.remaining || 1)))} of it.` : ''}</p>` : '';
+  return `${shown}
+    <details class="pool-edit"><summary>${pl ? 'Update the remaining figure' : 'Track a remaining figure from the usage page'}</summary>
       <form class="pool-entry" data-vendor="${esc(vendor)}">
         <input name="remaining" type="number" min="0" step="any" placeholder="remaining" value="${pl ? esc(pl.remaining) : ''}" required>
         <input name="unit" placeholder="unit" value="${esc(pl?.unit || 'credits')}">
@@ -433,7 +438,7 @@ function seatRow(s, i) {
       <label class="f"><span class="label">Key var</span><input class="flat keyenv" aria-label="Key environment variable" value="${esc(s.keyEnv || '')}" placeholder="none (local server)" title="The NAME of the environment variable that holds the key, set in the shell roundtable was started from. Never the key itself."></label>` : ''}
       <div class="f"><span class="label help-label" data-help="effort" tabindex="0" aria-describedby="help-effort">Effort</span><span class="pips ${hidden ? 'locked' : ''}">${pipsHtml(s.vendor, s.effort, s.model)}</span><select class="effort" hidden>${effortOptions(s.vendor, s.effort)}</select></div>
       <span class="seat-note lamp-note ${lamp.cls === 'danger' || lamp.cls === 'warn' ? lamp.cls : ''}">${esc(lamp.note)}</span>
-      ${api ? '' : `<details class="seat-more" ${s.account ? 'open' : ''}><summary>Login profile</summary><input class="flat account" aria-label="Login profile" value="${esc(s.account || '')}" placeholder="none: your usual login" title="A second login of this CLI, for example a work subscription; node src/doctor.js shows how to log a profile in"></details>`}
+      ${api ? '' : `<details class="seat-more"><summary>Login profile${s.account ? `: ${esc(s.account)}` : ''}</summary><input class="flat account" aria-label="Login profile" value="${esc(s.account || '')}" placeholder="none: your usual login" title="A second login of this CLI, for example a work subscription; node src/doctor.js shows how to log a profile in"></details>`}
     </div>
   </article>`;
 }
@@ -558,12 +563,11 @@ function wireOptions() {
   });
 }
 
-// "More context" opens by itself when any of its fields has content, and says how many do.
+// "More context" starts folded like every fold; its summary says how many fields have content.
 const MORE = ['known', 'assumed', 'reversibility', 'deadline', 'exportTo'];
 function setupMoreContext() {
   const count = () => MORE.filter((id) => $(id).value.trim()).length;
   const show = () => { const n = count(); $('more-filled').textContent = n ? `· ${n} filled` : ''; };
-  if (count()) $('more-context').open = true;
   show();
   for (const id of MORE) $(id).addEventListener('input', show);
   wireOptions();
@@ -729,22 +733,27 @@ function renderProjection() {
     const projected = q ? '' : pw.length ? pw.map((w) => (w.upperBound
       ? `No movement of the ${esc(w.label)} window seen over ${k(w.pending)} tokens yet.`
       : `About +${pct(w.pct)} of the ${esc(w.label)} window (${w.samples} measured move${w.samples === 1 ? '' : 's'}).`)).join(' ')
-      : (v.vendor === 'agy' ? 'The CLI reports no remaining credits. Usage is shown when the CLI reports it.' : 'Window share is unmeasured until a debate runs.');
+      : (v.vendor === 'agy' ? 'This CLI reports no live quota.' : 'Window share is unmeasured until a debate runs.');
     const cap = S.budget[v.vendor];
+    // Seats of one vendor share its colour, so each segment of the bar gets its own shade and the
+    // chairman a hatch; the legend beside each seat uses the same fill, so the split reads.
+    const fill = (id, i) => (id === 'chairman' ? 'chair' : `shade-${Math.min(i, 3)}`);
+    const segments = v.seats.filter((id) => id !== 'chairman');
+    const order = [...segments, ...v.seats.filter((id) => id === 'chairman')];
     return `<div class="pool">
       <div class="pool-top">${poolId(pool)}<div class="pool-total"><b>≈ ${k(v.total)}</b><span>tokens${v.cost != null ? ` · ≈ $${v.cost.toFixed(2)}` : ''}</span></div></div>
-      <div class="bar" aria-label="Projected share of the pool per seat">${v.seats.map((id) => `<span style="--seat: var(--seat-${colourOf(id)}); width: ${(100 * p.bySeat[id].weighted / (v.weighted || 1)).toFixed(1)}%" title="${esc(label(id))}"></span>`).join('')}</div>
-      <div class="pool-seats">${v.seats.map((id) => {
+      <div class="bar" aria-label="Projected share of the pool per seat">${order.map((id) => `<span class="${fill(id, segments.indexOf(id))}" style="--seat: var(--seat-${colourOf(id)}); width: ${(100 * p.bySeat[id].weighted / (v.weighted || 1)).toFixed(1)}%" title="${esc(label(id))}"></span>`).join('')}</div>
+      <div class="pool-seats">${order.map((id) => {
         const row = p.bySeat[id];
-        return `<span class="chip" style="--seat: var(--seat-${colourOf(id)})" title="${esc(row.calls)} calls${row.model ? ', ' + esc(row.model) : ''}${row.weight !== 1 ? `, model weight ×${row.weight}` : ''}"><span>${esc(label(id))}</span><b>${k(row.total)}</b>${row.cost != null ? `<span>$${row.cost.toFixed(2)}</span>` : ''}</span>`;
+        return `<span class="chip ${fill(id, segments.indexOf(id))}" style="--seat: var(--seat-${colourOf(id)})" title="${esc(row.calls)} calls${row.model ? ', ' + esc(row.model) : ''}${row.weight !== 1 ? `, model weight ×${row.weight}` : ''}"><span>${esc(label(id))}</span><b>${k(row.total)}</b><span>${row.cost != null ? `$${row.cost.toFixed(2)}` : ''}</span></span>`;
       }).join('')}</div>
       ${v.weighted !== v.total ? `<p class="pool-note">≈ ${k(v.weighted)} pool units after model weight.</p>` : ''}
-      ${windows.length ? `<div class="readouts">${readouts(pool, windows)}</div>` : `<p class="pool-note">${projected}</p>`}
+      <div class="pool-window-section">${windows.length ? `<div class="readouts">${readouts(pool, windows)}</div>` : `<p class="pool-note">${projected}</p>${poolEntry(v.vendor, v.weighted)}`}</div>
       <div class="pool-cap" data-vendor="${esc(v.vendor)}"><label for="cap-${esc(v.vendor)}" title="Projected before each call, with the calls in flight and the verdict reserved. The vendor does not enforce it.">Cap</label><input id="cap-${esc(v.vendor)}" name="tokens" type="number" min="0" step="1000" placeholder="tokens" value="${cap?.tokens ?? ''}" aria-label="Token cap for ${esc(VENDOR_LABEL[v.vendor] || v.vendor)}">${v.cost != null || cap?.usd > 0 ? `<input name="usd" type="number" min="0" step="0.05" placeholder="$" value="${cap?.usd ?? ''}" aria-label="Dollar cap for ${esc(VENDOR_LABEL[v.vendor] || v.vendor)}">` : ''}${cap?.tokens > 0 && v.total > cap.tokens ? '<span class="warn">the projection is over this cap</span>' : ''}${usageLink(v.vendor)}</div>
       ${cap?.usd > 0 && v.cost == null ? '<p class="pool-note warn" data-dollar-warning>No dollar estimate is available. This dollar cap blocks calls; clear it to proceed with a token cap instead.</p>' : ''}
-      ${q ? '' : poolEntry(v.vendor, v.weighted)}
     </div>`;
   }).join('') || '<span class="muted">Seat at least one instance.</span>';
+  $('projection-summary').textContent = Object.values(p.byVendor).map((v) => `${VENDOR_LABEL[v.vendor] || v.vendor} ≈ ${k(v.total)}`).join(' · ');
   const vs = Object.values(p.byVendor);
   const rounds = Number($('critique-rounds').value) || 0;
   const priced = vs.filter((v) => v.cost != null);
@@ -866,7 +875,7 @@ async function loadRecent() {
   catch (e) {
     if (revision !== recentRevision) return;
     $('recent-count').textContent = 'unavailable';
-    historyEntries = []; $('clear-finished').disabled = true;
+    historyEntries = []; $('clear-finished').disabled = true; $('recent-foot').hidden = true;
     $('recent-list').innerHTML = `<div class="empty"><span role="alert">Could not load history. ${esc(e.message)}</span><button class="btn btn-small" id="retry-recent" type="button">Retry history</button></div>`;
     return;
   }
@@ -874,6 +883,7 @@ async function loadRecent() {
   historyEntries = list;
   $('clear-finished').disabled = historyBusy || !list.some((d) => d.state === 'finished');
   $('recent-count').textContent = list.length ? `${list.length} on this machine` : '';
+  $('recent-foot').hidden = true;
   if (!list.length) {
     $('recent-list').innerHTML = '<div class="empty"><span><span class="prompt">&gt;</span> no debates yet<br>&nbsp;&nbsp;write the field notes below and open the table_</span></div>';
     return;
@@ -889,12 +899,15 @@ async function loadRecent() {
       <span class="debate-title">${esc(d.decision)}</span>
       <span class="status ${STATE_CLASS[d.status] || 'muted'}">${esc(STATE_LABEL[d.status] || d.status)}</span>
       <span class="debate-pick">${esc(pick || '')}</span>
-      <span class="data">${d.state === 'corrupt' ? 'unavailable' : `${d.rounds} rd · ${d.tokens == null ? 'tokens unknown' : `${k(d.tokens)}${d.tokensPartial ? ' (partial)' : ''}`}${cost}`}</span>
+      <span class="data">${d.state === 'corrupt' ? 'unavailable' : `${d.rounds} rd · ${d.tokens == null ? 'tokens unknown' : `${k(d.tokens)}${d.tokensPartial ? '+' : ''}`}${cost}`}</span>
       ${d.warning ? `<span class="debate-warning">${esc(d.warning)}</span>` : ''}
-    </${tag}><button class="btn btn-small history-delete" type="button" data-delete="${esc(d.slug)}" aria-label="Delete ${esc(d.decision)}" ${historyBusy || !deletable ? 'disabled' : ''} title="${deletable ? 'Delete this saved session' : d.state === 'running' ? 'Stop this session before deleting it' : 'Repair this record before deleting it to preserve usage statistics'}">Delete</button></div>`;
+    </${tag}><button class="text-btn history-delete" type="button" data-delete="${esc(d.slug)}" aria-label="Delete ${esc(d.decision)}" ${historyBusy || !deletable ? 'disabled' : ''} title="${deletable ? 'Delete this saved session' : d.state === 'running' ? 'Stop this session before deleting it' : 'Repair this record before deleting it to preserve usage statistics'}">Delete</button></div>`;
   };
   const shown = S.showAllDebates ? list : list.slice(0, 5);
-  $('recent-list').innerHTML = shown.map(row).join('') + (list.length > 5 ? `<button class="btn btn-small debates-more" id="debates-more" type="button">${S.showAllDebates ? 'Show the latest 5' : `Show all ${list.length}`}</button>` : '');
+  $('recent-list').innerHTML = shown.map(row).join('');
+  // the list's foot: Show all on the left, Clear finished on the right, both quiet text actions
+  $('debates-more-slot').innerHTML = list.length > 5 ? `<button class="text-btn" id="debates-more" type="button">${S.showAllDebates ? 'Show the latest 5' : `Show all ${list.length}`}</button>` : '';
+  $('recent-foot').hidden = false;
 }
 
 function confirmHistoryDeletion(id = null) {
@@ -909,7 +922,7 @@ function confirmHistoryDeletion(id = null) {
   $('delete-history-confirm').textContent = id ? 'Delete session' : 'Clear finished';
   $('delete-history').showModal();
 }
-$('clear-finished').addEventListener('click', () => confirmHistoryDeletion());
+$('clear-finished').addEventListener('click', (ev) => { ev.preventDefault(); confirmHistoryDeletion(); });
 $('delete-history').addEventListener('cancel', (event) => { if (historyBusy) event.preventDefault(); });
 $('delete-history-confirm').addEventListener('click', async () => {
   if (!historySelection || historyBusy) return;
@@ -951,11 +964,11 @@ function openBoard(slug) {
 
 function resetBoard({ clearDrafts = false } = {}) {
   replyReveals.clear();
-  Object.assign(S, { seats: [], fieldNotes: null, rows: [], rounds: [], expanded: new Set(), humanNotes: [], initialNotes: [], gate: null, deadline: null, held: false, verdict: null, status: 'idle', startedAt: null, stopReason: null, pending: new Set(), chairman: null, configuredChairman: null, interrupted: null, stopQueued: false, finishQueued: false, error: null, conn: {}, positions: [], accepted: null, synthesis: null, down: {},
+  Object.assign(S, { seats: [], fieldNotes: null, rows: [], rounds: [], folded: new Set(), roundOpen: {}, openDetails: new Set(), humanNotes: [], initialNotes: [], gate: null, deadline: null, held: false, verdict: null, status: 'idle', startedAt: null, stopReason: null, pending: new Set(), chairman: null, configuredChairman: null, interrupted: null, stopQueued: false, finishQueued: false, error: null, conn: {}, positions: [], accepted: null, synthesis: null, down: {},
     budgetStop: null, exported: null, exportError: null, replayed: false, connected: null, chairmanFallback: null, transcriptWarning: null, unattended: false, research: null,
     actionPending: null, actionError: null, holdPending: false, synthChoice: null, stopContext: null, reviewDeadline: null }); // hash routing reuses S: nothing from the last board
   if (clearDrafts || !S.questionDrafts) S.questionDrafts = {};
-  if (clearDrafts) { $('question-inputs').replaceChildren(); delete $('question-inputs').dataset.signature; $('usage-details').open = false; $('decision-actions').open = false; }
+  if (clearDrafts) { $('question-inputs').replaceChildren(); delete $('question-inputs').dataset.signature; setUsageOpen(false); $('decision-actions').open = false; }
   if (clearDrafts) {
     $('human-msg').value = ''; $('accept-note').value = ''; $('export-status').textContent = '';
     delete $('accept-option').dataset.applied;
@@ -1055,7 +1068,7 @@ function card(r, position = null, provisional = false) {
   // the dot is the live connection state in the current round, the recorded one in older rounds
   const current = r.round === S.rounds.length - 1;
   const conn = cancelled ? 'cancelled' : current ? (S.conn[seat.id] || r.state) : (r.state || (r.failed ? 'failed' : 'replied'));
-  return `<article class="card ${S.expanded.has(replyKey(r)) ? 'expanded' : ''}" data-key="${esc(replyKey(r))}" style="--seat: var(--seat-${esc(seat.colour)})" data-position="${esc(position || 'none')}" title="${esc(position ? POSITION_LABEL[position] + (provisional ? ' so far' : '') : '')}">
+  return `<article class="card ${S.folded.has(replyKey(r)) ? 'folded' : ''}" data-key="${esc(replyKey(r))}" style="--seat: var(--seat-${esc(seat.colour)})" data-position="${esc(position || 'none')}" title="${esc(position ? POSITION_LABEL[position] + (provisional ? ' so far' : '') : '')}">
     <div class="card-head"><span class="vendor" title="${esc(meta)}">${esc(seatName(seat))}</span><span class="lens">${esc(seat.lens)}</span>${led(conn)}${seat.mood?.hidden ? `<span class="avatar card-avatar">${avatar(seat.mood.hidden, HIDDEN_MOODS.find((h) => h.art === seat.mood.hidden)?.sprite)}</span>` : seat.mood?.preset && seat.mood.preset !== 'grill' ? `<span class="muted" title="${esc(MOOD_HELP[seat.mood.preset] || '')}">${esc(seat.mood.preset)}</span>` : ''}<span class="flags">${flags.join('')}</span></div>
     <div class="reply-text" data-reveal="${esc(replyKey(r))}">${body}</div>
   </article>`;
@@ -1087,9 +1100,11 @@ function renderRound(i, replies, isCurrent) {
   const asked = replies.filter((r) => r.question).length;
   const skipped = S.unattended && replies.length && !pendingSeats.length ? `<div class="human-note"><b>Unattended</b>${asked ? `${asked} question${asked > 1 ? 's' : ''} went unanswered.` : 'The pause was skipped.'}</div>` : '';
   const note = skipped + (S.humanNotes[i] || []).map((n) => `<div class="human-note"><b>${noteLabel(n)}</b>${esc(noteRecord(n).text)}</div>`).join('');
-  return `<details class="round" ${isCurrent ? 'open' : ''} data-round="${i}">
+  // Folded unless it is the round in progress: a finished review leads with its conclusion.
+  const live = isCurrent && !['done', 'error'].includes(S.status);
+  return `<details class="round" ${(S.roundOpen[i] ?? live) ? 'open' : ''} data-round="${i}">
     <summary><span>${i === 0 ? 'Round 0 · blind' : `Round ${i}`}</span><span class="tally">${esc(tally)}</span></summary>
-    <div class="groups">${groupHtml}${pendingHtml}${note}</div>
+    <div class="groups"><div class="columns">${groupHtml}</div>${pendingHtml}${note}</div>
   </details>`;
 }
 
@@ -1098,19 +1113,21 @@ function renderRound(i, replies, isCurrent) {
 function renderUsage() {
   const u = rollup(S.rows);
   const fmt = (n) => (n || 0).toLocaleString();
-  const tokens = (n, x) => x.tokenCoverage?.reported === 0 ? '<span class="muted">unknown</span>'
-    : `${fmt(n)}${x.tokenCoverage && x.tokenCoverage.reported < x.tokenCoverage.of ? `<span class="seat-meta" title="${x.tokenCoverage.reported} of ${x.tokenCoverage.of} calls report token usage">partial</span>` : ''}`;
-  // a sum of reported costs over calls of which some reported none is marked partial
-  const cost = (c, x) => (c == null ? '<span class="muted">n/a</span>' : `$${c.toFixed(2)}${x?.costCoverage && x.costCoverage.reported < x.costCoverage.of ? `<span class="seat-meta" title="${x.costCoverage.reported} of ${x.costCoverage.of} calls report a cost">partial</span>` : ''}`);
+  // A sum over calls of which some reported nothing carries a "+" (at least this much), the same
+  // mark the debates list uses; the counts are in its title. A figure nobody reported is a dash.
+  const plus = (cov, what) => (cov && cov.reported < cov.of ? `<span class="partial" title="${cov.reported} of ${cov.of} calls report ${what}">+</span>` : '');
+  const tokens = (n, x) => x.tokenCoverage?.reported === 0 ? '<span class="muted" title="No call reported token usage">unknown</span>'
+    : `${fmt(n)}${plus(x.tokenCoverage, 'token usage')}`;
+  const cost = (c, x) => (c == null ? '<span class="muted" title="This CLI does not report a cost">—</span>' : `$${c.toFixed(2)}${plus(x?.costCoverage, 'a cost')}`);
   const secs = (ms) => `${Math.round((ms || 0) / 1000)}s`;
   // last: the seat's input in the latest round it took part in (cache included), the figure that
   // says whether rounds stay flat (stateless) or grow (resume)
-  const row = (name, x, cls = '', last = null, position = null) => `<tr class="${cls}" data-position="${esc(position || 'none')}"><td>${name}</td><td class="data">${tokens(x.input, x)}</td><td class="data">${tokens(x.cacheRead + x.cacheWrite, x)}</td><td class="data">${tokens(x.output, x)}</td><td class="data">${cost(x.cost, x)}</td><td class="data">${secs(x.ms)}</td><td class="data">${last ? `${tokens(last.usage.input + last.usage.cacheRead + last.usage.cacheWrite, last.usage)}<span class="seat-meta">r${esc(last.round)}</span>` : ''}</td></tr>`;
+  const row = (name, x, cls = '', last = null, position = null) => `<tr class="${cls}" data-position="${esc(position || 'none')}"><td>${name}</td><td class="data num">${tokens(x.input, x)}</td><td class="data num">${tokens(x.cacheRead + x.cacheWrite, x)}</td><td class="data num">${tokens(x.output, x)}</td><td class="data num">${cost(x.cost, x)}</td><td class="data num">${secs(x.ms)}</td><td class="data num">${last ? `<span title="Round ${esc(last.round)}">${tokens(last.usage.input + last.usage.cacheRead + last.usage.cacheWrite, last.usage)}</span>` : ''}</td></tr>`;
   const pools = [...new Set([...S.seats.map(seatPool), ...(S.chairman ? [seatPool(S.chairman)] : []), ...(u.bySeat.research ? [seatPool(u.bySeat.research.seat)] : [])])];
   const rows = [];
   for (const pool of pools) {
     rows.push(`<tr class="pool-row"><td colspan="7">${poolLine(pool)}</td></tr>`);
-    if (u.bySeat.research && seatPool(u.bySeat.research.seat) === pool) rows.push(row('Codex · shared research', u.bySeat.research.usage));
+    if (u.bySeat.research && seatPool(u.bySeat.research.seat) === pool) { const rs = u.bySeat.research.seat; rows.push(row(`<span class="seat-cell" style="--seat: var(--seat-${esc(vendorColour(rs.vendor))})"><span class="seat-dot"></span><span><span class="seat-lens">shared research</span><span class="seat-meta">${esc(VENDOR_LABEL[rs.vendor] || rs.vendor)} · web search</span></span></span>`, u.bySeat.research.usage)); }
     const seated = [...S.seats.filter((s) => seatPool(s) === pool), ...(S.chairman && seatPool(S.chairman) === pool ? [S.chairman] : [])];
     for (const seat of seated) {
       const x = u.bySeat[seat.id]?.usage;
@@ -1119,14 +1136,15 @@ function renderUsage() {
       const last = lastRound != null ? { round: lastRound, usage: perRound[String(lastRound)] } : null;
       const isChair = seat.id === 'chairman';
       const position = isChair ? null : S.positions[S.rounds.length - 1]?.[seat.id] || null;
-      const name = `<span class="seat-dot" style="--seat: var(--seat-${esc(seat.colour)})"></span>${esc(seatName(seat))} · ${esc(seat.lens)}${isChair ? '' : led(S.conn[seat.id] || 'idle')}${seatMeta(seat) ? `<span class="seat-meta">${esc(seatMeta(seat))}</span>` : ''}`;
+      // the lens reads first; who runs it and on what sits beneath in the data face
+      const name = `<span class="seat-cell" style="--seat: var(--seat-${esc(seat.colour)})"><span class="seat-dot"></span><span><span class="seat-lens">${esc(seat.lens)}${isChair ? '' : led(S.conn[seat.id] || 'idle')}</span><span class="seat-meta">${esc([seatName(seat), seatMeta(seat)].filter(Boolean).join(' · '))}</span></span></span>`;
       const out = S.down[`${seat.vendor}@${seat.account || ''}`];
       rows.push(x ? row(name, x, '', last, position) : `<tr data-position="none"><td>${name}</td><td class="data ${out ? 'danger' : 'muted'}" colspan="6">${out ? `out: ${esc(ERROR_LINE[out.kind] || out.kind)} no tokens charged` : 'no call yet'}</td></tr>`);
     }
   }
   const cur = S.rounds.length ? S.rounds.length - 1 : null;
-  if (cur != null && u.byRound[String(cur)]) rows.push(row(`Round ${cur}`, u.byRound[String(cur)], 'muted'));
-  rows.push(row('Debate', u.total, 'total'));
+  if (cur != null && u.byRound[String(cur)]) rows.push(row(`Round ${cur}`, u.byRound[String(cur)], 'subtotal'));
+  rows.push(row('Debate total', u.total, 'total'));
   $('usage').querySelector('tbody').innerHTML = rows.join('');
   const keys = [...new Set([...S.seats, ...(S.chairman || S.configuredChairman ? [S.chairman || S.configuredChairman] : [])].map((seat) => poolKey(seat.vendor, seat.account, !!VENDOR_META[seat.vendor]?.profiles)))];
   $('usage-summary').innerHTML = keys.map((key) => {
@@ -1134,19 +1152,27 @@ function renderUsage() {
     const name = `${VENDOR_LABEL[poolVendor(key)] || poolVendor(key)}${poolAccount(key) ? ` · ${poolAccount(key)}` : ''}`;
     const remaining = window && Math.floor(window.remaining);
     const manual = S.pools[poolVendor(key)];
-    return `<div class="quota-compact"><div><b>${esc(name)}</b><span>${window ? `${remaining}% left` : manual ? `${esc(manual.remaining.toLocaleString())} ${esc(manual.unit)} left` : 'not reported'}</span></div>
-      ${window ? `<div class="quota-track ${remaining < 10 ? 'danger' : remaining < 25 ? 'warn' : 'ok'}" role="meter" aria-label="${esc(name)} quota remaining" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${remaining}"><span style="width:${remaining}%"></span></div><small>${esc(window.label)} · reported ${esc(agoText(window.at))}</small>` : '<small>Open details for available figures.</small>'}</div>`;
+    // One quiet chip per pool: name, a short track and the figure. The window and its age are
+    // the tooltip; Usage details has the rest.
+    return `<span class="quota-chip" title="${esc(window ? `${window.label} · reported ${agoText(window.at)}` : 'Open usage details for available figures')}"><b>${esc(name)}</b>${window
+      ? `<span class="quota-track ${remaining < 10 ? 'danger' : remaining < 25 ? 'warn' : 'ok'}" role="meter" aria-label="${esc(name)} quota remaining" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${remaining}"><span style="width:${remaining}%"></span></span><span>${remaining}%</span>`
+      : `<span>${manual ? `${esc(manual.remaining.toLocaleString())} ${esc(manual.unit)} left` : 'not reported'}</span>`}</span>`;
   }).join('');
 }
 
 // The pool row on the board: name, one readout per live window, then freshness and the usage link.
+// One line per pool in the usage table: who and on what plan, each live window as "used share
+// and window" with a short track, then the usage page. Resets and the read time are the title.
 function poolLine(key) {
   const q = S.quota[key];
   const pl = S.pools[poolVendor(key)];
-  const body = q?.windows?.length ? `<div class="readouts">${readouts(key, q.windows)}</div>`
-    : pl ? `<div class="readouts"><div class="readout"><div class="readout-fig"><b>${esc(pl.remaining.toLocaleString())}</b><span>${esc(pl.unit)} left</span></div><div class="readout-sub">entered ${agoText(pl.at)}</div></div></div>`
-    : '<div class="readouts"><span class="muted">no live figure</span></div>';
-  return `<div class="pool-head">${poolId(key)}${body}<div class="pool-meta">${q ? `<span>read ${agoText(q.at)}</span>` : ''}${usageLink(key)}</div></div>`;
+  const vendor = poolVendor(key), account = poolAccount(key);
+  const windows = q?.windows || [];
+  const figure = windows.length
+    ? windows.map((w) => `<span class="pool-window ${level(w.used) ? level(w.used) : ''}" title="${esc([w.resetsAt ? `resets ${untilText(w.resetsAt * 1000)}` : '', `read ${agoText(q.at)}`].filter(Boolean).join(' · '))}"><span class="quota-track"><span style="width:${width(w.used)}%"></span></span>${pct(w.used)} of ${esc(w.label)} used</span>`).join('')
+    : pl ? `<span class="pool-window">${esc(pl.remaining.toLocaleString())} ${esc(pl.unit)} left · entered ${agoText(pl.at)}</span>`
+    : '<span class="pool-window muted">no live figure from this CLI</span>';
+  return `<div class="pool-head"><span class="pool-name"><b>${esc(VENDOR_LABEL[vendor] || vendor)}${account ? ` (${esc(account)})` : ''}</b><span>${esc(VENDOR_META[vendor]?.pool || '')}</span></span><span class="pool-figures">${figure}</span>${usageLink(key)}</div>`;
 }
 
 function untilText(t) {
@@ -1170,7 +1196,17 @@ function renderVerdict() {
     $('copy-result-text').hidden = true; $('copy-result-text').value = '';
   }
   $('copy-result').disabled = !v || !!v.failed || !!v.skipped || copyingResult;
-  $('verdict').hidden = !v;
+  // While the chairman writes, the panel shows the hand at work instead of staying hidden.
+  const writing = !v && (S.status === 'verdict' || S.finishQueued);
+  $('verdict').hidden = !v && !writing;
+  $('verdict').classList.toggle('is-writing', writing);
+  if (writing) {
+    const chair = S.chairman || S.configuredChairman;
+    if (!$('verdict-body').querySelector('.scribe')) $('verdict-body').innerHTML = `${scribeMarkup()}<p class="hint scribe-note">${esc(chair ? VENDOR_LABEL[chair.vendor] || chair.vendor : 'The chairman')} is writing the conclusion from ${S.rounds.length} round${S.rounds.length === 1 ? '' : 's'} of replies.</p>`;
+    startScribe($('verdict-body').querySelector('.scribe'));
+    return;
+  }
+  stopScribe();
   if (!v) return;
   if (v.skipped) { $('verdict-body').innerHTML = `<p class="wide">${esc(v.text)}</p><div class="verdict-meta">${S.rounds.length} rounds · stopped: ${esc(S.stopReason)} · debates/${esc(S.slug)}/</div>`; return; }
   // A malformed or failed reply stays diagnostic; it cannot be copied as a completed result.
@@ -1301,8 +1337,12 @@ function renderReviewState() {
   }
   const title = S.status === 'done' ? S.synthesis === 'done' ? 'Review finished' : S.stopReason === 'human' ? 'Review stopped' : 'Review ended · no verdict' : S.stopQueued ? 'Stopping review' : S.status === 'verdict' ? 'Discussion finished · writing verdict' : S.finishQueued ? 'Finishing discussion' : S.status === 'waiting' ? 'Waiting for your input' : S.status === 'interrupted' ? 'Review interrupted' : S.status === 'error' ? 'Review stopped unexpectedly' : 'Discussion in progress';
   const text = S.status === 'done' ? `${stopExplanation(S.stopReason, S.stopContext)} ${S.synthesis === 'done' ? 'Read the conclusion below, then record your decision if ready.' : hasUsableRound(S.rounds, S.seats.length) ? 'You can request a verdict from the saved replies.' : 'No usable replies were collected. Start a new review to get a verdict.'}` : S.stopQueued ? 'Cancelling calls. No further calls will start.' : S.status === 'verdict' ? 'Your notes are saved. The chairman is preparing the recommendation.' : S.finishQueued ? 'Cancelling unfinished seat calls, then writing the verdict from collected replies.' : S.status === 'waiting' ? 'Questions are collected below. Your answers are sent together.' : terminal ? 'Review the saved replies and error log before retrying.' : '';
-  $('review-state').innerHTML = `<strong>${esc(title)}</strong>${text ? `<p>${esc(text)}</p>` : ''}`;
-  $('review-state').classList.toggle('finished', terminal);
+  // A small tag beside the question. What to do next is the bar at the bottom's line, so here
+  // it is only the tooltip and the screen-reader text.
+  const tone = S.status === 'error' ? 'danger' : terminal && S.synthesis === 'done' ? 'ok' : 'warn';
+  $('review-state').className = `review-state status ${tone}`;
+  $('review-state').title = text;
+  $('review-state').innerHTML = `${esc(title)}${text ? `<span class="sr-only">. ${esc(text)}</span>` : ''}`;
 }
 
 const questionKey = (round, q) => `${round}:${q.id}:${q.question}`;
@@ -1376,8 +1416,8 @@ function renderResearch() {
 
 function render() {
   renderResearch();
-  $('rounds').classList.toggle('compact', S.compact);
   $('rounds').innerHTML = S.rounds.map((r, i) => renderRound(i, r, i === S.rounds.length - 1)).join('');
+  for (const d of $('rounds').querySelectorAll('.card[data-key] details')) d.open = S.openDetails.has(`${d.closest('.card[data-key]').dataset.key}|${d.className}`);
   renderUsage(); renderVerdict(); renderGate(); renderAccept(); renderExportStatus(); renderBanners();
   $('verdict-body').dataset.reveal = S.verdict ? replyKey(S.verdict) : '';
   for (const el of document.querySelectorAll('[data-reveal]')) {
@@ -1552,49 +1592,80 @@ $('export-form').addEventListener('submit', async (ev) => {
 // Reserve the actual bar height so the final cards remain scrollable above it at any width.
 new ResizeObserver(() => document.documentElement.style.setProperty('--board-bar-height', `${Math.ceil($('humanbar').getBoundingClientRect().height)}px`)).observe($('humanbar'));
 
-// ---------- compact cards ----------
-// Compact: every card is its head and stance; the columns already say who chose what. A click
-// on a card's head opens that one reply; the choice is remembered across reviews, the opened
-// cards are not.
-function setCompact(on) {
-  S.compact = on;
-  $('compact').setAttribute('aria-pressed', String(on)); $('compact').textContent = on ? 'Full' : 'Compact';
-  try { localStorage.setItem('roundtable.compact', on ? 'on' : 'off'); } catch {}
-  render();
-}
-$('compact').addEventListener('click', () => setCompact(!S.compact));
-try { if (localStorage.getItem('roundtable.compact') === 'on') setCompact(true); } catch {}
+// ---------- folding cards ----------
+// Each card folds on its own: a click on its head (or the position line) leaves the seat and
+// stance, another click opens the reply again. Folds last until the review changes.
+// A fold the person changes by hand is remembered until the review changes (the click lands
+// before the browser toggles the details, so the state it will have is the opposite of now).
 $('rounds').addEventListener('click', (ev) => {
-  if (!S.compact || ev.target.closest('a, button, summary, .question')) return; // the round itself is a details
+  const summary = ev.target.closest('summary');
+  if (!summary) return;
+  const details = summary.parentElement, willOpen = !details.open;
+  if (details.classList.contains('round')) { S.roundOpen[details.dataset.round] = willOpen; return; }
+  const card = details.closest('.card[data-key]');
+  if (card) S.openDetails[willOpen ? 'add' : 'delete'](`${card.dataset.key}|${details.className}`);
+});
+$('rounds').addEventListener('click', (ev) => {
+  if (ev.target.closest('a, button, summary, .question')) return;
   if (String(getSelection?.() || '')) return; // the mouse-up that ends a text selection is a click too: keep the card as it is
-  const card = ev.target.closest('.card[data-key]');
+  const card = ev.target.closest('.card-head, .seat-stance')?.closest('.card[data-key]');
   if (!card) return;
   const key = card.dataset.key;
-  if (S.expanded.has(key)) S.expanded.delete(key); else S.expanded.add(key);
+  if (S.folded.has(key)) S.folded.delete(key); else S.folded.add(key);
   render();
 });
 
 // ---------- theme ----------
+// The button shows where a click goes: a sun on the night theme, a moon on paper.
+function renderTheme() {
+  const night = document.documentElement.dataset.theme === 'night';
+  $('theme').innerHTML = icon(night ? 'sun' : 'moon');
+  const label = night ? 'Switch to the paper theme' : 'Switch to the night theme';
+  $('theme').setAttribute('aria-label', label); $('theme').title = label;
+}
 $('theme').addEventListener('click', () => {
   const night = document.documentElement.dataset.theme !== 'night';
   document.documentElement.dataset.theme = night ? 'night' : 'paper';
-  $('theme').textContent = night ? 'Paper' : 'Night';
   try { localStorage.setItem('roundtable.theme', night ? 'night' : 'paper'); } catch {}
+  renderTheme();
 });
-try { if (localStorage.getItem('roundtable.theme') === 'night') { document.documentElement.dataset.theme = 'night'; $('theme').textContent = 'Paper'; } } catch {}
+try { if (localStorage.getItem('roundtable.theme') === 'night') document.documentElement.dataset.theme = 'night'; } catch {}
+renderTheme();
+
+// Panel folds start closed; the browser remembers one the person opened. Clear finished sits in
+// the debates summary, so its click must not toggle the fold (its handler prevents that).
+for (const [id, key] of [['recent', 'roundtable.debates'], ['projection-panel', 'roundtable.quota']]) {
+  try { if (localStorage.getItem(key) === 'open') $(id).open = true; } catch {}
+  $(id).addEventListener('toggle', () => { try { localStorage.setItem(key, $(id).open ? 'open' : 'closed'); } catch {} });
+}
+
+// Usage details: a toggle that stays where it is; the table opens beneath the quota line.
+function setUsageOpen(open) {
+  $('usage-details').hidden = !open;
+  $('usage-toggle').setAttribute('aria-expanded', String(open));
+}
+$('usage-toggle').addEventListener('click', () => setUsageOpen($('usage-details').hidden));
 
 // ---------- sound ----------
 // Browsers let a page make sound only after the person has interacted with it.
 for (const type of ['pointerdown', 'keydown']) document.addEventListener(type, () => { if (soundEnabled()) unlockSound(); }, { passive: true });
-function renderSound() { $('sound').setAttribute('aria-pressed', String(soundEnabled())); $('sound').textContent = soundEnabled() ? 'Sound: on' : 'Sound: off'; }
+function renderSound() {
+  const on = soundEnabled();
+  $('sound').setAttribute('aria-pressed', String(on)); $('sound').innerHTML = icon(on ? 'sound' : 'muted');
+  $('sound').setAttribute('aria-label', on ? 'Sound on' : 'Sound off'); $('sound').title = on ? 'Sound on. Click to mute the session cues' : 'Sound off. Click to hear the session cues';
+}
 $('sound').addEventListener('click', () => { setSound(!soundEnabled()); renderSound(); playCue('open'); }); // a preview at the real volume
 renderSound();
 
 // ---------- boot ----------
 $('start').disabled = true;
+// Setup is usually instant, so the loading card waits a moment before it shows: a card that
+// flashes for a frame would be worse than none.
+$('boot-card').insertAdjacentHTML('afterbegin', loaderMarkup());
+const bootTimer = setTimeout(() => { $('boot').hidden = false; }, 300);
 try {
   await setup();
-  $('recent-list').addEventListener('click', (ev) => {
+  $('recent').addEventListener('click', (ev) => {
     const deletion = ev.target.closest('[data-delete]');
     if (deletion) confirmHistoryDeletion(deletion.dataset.delete);
     if (ev.target.id === 'debates-more') { S.showAllDebates = !S.showAllDebates; loadRecent(); }
@@ -1607,4 +1678,6 @@ try {
   $('setup-error').textContent = `Could not load setup. ${e.message} `;
   const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'btn btn-small'; retry.textContent = 'Reload';
   retry.addEventListener('click', () => location.reload()); $('setup-error').append(retry);
+} finally {
+  clearTimeout(bootTimer); $('boot').hidden = true;
 }

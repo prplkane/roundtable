@@ -27,10 +27,8 @@
     <span class="run-mode" id="run-mode">Connecting</span>
     <span class="meta">
       <a class="btn btn-small" id="nav-debates" href="#" hidden>Debates</a>
-      <button class="btn btn-small" id="save-diagnostics" type="button">Save error log</button>
-      <button class="btn btn-small" id="sound" type="button" aria-pressed="true">Sound: on</button>
-      <button class="btn btn-small" id="compact" type="button" aria-pressed="false" title="Show each reply as its seat and stance; click a card to read it">Compact</button>
-      <button class="btn btn-small" id="theme" type="button">Night</button>
+      <button class="btn btn-small btn-icon" id="sound" type="button" aria-pressed="true" aria-label="Sound on"></button>
+      <button class="btn btn-small btn-icon" id="theme" type="button" aria-label="Switch to the night theme"></button>
     </span>
   </header>
 
@@ -40,11 +38,12 @@
     <p class="error" id="page-error" role="alert" hidden></p>
     <!-- Setup screen -->
     <section id="setup" class="screen">
-      <section class="panel" id="recent" aria-label="Debates">
-        <div class="panel-title"><span>Debates</span><span class="hint" id="recent-count"></span><button class="btn btn-small" id="clear-finished" type="button" disabled>Clear finished</button></div>
+      <details class="panel" id="recent" aria-label="Debates">
+        <summary class="panel-title fold"><span>Debates</span><span class="hint" id="recent-count"></span></summary>
         <p class="history-notice" id="history-notice" role="status" hidden></p>
         <div id="recent-list" class="debates"></div>
-      </section>
+        <div class="debates-foot" id="recent-foot" hidden><span id="debates-more-slot"></span><button class="text-btn" id="clear-finished" type="button" disabled>Clear finished</button></div>
+      </details>
       <details class="local-data" id="local-data">
         <summary>Local data and backups</summary>
         <p>Records for this server are saved in <code id="data-dir"></code>.</p>
@@ -85,7 +84,7 @@
 
       <section class="panel">
         <div class="panel-title"><span>Seats</span><span class="hint">Seats know each other by lens only, never by vendor.</span></div>
-        <p class="hint seats-hint" id="seat-setup-note" role="status" hidden></p>
+        <p class="hint panel-note" id="seat-setup-note" role="status" hidden></p>
         <div id="seats" class="seats" role="list"></div>
         <div id="datalists"></div>
         <div class="row seats-actions">
@@ -136,11 +135,11 @@
         </div>
       </section>
 
-      <section class="panel" id="projection-panel">
-        <div class="panel-title"><span>Quota picture</span></div>
-        <p class="hint seats-hint">One pool per account: every seat on it draws from the same limit. Figures are estimates from past debates on this machine; other use of the same account moves the windows too.</p>
+      <details class="panel" id="projection-panel">
+        <summary class="panel-title fold"><span>Quota picture</span><span class="hint" id="projection-summary"></span></summary>
+        <p class="hint panel-note">One pool per account: every seat on it draws from the same limit. Figures are estimates from past debates on this machine; other use of the same account moves the windows too.</p>
         <div id="projection" class="pools"></div>
-      </section>
+      </details>
 
       <div class="startbar">
         <span class="startbar-summary" id="start-summary"></span>
@@ -152,14 +151,19 @@
     <!-- Board screen -->
     <section id="board" class="screen" hidden>
       <div id="banners" class="banners" role="status" aria-live="polite"></div>
-      <section class="panel strip" aria-label="Usage">
-        <div class="panel-title"><span id="board-title"></span></div>
-        <div id="review-state" class="review-state" role="status"></div>
+      <!-- Quota first, as one quiet line; its table opens beneath the line, so the toggle never
+           moves. Then the question heads the state, the conclusion and the rounds. -->
+      <div class="usage-line" aria-label="Usage">
         <div id="usage-summary" class="usage-summary" aria-label="Reported quota remaining"></div>
-        <details id="usage-details" class="usage-details"><summary>Usage details</summary>
-        <table id="usage"><thead><tr><th class="label">Pool / seat</th><th class="label">In</th><th class="label">Cache</th><th class="label">Out</th><th class="label">Cost</th><th class="label">Time</th><th class="label" title="Input tokens, cache included, that this seat sent in the latest round">Round in</th></tr></thead><tbody></tbody></table>
-        </details>
-      </section>
+        <button class="fold-toggle" id="usage-toggle" type="button" aria-expanded="false" aria-controls="usage-details">Usage details</button>
+      </div>
+      <div id="usage-details" class="panel usage-details" hidden>
+        <table id="usage"><thead><tr><th class="label">Pool and seat</th><th class="label num" title="Fresh input tokens">Input</th><th class="label num" title="Input tokens read from or written to the provider's cache">Cached</th><th class="label num">Output</th><th class="label num" title="A + marks a sum where some calls reported no cost">Cost</th><th class="label num">Time</th><th class="label num" title="Input tokens, cache included, that this seat sent in its latest round">Last round</th></tr></thead><tbody></tbody></table>
+      </div>
+      <header class="review-head" aria-label="Review">
+        <h2 id="board-title" class="review-question"></h2>
+        <span id="review-state" class="review-state" role="status"></span>
+      </header>
 
       <section id="research-panel" class="panel" hidden aria-labelledby="research-heading"><div class="panel-title"><span id="research-heading">Shared web evidence</span></div><div id="research-body"></div></section>
 
@@ -212,12 +216,17 @@
     </form>
   </div>
 
+  <div id="boot" class="boot" hidden aria-hidden="true">
+    <div class="boot-card" id="boot-card"><span><span class="prompt">&gt;</span> loading the table<span class="cursor"></span></span></div>
+  </div>
+
   <footer class="statusline">
     <span id="sys" class="status ok">idle</span>
     <span id="st-round"></span>
     <span id="st-seats"></span>
     <span id="st-elapsed"></span>
     <span class="end">v0.4.0</span>
+    <button class="statusline-link" id="save-diagnostics" type="button">Save error log</button>
   </footer>
 </div>
 <dialog id="delete-history" aria-labelledby="delete-history-title" aria-describedby="delete-history-detail">

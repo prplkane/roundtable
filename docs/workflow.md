@@ -171,7 +171,7 @@ Fill in:
   an empty one to remove it. Each is numbered (opt-1, opt-2) as the seats will see it; a seat may
   still propose its own, written as "other: …".
 - **Constraints**: what any answer must live within.
-- **More context** (collapsed until you open it or fill it): evidence known, evidence assumed,
+- **More context** (folded; its title counts the fields you filled): evidence known, evidence assumed,
   reversibility, deadline, and **Export to**, a folder in your codebase where the decision record
   is written the moment the verdict is ready (see step 6). Seats see only these notes in round 0,
   so include the facts they need to assess the options.
@@ -283,14 +283,17 @@ custom text.
 
 ### Read the quota picture
 
-The panel under the seats shows one block per vendor account. It lists what each seat is
-likely to draw in this debate, stacked in the seat's colour, the vendor's live remaining
-window where it reports one, and the measured share each seat would take. Antigravity reports
-no remaining credits, so you can type the figure from its credits page into its block.
+The **Quota picture** under the seats starts folded; its title lists each account's projected
+tokens. Open it for one card per vendor account: what each seat is likely to draw in this
+debate as one bar segment per seat (seats of one vendor in steps of its colour, the chairman
+hatched), the vendor's live windows where it reports them, and an optional cap. Antigravity
+reports no remaining credits, so you can track the figure from its credits page in its card.
 
 On the running board, usage starts collapsed. Each account shows its lowest reported percentage
 remaining and a small bar, with the window and reading age. Missing figures say **not reported**.
-Open **Usage details** for per-seat tokens, partial totals, costs, timing and other windows.
+Open **Usage details** for per-seat tokens, costs and timing, grouped by account with each
+account's live windows. A **+** after a total means some calls reported nothing; a dash means
+the CLI reports no cost. Rounds fold once a review finishes, so the conclusion leads.
 
 ### Open the table and take part
 
@@ -311,8 +314,8 @@ animation nor the sounds.
    always waits for you. This is the best moment to step in: correct a wrong assumption, add a
    fact, answer a seat's question. Type in the bar at the bottom and press **Continue**, or just
    press Continue.
-   **Compact** in the header folds every card to its seat and stance, so a round reads as who
-   chose what; click a card to open that reply. The browser remembers the choice.
+   Click a card's head to fold it to its seat and stance, and again to read the reply. The round in
+   progress opens by itself; a fold you make stays until the review changes.
 2. **Critique rounds.** Each seat sees the others' replies under their lens names and argues.
    Between rounds the countdown runs; type to hold it.
 3. **Questions for you.** Answer in one area above the replies. Identical questions share a field
