@@ -28,10 +28,15 @@
   need. Quota cards share one layout, with a shade per seat and a hatched chairman in the bar.
 - Rework the paper theme on night's structure: a faint plum page, white fields with visible
   borders, seat colours closer to night's hues at text contrast, softer position tints.
+- Make research a visible role, the **searcher**: a card added with **+ Add searcher** beside
+  the chairman, with a pixel magnifier whose lens carries the gavel's cross. It has its own
+  model, effort and login profile instead of borrowing the first Codex seat's, and starts on the
+  lightest Codex model at low effort; agent requests may set them in `options.research`. It
+  replaces the research panel and its switch, and is named on the board, in Usage details and in
+  the quota picture. While it works the review state reads "Searcher at work".
 - Show the Antigravity consent as a Limited isolation switch in the run settings, styled like
   Unattended, with its explanation in the label's help; it appears only while Antigravity is
-  at the table. Research first with Codex is a panel title with an on/off switch, and its
-  fields sit in the padded field grid.
+  at the table.
 - Fix a stray brace in the stylesheet that dropped the quota readout grid, and debate titles
   squeezed to one letter at medium widths.
 

@@ -10,12 +10,22 @@ const text = (value, limit, name) => {
   return value.trim();
 };
 
+// The searcher: its own model, effort and login profile, never borrowed from a seat. Their
+// values are checked against the CLI by the server (seats.normaliseChairman), like the chairman's.
+const optional = (value, name) => {
+  if (value == null || value === '') return undefined;
+  if (typeof value !== 'string' || value.trim().length > 200) fail(`${name} must be text of at most 200 characters.`);
+  return value.trim() || undefined;
+};
+
 export function researchSettings(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail('settings must be an object.');
   if (value.vendor != null && value.vendor !== 'codex') fail('only Codex CLI supports this research mode.');
+  const model = optional(value.model, 'searcher model'), effort = optional(value.effort, 'searcher effort'), account = optional(value.account, 'searcher login profile');
   return { vendor: 'codex', query: text(value.query, 2000, 'search question'),
     maxSearches: bounded(value.maxSearches ?? 4, 1, 8, 'search limit'),
-    timeoutMs: bounded(value.timeoutMs ?? 120000, 30000, 600000, 'time limit in milliseconds') };
+    timeoutMs: bounded(value.timeoutMs ?? 120000, 30000, 600000, 'time limit in milliseconds'),
+    ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(account ? { account } : {}) };
 }
 
 export function researchPrompt(settings) {

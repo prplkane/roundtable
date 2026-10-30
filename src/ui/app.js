@@ -220,11 +220,17 @@ async function setup() {
   if (['stateless', 'resume'].includes(settings.options?.memory)) $('memory').value = settings.options.memory;
   $('unattended').checked = settings.options?.unattended === true;
   $('limited-isolation').checked = settings.options?.allowLimitedIsolation === true;
-  $('research-enabled').checked = !!settings.options?.research;
-  $('research-query').value = settings.options?.research?.query || '';
-  $('research-searches').value = settings.options?.research?.maxSearches || 4;
-  $('research-time').value = (settings.options?.research?.timeoutMs || 120000) / 1000;
-  $('research-fields').hidden = !$('research-enabled').checked;
+  const research = settings.options?.research;
+  $('research-query').value = research?.query || '';
+  $('research-searches').value = research?.maxSearches || 4;
+  $('research-time').value = (research?.timeoutMs || 120000) / 1000;
+  // a new searcher starts on the lightest Codex model at low effort; a saved one keeps its own
+  // (settings saved before the searcher had its own model name none, so they start light too)
+  const named = !!research && ['model', 'effort', 'account'].some((key) => Object.hasOwn(research, key));
+  $('searcher-model').value = named ? research.model || '' : lightestModel('codex');
+  $('searcher-effort').value = named ? research.effort || '' : (VENDOR_META.codex?.catalogue?.efforts || []).includes('low') ? 'low' : '';
+  $('searcher-account').value = research?.account || '';
+  $('searcher-wrap').hidden = !research; $('add-searcher').hidden = !!research;
   const ch = settings.chairman;
   if (ch && VENDOR_META[ch.vendor]) {
     chair.value = ch.vendor;
@@ -280,7 +286,21 @@ async function setup() {
   for (const id of ['chairman-endpoint', 'chairman-keyenv']) $(id).addEventListener('input', () => { renderChair(); requestPreflight(); });
   renderChair();
   for (const id of ['chairman-model', 'chairman-effort', 'critique-rounds', 'memory']) $(id).addEventListener('input', renderProjection);
-  $('research-enabled').addEventListener('change', () => { $('research-fields').hidden = !$('research-enabled').checked; renderProjection(); requestPreflight(); });
+  $('add-searcher').addEventListener('click', () => { setSearcher(true); $('research-query').focus(); });
+  $('remove-searcher').addEventListener('click', () => { setSearcher(false); $('add-searcher').focus(); });
+  $('searcher-card').addEventListener('change', (ev) => {
+    if (ev.target.id !== 'searcher-model-pick') return;
+    if (ev.target.value === '__other') { $('searcher-model').value = ''; renderSearcher(); $('searcher-model').hidden = false; $('searcher-model').focus(); return; }
+    $('searcher-model').value = ev.target.value; renderSearcher(); renderProjection();
+  });
+  $('searcher-pips').addEventListener('click', (ev) => {
+    const pip = ev.target.closest('.pip'); if (!pip) return;
+    $('searcher-effort').value = $('searcher-effort').value === pip.dataset.level ? '' : pip.dataset.level; // the filled last pip again: back to default
+    renderSearcher(); renderProjection();
+  });
+  $('searcher-model').addEventListener('input', renderProjection);
+  $('searcher-account').addEventListener('input', () => { renderSearcher(); renderProjection(); requestPreflight(); });
+  renderSearcher();
   $('start').addEventListener('click', start);
   try { S.budget = JSON.parse(localStorage.getItem('roundtable.budget') || '{}') || {}; } catch {}
   renderProjection();
@@ -452,7 +472,7 @@ function requestPreflight({ fresh = false } = {}) {
   clearTimeout(preflightTimer);
   preflightTimer = setTimeout(async () => {
     const seats = [...S.draft, { vendor: $('chairman').value, account: $('chairman-account').value.trim(), endpoint: $('chairman-endpoint').value, keyEnv: $('chairman-keyenv').value }];
-    if ($('research-enabled').checked && !seats.some((s) => s.vendor === 'codex')) seats.push({ vendor: 'codex' });
+    if (searcherOn()) seats.push(draftSearcher());
     const keys = [...new Set([...seats.map((s) => poolKey(s.vendor, seatAccount(s), !!VENDOR_META[s.vendor]?.profiles)),
       ...(S.initialDraft ? Object.keys(VENDOR_META).filter((v) => !isApi(v)) : [])])];
     // an API pool is checked from its URL and key-variable NAME (no request leaves the server);
@@ -499,6 +519,7 @@ function updateLamps() {
   $('refresh-status').textContent = S.preflighting ? 'Checking…' : 'Refresh status';
   $('preflight-status').textContent = S.preflighting ? 'Checking provider status…' : S.preflightError ||
     (S.preflightCheckedAt != null ? `Last check ${new Date(S.preflightCheckedAt).toLocaleTimeString()}` : '');
+  if (searcherOn()) { const lamp = poolLamp('codex', $('searcher-account').value.trim()); $('searcher-lamp').className = `lamp ${lamp.cls}`; $('searcher-lamp').title = lamp.note; }
   $('seats').querySelectorAll('.seat').forEach((card) => {
     const s = S.draft[Number(card.dataset.i)]; if (!s) return;
     const l = poolLamp(s.vendor, seatAccount(s));
@@ -529,6 +550,31 @@ function renderChair() {
   $('chairman-model').placeholder = api ? 'model id (required)' : 'model id';
   $('chair-pips').innerHTML = pipsHtml(v, $('chairman-effort').value, $('chairman-model').value.trim());
   updateLamps();
+  restoreFocus();
+}
+
+// ---------- the searcher ----------
+// Not a seat: one call before round 0 that gathers cited sources from its query alone. A card
+// next to the chairman's, added and removed like a seat, with its own model, effort and login.
+const searcherOn = () => !$('searcher-wrap').hidden;
+function draftSearcher() {
+  return { vendor: 'codex', model: $('searcher-model').value.trim() || undefined, effort: $('searcher-effort').value || undefined, account: $('searcher-account').value.trim() || undefined };
+}
+function setSearcher(on) {
+  $('searcher-wrap').hidden = !on; $('add-searcher').hidden = on;
+  renderSearcher(); renderProjection(); requestPreflight();
+}
+function renderSearcher() {
+  if (!searcherOn()) return;
+  const restoreFocus = rememberFocus($('searcher-card'));
+  $('searcher-card').style.setProperty('--seat', `var(--seat-${vendorColour('codex')})`);
+  $('searcher-avatar').innerHTML = avatar('searcher');
+  const picker = modelPicker('codex', $('searcher-account').value.trim(), $('searcher-model').value.trim(), 'id="searcher-model-pick"');
+  $('searcher-model-slot').innerHTML = picker.html;
+  $('searcher-model').hidden = !picker.other;
+  $('searcher-pips').innerHTML = pipsHtml('codex', $('searcher-effort').value, $('searcher-model').value.trim());
+  const lamp = poolLamp('codex', $('searcher-account').value.trim());
+  $('searcher-lamp').className = `lamp ${lamp.cls}`; $('searcher-lamp').title = lamp.note;
   restoreFocus();
 }
 
@@ -717,9 +763,9 @@ const usageLink = (key) => { const m = VENDOR_META[poolVendor(key)]; return m?.u
 function renderProjection() {
   const seats = draftSeats().map((s, i) => ({ ...s, id: `seat-${i}` }));
   const chairman = draftChairman();
-  const p = project({ seats, chairman, critiqueRounds: Number($('critique-rounds').value) || 0, baselines: BASELINES, memory: $('memory').value, research: $('research-enabled').checked });
-  const researcher = seats.find((s) => s.vendor === 'codex') || (chairman.vendor === 'codex' ? chairman : { vendor: 'codex' });
-  const label = (id) => (id === 'chairman' ? 'chairman' : id === 'research' ? 'shared research' : `${seats[Number(id.slice(5))]?.lens || id}`);
+  const p = project({ seats, chairman, critiqueRounds: Number($('critique-rounds').value) || 0, baselines: BASELINES, memory: $('memory').value, research: searcherOn() ? draftSearcher() : null });
+  const researcher = draftSearcher();
+  const label = (id) => (id === 'chairman' ? 'chairman' : id === 'research' ? 'searcher' : `${seats[Number(id.slice(5))]?.lens || id}`);
   const colourOf = (id) => (id === 'chairman' ? vendorColour(chairman.vendor) : id === 'research' ? vendorColour('codex') : seats[Number(id.slice(5))]?.colour || 'ink');
   // the consent switch appears only while a seat or the chairman runs on a vendor that needs it
   $('isolation-field').hidden = ![...seats, chairman].some((s) => VENDOR_META[s?.vendor]?.limitedIsolation);
@@ -759,7 +805,7 @@ function renderProjection() {
   const vs = Object.values(p.byVendor);
   const rounds = Number($('critique-rounds').value) || 0;
   const priced = vs.filter((v) => v.cost != null);
-  $('start-summary').innerHTML = seats.length ? `<b>${seats.length} seats</b> · ${seats.length * (rounds + 1) + 1 + ($('research-enabled').checked ? 1 : 0)} planned calls before retries · ≈ ${k(vs.reduce((n, v) => n + v.total, 0))} tokens${priced.length ? ` · ≈ $${priced.reduce((n, v) => n + v.cost, 0).toFixed(2)} for ${priced.map((v) => esc(VENDOR_LABEL[v.vendor] || v.vendor)).join(', ')}` : ''}` : '';
+  $('start-summary').innerHTML = seats.length ? `<b>${seats.length} seats</b> · ${seats.length * (rounds + 1) + 1 + (searcherOn() ? 1 : 0)} planned calls before retries · ≈ ${k(vs.reduce((n, v) => n + v.total, 0))} tokens${priced.length ? ` · ≈ $${priced.reduce((n, v) => n + v.cost, 0).toFixed(2)} for ${priced.map((v) => esc(VENDOR_LABEL[v.vendor] || v.vendor)).join(', ')}` : ''}` : '';
 }
 
 function clearSetupValidation() {
@@ -793,7 +839,8 @@ async function start() {
     fieldNotes, seats: draftSeats(),
     chairman: draftChairman(),
     options: { critiqueRounds: Number($('critique-rounds').value), autoContinueMs: Number($('auto').value) * 1000, wallClockMs: Number($('wall').value) * 60000, memory: $('memory').value, unattended: $('unattended').checked, allowLimitedIsolation: $('limited-isolation').checked, budget: budgetBody(),
-      ...($('research-enabled').checked ? { research: { query: $('research-query').value.trim(), maxSearches: Number($('research-searches').value), timeoutMs: Number($('research-time').value) * 1000 } } : {}) },
+      ...(searcherOn() ? { research: { query: $('research-query').value.trim(), maxSearches: Number($('research-searches').value), timeoutMs: Number($('research-time').value) * 1000,
+        model: $('searcher-model').value.trim(), effort: $('searcher-effort').value, account: $('searcher-account').value.trim() } } : {}) },
   };
   try {
     localStorage.setItem('roundtable.notes', JSON.stringify(notes));
@@ -1129,7 +1176,7 @@ function renderUsage() {
   const rows = [];
   for (const pool of pools) {
     rows.push(`<tr class="pool-row"><td colspan="7">${poolLine(pool)}</td></tr>`);
-    if (u.bySeat.research && seatPool(u.bySeat.research.seat) === pool) { const rs = u.bySeat.research.seat; rows.push(row(`<span class="seat-cell" style="--seat: var(--seat-${esc(vendorColour(rs.vendor))})"><span class="seat-dot"></span><span><span class="seat-lens">shared research</span><span class="seat-meta">${esc(VENDOR_LABEL[rs.vendor] || rs.vendor)} · web search</span></span></span>`, u.bySeat.research.usage)); }
+    if (u.bySeat.research && seatPool(u.bySeat.research.seat) === pool) { const rs = u.bySeat.research.seat; rows.push(row(`<span class="seat-cell" style="--seat: var(--seat-${esc(vendorColour(rs.vendor))})"><span class="seat-dot"></span><span><span class="seat-lens">searcher</span><span class="seat-meta">${esc([VENDOR_LABEL[rs.vendor] || rs.vendor, seatMeta(rs)].filter(Boolean).join(' · '))}</span></span></span>`, u.bySeat.research.usage)); }
     const seated = [...S.seats.filter((s) => seatPool(s) === pool), ...(S.chairman && seatPool(S.chairman) === pool ? [S.chairman] : [])];
     for (const seat of seated) {
       const x = u.bySeat[seat.id]?.usage;
@@ -1333,8 +1380,9 @@ function updateReviewTime() {
 function renderReviewState() {
   const terminal = ['done', 'error'].includes(S.status);
   if (S.status === 'researching' && !S.stopQueued) {
-    $('review-state').innerHTML = '<strong>Gathering shared web evidence</strong><p>Discussion starts after the source bundle is saved. Stop cancels this call.</p>';
-    $('review-state').classList.remove('finished');
+    $('review-state').className = 'review-state status warn';
+    $('review-state').title = 'Discussion starts after the sources are saved. Stop cancels this call.';
+    $('review-state').innerHTML = 'Searcher at work<span class="sr-only">. Discussion starts after the sources are saved. Stop cancels this call.</span>';
     return;
   }
   const title = S.status === 'done' ? S.synthesis === 'done' ? 'Review finished' : S.stopReason === 'human' ? 'Review stopped' : 'Review ended · no verdict' : S.stopQueued ? 'Stopping review' : S.status === 'verdict' ? 'Discussion finished · writing verdict' : S.finishQueued ? 'Finishing discussion' : S.status === 'waiting' ? 'Waiting for your input' : S.status === 'interrupted' ? 'Review interrupted' : S.status === 'error' ? 'Review stopped unexpectedly' : 'Discussion in progress';
@@ -1406,9 +1454,10 @@ function renderBanners() {
 function renderResearch() {
   const r = S.research;
   $('research-panel').hidden = !r;
+  if (r && !$('research-heading').querySelector('svg')) $('research-heading').innerHTML = `<span class="heading-avatar">${avatar('searcher')}</span>Sources from the searcher`;
   if (!r) { $('research-body').textContent = ''; return; }
   if (r.status !== 'done') {
-    $('research-body').textContent = r.status === 'running' ? `Codex is collecting evidence: at most ${r.maxSearches} reported search operations, ${Math.round(r.timeoutMs / 1000)} seconds.`
+    $('research-body').textContent = r.status === 'running' ? `The searcher is collecting sources: at most ${r.maxSearches} reported search operations, ${Math.round(r.timeoutMs / 1000)} seconds.`
       : r.error || 'Research was interrupted. It will not rerun automatically.';
     return;
   }

@@ -92,6 +92,7 @@
           <span class="hint" id="preflight-status" role="status"></span>
           <button class="btn btn-small" id="refresh-status" type="button">Refresh status</button>
           <button class="btn btn-small" id="add-seat" type="button">+ Add seat</button>
+          <button class="btn btn-small" id="add-searcher" type="button" title="A searcher gathers cited web sources once, before the discussion">+ Add searcher</button>
         </div>
         <div class="chair-wrap">
           <article class="seat-card chair-card" id="chair-card">
@@ -115,6 +116,29 @@
             </div>
           </article>
         </div>
+        <!-- The searcher: not a seat. It gathers cited web sources once, before round 0, from its query
+             alone; every seat and the chairman read the same sources. Its own model, effort, login. -->
+        <div class="chair-wrap searcher-wrap" id="searcher-wrap" hidden>
+          <article class="seat-card searcher-card" id="searcher-card" aria-labelledby="searcher-name">
+            <button class="remove" id="remove-searcher" type="button" aria-label="Remove the searcher" title="Remove the searcher">×</button>
+            <div class="seat-hd">
+              <span class="avatar avatar-lg" id="searcher-avatar"></span>
+              <div class="seat-id">
+                <span class="chair-title"><span id="searcher-name">Searcher</span> <span class="searcher-vendor">Codex</span><span class="kind-tag">CLI · subscription</span></span>
+                <span id="searcher-model-slot"></span><input id="searcher-model" class="flat model" placeholder="model id" aria-label="Searcher model id" hidden>
+              </div>
+              <span class="lamp idle" id="searcher-lamp" title="not checked"></span>
+            </div>
+            <div class="seat-bd">
+              <p class="chair-role">Searches the web once before round 0 and gives every seat and the chairman the same cited sources. It sees only its query, never your notes, and never argues or votes.</p>
+              <label class="f f-top"><span class="label">Query</span><textarea id="research-query" class="flat" maxlength="2000" rows="2" placeholder="What should be checked on the web?" aria-describedby="research-query-note"></textarea></label>
+              <span class="seat-note" id="research-query-note">Only this query is sent to the web. Keep private details out of it.</span>
+              <div class="f"><span class="label">Effort</span><span class="pips" id="searcher-pips"></span><input id="searcher-effort" type="hidden"></div>
+              <div class="f"><span class="label help-label" data-help="searchLimits" tabindex="0" aria-describedby="help-searchLimits">Limits</span><span class="searcher-limits"><input id="research-searches" class="flat" type="number" min="1" max="8" value="4" aria-label="Search limit"> searches · <input id="research-time" class="flat" type="number" min="30" max="600" value="120" aria-label="Time limit in seconds"> s</span></div>
+              <details class="seat-more" id="searcher-profile"><summary>Login profile</summary><input id="searcher-account" class="flat" placeholder="none: your usual login" aria-label="Searcher login profile"></details>
+            </div>
+          </article>
+        </div>
         <div class="fields fields-row rules">
           <div class="field"><label class="label help-label" data-help="critique" tabindex="0" for="critique-rounds" aria-describedby="help-critique">Critique rounds</label><input id="critique-rounds" type="number" min="0" max="8" value="1" aria-describedby="help-critique"></div>
           <div class="field"><label class="label help-label" data-help="auto" tabindex="0" for="auto" aria-describedby="help-auto">Auto-continue (s)</label><input id="auto" type="number" min="0.1" step="0.1" max="600" value="60" aria-describedby="help-auto"></div>
@@ -124,18 +148,6 @@
           <div class="field field-check" id="isolation-field" hidden><label class="label help-label" data-help="isolation" tabindex="0" for="limited-isolation" aria-describedby="help-isolation">Limited isolation</label><label class="check"><input id="limited-isolation" type="checkbox" aria-describedby="help-isolation"><span class="switch" aria-hidden="true"></span><span class="switch-text" data-off="off" data-on="allowed"></span></label></div>
         </div>
       </section>
-
-      <section class="panel" id="research-setup">
-        <div class="panel-title"><span id="research-title">Research first with Codex</span><span class="field-check research-toggle"><label class="check"><input id="research-enabled" type="checkbox" aria-labelledby="research-title" aria-describedby="research-note"><span class="switch" aria-hidden="true"></span><span class="switch-text" data-off="off" data-on="on"></span></label></span></div>
-        <p class="hint panel-note" id="research-note">One extra subscription call gathers sources for every seat. Estimates include space for shared sources in later replies. Discussion then runs with tools disabled.</p>
-        <div id="research-fields" class="fields research-fields" hidden>
-          <div class="field wide"><label class="label" for="research-query">Public search question</label><textarea id="research-query" maxlength="2000" rows="2" placeholder="What should be checked on the web?"></textarea><p class="hint">Only this question goes into research; review it for private details before starting.</p></div>
-          <div class="field"><label class="label" for="research-searches">Search limit</label><input id="research-searches" type="number" min="1" max="8" value="4"></div>
-          <div class="field"><label class="label" for="research-time">Time limit (s)</label><input id="research-time" type="number" min="30" max="600" value="120"></div>
-          <p class="hint">The search limit counts operations reported by Codex; an operation can contain several queries or page visits. An excess operation may start before its report arrives. Sources and excerpts are supplied by Codex and are not independently checked.</p>
-        </div>
-      </section>
-
       <details class="panel" id="projection-panel">
         <summary class="panel-title fold"><span>Quota picture</span><span class="hint" id="projection-summary"></span></summary>
         <p class="hint panel-note">One pool per account: every seat on it draws from the same limit. Figures are estimates from past debates on this machine; other use of the same account moves the windows too.</p>

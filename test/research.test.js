@@ -224,3 +224,18 @@ test('failed, unknown-cost or interrupted research cannot silently start or repe
     assert.match(recovered.research.error, /not rerun/);
   }
 });
+
+test('the searcher runs on its own model, effort and login profile, never a seat\'s', async () => {
+  const own = { ...settings, model: 'gpt-6-luna', effort: 'low', account: 'work' };
+  assert.deepEqual(researchSettings(own), { vendor: 'codex', query: settings.query, maxSearches: 2, timeoutMs: 30000, model: 'gpt-6-luna', effort: 'low', account: 'work' });
+  assert.equal(researchSettings({ ...settings, model: '' }).model, undefined); // "default": the CLI's own model
+  assert.throws(() => researchSettings({ ...settings, model: 42 }), /Research: searcher model/);
+  const codexSeat = { id: 'seat-1', vendor: 'codex', lens: 'cost', model: 'gpt-6-astra', effort: 'xhigh', account: 'personal' };
+  const calls = [];
+  await createDebate({ fieldNotes, seats: [seats[0], codexSeat], options: { research: own, critiqueRounds: 0, unattended: true }, runner: scripted(calls), store: { append() {} } }).run();
+  const search = calls.find((c) => c.opts.research);
+  assert.deepEqual([search.opts.model, search.opts.effort, search.opts.seat.account], ['gpt-6-luna', 'low', 'work']);
+  assert.equal(search.opts.seat.label, 'Searcher');
+  const p = project({ seats: [seats[0], codexSeat], chairman: { vendor: 'claude' }, critiqueRounds: 0, research: own });
+  assert.equal(p.bySeat.research.model, 'gpt-6-luna');
+});

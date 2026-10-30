@@ -87,6 +87,23 @@ const ART = {
     'XXXXXXXX....',
     '............',
   ],
+  // the searcher: a magnifier whose lens carries the gavel's cross, cut the same way. It is the
+  // court's investigator, and the cross doubles as the Examine sight of Ace Attorney's
+  // investigations: it gathers the evidence before the trial and never argues or votes.
+  searcher: [
+    '..XXX.......',
+    '.XXXXX......',
+    'XXX.XXX.....',
+    'XX...XX.....',
+    'XXX.XXX.....',
+    '.XXXXXX.....',
+    '..XXXXXX....',
+    '......XXX...',
+    '.......XXX..',
+    '........XXX.',
+    '.........XX.',
+    '............',
+  ],
 };
 
 // Each run of filled cells in a row is one rect, so a pixel drawing stays small. The session

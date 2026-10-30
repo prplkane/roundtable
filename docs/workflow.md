@@ -551,13 +551,15 @@ names the endpoint on each seat's line (`API http://localhost:11434/v1`) and on 
 
 ## 8. Run a debate without the browser
 
-### Optional research before discussion
+### Optional searcher before discussion
 
-Enable **Research first with Codex** to gather web evidence before the blind replies. Enter
-a separate **Public search question** and review it for private details. Only this question
-goes into research; your field notes and discussion notes are sent later to the selected seats.
-The first Codex seat supplies the research model, effort and login profile; if there is none,
-a Codex chairman supplies them, otherwise the installed CLI uses its default model and login.
+The **searcher** gathers web evidence once, before the blind replies. It is not a seat: it
+never sees your field notes, never argues and never votes. Press **+ Add searcher** under the
+seats to add its card, next to the chairman's; its × removes it. Write its **Query**, the
+only text sent to the web, and review it for private details. The card has its own model,
+effort and login profile, like the chairman's; a new searcher starts on the lightest Codex
+model at low effort, since finding and quoting sources needs little reasoning. Codex is the
+only vendor that can run a search with every other tool off, so the searcher runs on Codex.
 This is one additional subscription call, included in the quota projection and vendor budget.
 The setup estimate also reserves 12,000 input tokens for shared evidence in each discussion
 and verdict call. After research, admission checks use the saved source bundle's UTF-8 size
@@ -565,7 +567,7 @@ divided by three as an additive token estimate, including resumed conversations 
 Measured dollar baselines are adjusted for that extra input. These are conservative planning
 allowances, not exact token counts or guaranteed spending limits.
 
-Set **Search limit** (1–8 reported operations) and **Time limit** (30–600 seconds). An operation
+Set its **Limits**: searches (1–8 reported operations) and time (30–600 seconds). An operation
 can contain several queries or page visits, and can begin before Codex reports it. Roundtable
 stops the call when a reported operation exceeds the limit; it cannot undo upstream work or
 guarantee a provider billing ceiling. Local commands, files, MCP and delegation remain forbidden.
@@ -574,7 +576,8 @@ The board saves up to eight sources with URLs, excerpts, publication dates where
 and the time the bundle was gathered. Citations and excerpts are supplied by Codex, not
 independently verified by Roundtable. Every seat and the chairman gets the identical saved
 bundle, with tools disabled during discussion. The source panel, agent state, field-notes
-file and Markdown export include it. Research spending appears as **Codex · shared research**.
+file and Markdown export include it. Its spending appears as the **searcher** row in Usage
+details and a **searcher** segment in the quota picture.
 
 Research failure or interruption ends the review before discussion. Check the details and
 provider usage before explicitly starting a new review. Resume never repeats unfinished
@@ -582,14 +585,18 @@ research; completed bundles are reused without refetching pages.
 The agent state reports a fixed failure description and safe progress fields; open the board
 for the original provider error details. Saved failures receive the same filtering.
 
-For the agent client, add this to the request's `options` (leave it out to keep research off):
+For the agent client, add this to the request's `options` (leave it out to keep research off).
+`model`, `effort` and `account` set the searcher; without them it runs the lightest Codex model
+at low effort on your usual login:
 
 ```json
 {
   "research": {
     "query": "Public evidence for a staged release",
     "maxSearches": 4,
-    "timeoutMs": 120000
+    "timeoutMs": 120000,
+    "model": "gpt-6-luna",
+    "effort": "low"
   }
 }
 ```

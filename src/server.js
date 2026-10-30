@@ -12,7 +12,7 @@ import { checkPool, STATUS, endpointLamp, createPreflightCache } from './preflig
 import { retired } from './adapters/models.js';
 import { vendorCatalogue } from './adapters/catalogue.js';
 import { createDebate, DEFAULTS } from './engine.js';
-import { normaliseSeats, normaliseChairman, MOODS, COLOURS, poolKey, poolVendor, poolAccount } from './seats.js';
+import { normaliseSeats, normaliseChairman, MOODS, COLOURS, poolKey, poolVendor, poolAccount, LIGHTEST } from './seats.js';
 import { slugFor, openDebateDir, rebuildDebate } from './store.js';
 import { exportDebate, validateTarget, decisionRecord } from './export.js';
 import { rollup, hasUsableRound } from './engine.js';
@@ -437,7 +437,22 @@ function prepareDebate(raw, { board = false } = {}) {
   if (!FAKE && !body.options.allowLimitedIsolation && [...seats, chairman].some((s) => s && ADAPTERS[s.vendor]?.limitedIsolation)) {
     throw Object.assign(new Error('Antigravity has limited isolation. Turn on Limited isolation in the review settings, or choose another provider.'), { status: 400 });
   }
-  return { fieldNotes, seats, chairman, options: { ...DEFAULTS, ...body.options } };
+  const options = { ...DEFAULTS, ...body.options };
+  // the board always names the searcher's settings, even "default"; an agent may leave them out
+  const named = ['model', 'effort', 'account'].some((k) => raw?.options?.research && Object.hasOwn(raw.options.research, k));
+  if (options.research) options.research = searcherSettings(options.research, named);
+  return { fieldNotes, seats, chairman, options };
+}
+
+// The searcher runs on its own settings, checked like the chairman's. A request that names none
+// gets the lightest Codex model at low effort: finding and quoting sources needs little reasoning.
+function searcherSettings(research, named) {
+  const efforts = effortsByVendor().codex || ADAPTERS.codex.effortLevels || [];
+  const s = normaliseChairman({ vendor: 'codex', model: named ? research.model : LIGHTEST.codex, effort: named ? research.effort : efforts.includes('low') ? 'low' : undefined, account: research.account }, { vendors: ADAPTERS, efforts: effortsByVendor() });
+  const gone = s.model && retired('codex', s.model);
+  if (gone) throw Object.assign(new Error(`Searcher: Codex retired ${s.model} (${gone.date}); use ${gone.instead}.`), { status: 400 });
+  const { model, effort, account, ...rest } = research;
+  return { ...rest, ...(s.model ? { model: s.model } : {}), ...(s.effort ? { effort: s.effort } : {}), ...(s.account ? { account: s.account } : {}) };
 }
 
 function startDebate(raw, opts) {

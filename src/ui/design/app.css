@@ -664,15 +664,15 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .history-row:hover .history-delete, .history-row:focus-within .history-delete { opacity: 1; }
 @media (hover: none) { .history-delete { opacity: 1; } }
 
-/* Research before discussion: the panel title carries a switch like Unattended's, but on is the
-   action colour, not the hazard stripe, since research is not a risk; the note sits under the
-   title and the fields use the panel's field grid, the limits beside their explanation. */
-#research-setup .panel-title { justify-content: space-between; }
-.research-toggle input:checked + .switch { border-color: var(--color-action); background-image: none; }
-.research-toggle input:checked + .switch::after { background: var(--color-action); }
-.research-toggle input:checked ~ .switch-text { color: var(--color-action); }
-.research-toggle .check:hover .switch { border-color: var(--color-action); }
-.research-fields { grid-template-columns: 140px 140px minmax(0, 1fr); align-items: end; }
-.research-fields .field .hint { margin: var(--space-1) 0 0; }
-.research-fields > .hint { margin: 0; }
-@media (max-width: 720px) { .research-fields { grid-template-columns: 1fr 1fr; } .research-fields > .hint { grid-column: 1 / -1; } }
+/* The searcher: a card beside the chairman's, dashed because it is at the table without a seat
+   there. Its query and limits sit in the card; the evidence panel on the board carries its mark. */
+.searcher-card { border-style: dashed; border-left-style: solid; }
+.searcher-card .seat-hd { background: var(--color-surface); }
+.searcher-vendor { font-weight: var(--weight-strong); }
+.f-top { align-items: start; }
+.f-top .label { padding-top: 4px; }
+.searcher-card textarea.flat { resize: vertical; min-height: 44px; font: var(--text-sm)/1.5 var(--font-sans); }
+.searcher-limits { display: inline-flex; align-items: center; gap: var(--space-1); font: var(--text-xs) var(--font-mono); color: var(--color-text-muted); }
+.searcher-limits input.flat { width: 8ch; text-align: right; }
+.heading-avatar { display: inline-grid; place-items: center; width: 18px; height: 18px; margin-right: var(--space-2); vertical-align: -3px; color: var(--color-accent); }
+.heading-avatar svg { width: 16px; height: 16px; }
