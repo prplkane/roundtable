@@ -76,6 +76,6 @@ export function readCodexQuota({ timeoutMs = 20_000, home = null } = {}) {
         if (msg.id === 2) finish(msg.result ? codexQuota(msg.result) : null);
       }
     });
-    send({ id: 1, method: 'initialize', params: { clientInfo: { name: 'roundtable', version: '0.3.0' } } });
+    send({ id: 1, method: 'initialize', params: { clientInfo: { name: 'roundtable', version: '0.4.0' } } });
   });
 }

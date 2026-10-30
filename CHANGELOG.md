@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 - Add optional Codex web research before discussion, with an explicit public search question,
   time limit and reported search-operation limit. Save one cited evidence bundle for every
