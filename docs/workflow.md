@@ -66,8 +66,8 @@ A browser opens. Sign in with the ChatGPT account that holds your subscription.
 
 ### Antigravity (Google)
 
-Live Antigravity seats require **Allow limited isolation for Antigravity** in the review
-settings (`options.allowLimitedIsolation: true` in an agent request). The option and consent
+Live Antigravity seats require **Limited isolation** in the review settings, a switch that
+appears once Antigravity is at the table (`options.allowLimitedIsolation: true` in an agent request). The option and consent
 requirement are also in `roundtable agent --help`. Session rules deny documented tools, but
 the CLI cannot disable all shared customizations or MCP discovery.
 Use another provider if that limitation is unsuitable. Reported tool activity still stops

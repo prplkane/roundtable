@@ -435,7 +435,7 @@ function prepareDebate(raw, { board = false } = {}) {
   }
   const chairman = normaliseChairman(body.chairman, { vendors: ADAPTERS, efforts: effortsByVendor() });
   if (!FAKE && !body.options.allowLimitedIsolation && [...seats, chairman].some((s) => s && ADAPTERS[s.vendor]?.limitedIsolation)) {
-    throw Object.assign(new Error('Antigravity has limited isolation. Enable Allow limited isolation explicitly, or choose another provider.'), { status: 400 });
+    throw Object.assign(new Error('Antigravity has limited isolation. Turn on Limited isolation in the review settings, or choose another provider.'), { status: 400 });
   }
   return { fieldNotes, seats, chairman, options: { ...DEFAULTS, ...body.options } };
 }
@@ -630,7 +630,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, {
         runtime: { mode: FAKE ? 'demo' : 'live', dataDir: DEBATES_DIR, ...(legacyDataDir ? { legacyDataDir } : {}), diagnostics: diagnostics.status() },
         vendors: Object.entries(ADAPTERS).map(([vendor, a]) => ({
-          vendor, kind: a.kind, label: a.label, colour: a.colour, usageUrl: a.usageUrl || null, quota: quota[vendor] || null, profiles: poolsByAccount(a),
+          vendor, kind: a.kind, label: a.label, colour: a.colour, usageUrl: a.usageUrl || null, quota: quota[vendor] || null, profiles: poolsByAccount(a), limitedIsolation: a.limitedIsolation === true,
           pool: a.pool, catalogue: cat[vendor],
         })),
         moods: Object.fromEntries(Object.entries(MOODS).map(([k, v]) => [k, v])),

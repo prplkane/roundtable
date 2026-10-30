@@ -121,16 +121,17 @@
           <div class="field"><label class="label help-label" data-help="wall" tabindex="0" for="wall" aria-describedby="help-wall">Wall clock (min)</label><input id="wall" type="number" min="1" max="180" value="30" aria-describedby="help-wall"></div>
           <div class="field"><label class="label help-label" data-help="memory" tabindex="0" for="memory" aria-describedby="help-memory">Memory</label><select id="memory" aria-describedby="help-memory"><option value="stateless">stateless: fresh call per round</option><option value="resume">resume: re-send the thread</option></select></div>
           <div class="field field-check"><label class="label help-label" data-help="unattended" tabindex="0" for="unattended" aria-describedby="help-unattended">Unattended</label><label class="check"><input id="unattended" type="checkbox" aria-describedby="help-unattended"><span class="switch" aria-hidden="true"></span><span class="switch-text" data-off="off" data-on="armed"></span></label></div>
-          <div class="field"><label class="check"><input id="limited-isolation" type="checkbox">Allow limited isolation for Antigravity</label><p class="hint">Antigravity tool rules deny operations, but shared customizations and MCP discovery cannot be disabled. Reported tool activity still stops the seat.</p></div>
+          <div class="field field-check" id="isolation-field" hidden><label class="label help-label" data-help="isolation" tabindex="0" for="limited-isolation" aria-describedby="help-isolation">Limited isolation</label><label class="check"><input id="limited-isolation" type="checkbox" aria-describedby="help-isolation"><span class="switch" aria-hidden="true"></span><span class="switch-text" data-off="off" data-on="allowed"></span></label></div>
         </div>
       </section>
 
       <section class="panel" id="research-setup">
-        <div class="panel-title"><label class="check"><input id="research-enabled" type="checkbox">Research first with Codex</label></div>
-        <p class="hint">One extra subscription call gathers sources for every seat. Estimates include space for shared sources in later replies. Discussion then runs with tools disabled.</p>
-        <div id="research-fields" hidden>
-          <div class="field"><label class="label" for="research-query">Public search question</label><textarea id="research-query" maxlength="2000" rows="2" placeholder="What should be checked on the web?"></textarea><p class="hint">Only this question goes into research; review it for private details before starting.</p></div>
-          <div class="fields fields-row"><div class="field"><label class="label" for="research-searches">Search limit</label><input id="research-searches" type="number" min="1" max="8" value="4"></div><div class="field"><label class="label" for="research-time">Time limit (seconds)</label><input id="research-time" type="number" min="30" max="600" value="120"></div></div>
+        <div class="panel-title"><span id="research-title">Research first with Codex</span><span class="field-check research-toggle"><label class="check"><input id="research-enabled" type="checkbox" aria-labelledby="research-title" aria-describedby="research-note"><span class="switch" aria-hidden="true"></span><span class="switch-text" data-off="off" data-on="on"></span></label></span></div>
+        <p class="hint panel-note" id="research-note">One extra subscription call gathers sources for every seat. Estimates include space for shared sources in later replies. Discussion then runs with tools disabled.</p>
+        <div id="research-fields" class="fields research-fields" hidden>
+          <div class="field wide"><label class="label" for="research-query">Public search question</label><textarea id="research-query" maxlength="2000" rows="2" placeholder="What should be checked on the web?"></textarea><p class="hint">Only this question goes into research; review it for private details before starting.</p></div>
+          <div class="field"><label class="label" for="research-searches">Search limit</label><input id="research-searches" type="number" min="1" max="8" value="4"></div>
+          <div class="field"><label class="label" for="research-time">Time limit (s)</label><input id="research-time" type="number" min="30" max="600" value="120"></div>
           <p class="hint">The search limit counts operations reported by Codex; an operation can contain several queries or page visits. An excess operation may start before its report arrives. Sources and excerpts are supplied by Codex and are not independently checked.</p>
         </div>
       </section>

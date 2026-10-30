@@ -28,6 +28,10 @@
   need. Quota cards share one layout, with a shade per seat and a hatched chairman in the bar.
 - Rework the paper theme on night's structure: a faint plum page, white fields with visible
   borders, seat colours closer to night's hues at text contrast, softer position tints.
+- Show the Antigravity consent as a Limited isolation switch in the run settings, styled like
+  Unattended, with its explanation in the label's help; it appears only while Antigravity is
+  at the table. Research first with Codex is a panel title with an on/off switch, and its
+  fields sit in the padded field grid.
 - Fix a stray brace in the stylesheet that dropped the quota readout grid, and debate titles
   squeezed to one letter at medium widths.
 

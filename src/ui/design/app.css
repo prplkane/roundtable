@@ -663,3 +663,16 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .history-delete:hover:not([disabled]) { color: var(--color-danger); }
 .history-row:hover .history-delete, .history-row:focus-within .history-delete { opacity: 1; }
 @media (hover: none) { .history-delete { opacity: 1; } }
+
+/* Research before discussion: the panel title carries a switch like Unattended's, but on is the
+   action colour, not the hazard stripe, since research is not a risk; the note sits under the
+   title and the fields use the panel's field grid, the limits beside their explanation. */
+#research-setup .panel-title { justify-content: space-between; }
+.research-toggle input:checked + .switch { border-color: var(--color-action); background-image: none; }
+.research-toggle input:checked + .switch::after { background: var(--color-action); }
+.research-toggle input:checked ~ .switch-text { color: var(--color-action); }
+.research-toggle .check:hover .switch { border-color: var(--color-action); }
+.research-fields { grid-template-columns: 140px 140px minmax(0, 1fr); align-items: end; }
+.research-fields .field .hint { margin: var(--space-1) 0 0; }
+.research-fields > .hint { margin: 0; }
+@media (max-width: 720px) { .research-fields { grid-template-columns: 1fr 1fr; } .research-fields > .hint { grid-column: 1 / -1; } }

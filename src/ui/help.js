@@ -13,6 +13,7 @@ const HELP = {
   wall: { title: 'Wall clock', text: 'The total time limit, including pauses while you read or type. When it runs out, the review stops. Give yourself enough time to respond.' },
   unattended: { title: 'Unattended', text: 'Off: the table pauses after the blind round and whenever a seat asks you something. On: it never waits for you; the pause is skipped and the seats state what they would have asked as assumptions instead of asking. For a review nobody is watching.' },
   memory: { title: 'Memory', text: 'Stateless starts a fresh call each round with the relevant notes and replies. Resume continues a growing conversation and may use more tokens. Stateless is a good starting point.' },
+  isolation: { title: 'Limited isolation', text: 'Appears when Antigravity is at the table: the table will not open with it until this is allowed. Antigravity’s tool rules deny operations, but its shared customizations and MCP discovery cannot be switched off. Reported tool activity still stops the seat. Choose another provider if that is not acceptable.' },
   effort: { title: 'Effort', text: 'How much reasoning the model should use. Higher effort can take longer and use more quota. No filled squares means the provider’s default.' },
 };
 

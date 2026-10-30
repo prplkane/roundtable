@@ -177,7 +177,7 @@ async function setup() {
   const chair = $('chairman');
   for (const v of vendors) {
     VENDOR_LABEL[v.vendor] = v.label;
-    VENDOR_META[v.vendor] = { kind: v.kind, usageUrl: v.usageUrl, pool: v.pool, catalogue: v.catalogue, colour: v.colour, profiles: v.profiles };
+    VENDOR_META[v.vendor] = { kind: v.kind, usageUrl: v.usageUrl, pool: v.pool, catalogue: v.catalogue, colour: v.colour, profiles: v.profiles, limitedIsolation: v.limitedIsolation === true };
     if (v.quota) S.quota[v.vendor] = v.quota;
     chair.insertAdjacentHTML('beforeend', `<option value="${v.vendor}">${esc(v.label)}</option>`);
     // one datalist per vendor, so the model field offers what that CLI is known to accept
@@ -721,6 +721,8 @@ function renderProjection() {
   const researcher = seats.find((s) => s.vendor === 'codex') || (chairman.vendor === 'codex' ? chairman : { vendor: 'codex' });
   const label = (id) => (id === 'chairman' ? 'chairman' : id === 'research' ? 'shared research' : `${seats[Number(id.slice(5))]?.lens || id}`);
   const colourOf = (id) => (id === 'chairman' ? vendorColour(chairman.vendor) : id === 'research' ? vendorColour('codex') : seats[Number(id.slice(5))]?.colour || 'ink');
+  // the consent switch appears only while a seat or the chairman runs on a vendor that needs it
+  $('isolation-field').hidden = ![...seats, chairman].some((s) => VENDOR_META[s?.vendor]?.limitedIsolation);
   $('projection').innerHTML = Object.values(p.byVendor).map((v) => {
     // the vendor's seats all on one account: that account's pool; mixed: the default one
     const keys = new Set(v.seats.map((id) => seatPool(id === 'chairman' ? chairman : id === 'research' ? researcher : seats[Number(id.slice(5))])));
