@@ -3,7 +3,7 @@ import { resolveBinary, runProcess, cleanEnv } from './spawn.js';
 import { mkdirSync } from 'node:fs';
 import { classifyError } from './errors.js';
 import { safeProgress, progressText } from '../progress.js';
-import { researchSettings, researchObserver } from '../research.js';
+import { researchSettings, researchObserver, limitExceeded } from '../research.js';
 
 export function dig(obj, dotPath) {
   if (!dotPath || obj == null) return undefined;
@@ -115,16 +115,16 @@ export function makeAdapter(name, overrides = {}) {
 
   async function runOnce(prompt, sessionId = null, opts = {}) {
     const research = opts.research ? researchSettings(opts.research) : null;
-    if (research && (name !== 'codex' || sessionId)) throw Object.assign(new Error('Research requires one fresh Codex CLI call.'), { code: 'RESEARCH_INVALID' });
-    const observer = research ? researchObserver(research) : null;
+    // the searcher's CLI only, on its own fresh call; cfg.research says how it searches (config.js)
+    const searching = research ? cfg.research : null;
+    if (research && (research.vendor !== name || !searching || sessionId)) throw Object.assign(new Error('Research requires one fresh call to the searcher\'s CLI.'), { code: 'RESEARCH_INVALID' });
+    const observer = research ? researchObserver(research, searching.searchIds) : null;
+    const guard = searching ? searching.foreignTool : cfg.usedTools; // search allowed, every other tool still stops the call
     if (cfg.limitedIsolation && !opts.allowLimitedIsolation) throw Object.assign(new Error('Explicit consent to limited isolation is required.'), { code: 'ISOLATION_REQUIRED' });
     bin ??= cfg.bin || resolveBinary(cfg.binary, cfg.npmBin); // cfg.bin: a test's fake CLI
-    const { args, stdin, streamMode } = buildArgs(cfg, { prompt, sessionId, model: opts.model, effort: opts.effort });
-    if (research) {
-      const index = args.indexOf('web_search="disabled"');
-      if (index < 0) throw Object.assign(new Error('Research needs the supported Codex restriction flags.'), { code: 'RESEARCH_INVALID' });
-      args[index] = 'web_search="live"';
-    }
+    const built = buildArgs(cfg, { prompt, sessionId, model: opts.model, effort: opts.effort });
+    const { stdin, streamMode } = built;
+    const args = searching ? searching.args(built.args) : built.args;
 
     // opts.home: the directory of a named profile's CLI state (spawn.js profileHome). Only
     // vendors with a `home` entry honour it. It is created empty and never seeded: the user logs
@@ -147,9 +147,9 @@ export function makeAdapter(name, overrides = {}) {
         else if (event?.item?.type === 'reasoning' || event?.message?.content?.some?.((c) => c?.type === 'thinking')) stage = 'reasoning';
         else if (event?.item?.type === 'agent_message' || event?.type === 'assistant') stage = 'reply';
         else if (stage === 'waiting') stage = 'started';
-        const allowedSearch = observer?.accept(event);
-        const tool = allowedSearch ? false : streamMode ? cfg.usedTools?.(event.event === 'result' ? event.result : {}, [event])
-          : cfg.output === 'jsonl' ? cfg.usedTools?.([event]) : cfg.usedTools?.(event);
+        observer?.accept(event);
+        const tool = streamMode ? guard?.(event.event === 'result' ? event.result : {}, [event])
+          : cfg.output === 'jsonl' ? guard?.([event]) : guard?.(event);
         if (tool) { stage = 'tool'; throw Object.assign(new Error('Provider reported prohibited tool activity.'), { code: 'TOOL_POLICY', usedTools: true }); }
       }
       if (pendingLine.length > 1024 * 1024) throw Object.assign(new Error('Provider event exceeded the local size limit.'), { code: 'OUTPUT_LIMIT' });
@@ -178,17 +178,22 @@ export function makeAdapter(name, overrides = {}) {
       completed = !!last;
       const obj = last ? last.result : {};
       picked = pickJson(obj, cfg.paths);
-      usedTools = !!cfg.usedTools?.(obj, events);
+      usedTools = !!guard?.(obj, events);
     } else if (cfg.output === 'jsonl') {
-      completed = parseLines(res.stdout).some((e) => e.type === cfg.paths.input?.[0]);
+      const events = parseLines(res.stdout);
+      completed = events.some((e) => e.type === cfg.paths.input?.[0]);
       picked = pickJsonl(res.stdout, cfg.paths);
-      usedTools = !!cfg.usedTools?.(parseLines(res.stdout).filter((e) => !(research && /^item\.(started|updated|completed)$/.test(e.type) && e.item?.type === 'web_search')));
+      usedTools = !!guard?.(events);
+      // the searcher's figures from the CLI's own totals, where the reply's leave the search out
+      observer?.report(searching.reported?.(events));
+      const searchUsage = searching?.usage ? usageCounters(searching.usage(events) || {}) : null;
+      if (searchUsage) picked.usage = searchUsage;
     } else {
       let obj = {};
       try { obj = JSON.parse(res.stdout); } catch { /* reported below */ }
       completed = !!obj && typeof obj === 'object' && !Array.isArray(obj);
       picked = pickJson(obj, cfg.paths);
-      usedTools = !!cfg.usedTools?.(obj);
+      usedTools = !!guard?.(obj);
     }
 
     // A cumulative counter is charged as the difference from the session's previous reading.
@@ -211,6 +216,7 @@ export function makeAdapter(name, overrides = {}) {
     const accounting = { usage, progress, ...(observer ? { research: { searches: observer.searches } } : {}), ...(!usage ? { cost, rawCost: picked.cost, ms: res.ms } : {}) };
     if (usedTools || processError?.usedTools) throw Object.assign(new Error('Provider reported prohibited tool activity.'), { code: 'TOOL_POLICY', usedTools: true, ...accounting });
     if (processError) throw Object.assign(processError, accounting);
+    if (observer && observer.searches > research.maxSearches) throw Object.assign(limitExceeded(), accounting); // counted by the CLI after the stream
     if (!completed) throw Object.assign(new Error(`${cfg.label} ended without a completion event; the partial answer was rejected.`), { code: 'PROVIDER_PROTOCOL', ...accounting });
     if (observer && observer.searches === 0) throw Object.assign(new Error('Research completed without a reported web-search operation.'), { code: 'RESEARCH_INVALID', ...accounting });
     if (!picked.text) {

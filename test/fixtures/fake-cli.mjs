@@ -8,6 +8,7 @@
 //   FAKE_EXIT    exit code to use after printing (default 0)
 //   FAKE_IS_ERROR 1: claude's result line is an error (is_error: true), as for a usage limit
 //   FAKE_USAGE missing | empty | partial | zero (default: reported fixture usage)
+//   FAKE_RESULT  JSON merged into the final result object (claude: modelUsage for a searcher)
 import { writeFileSync } from 'node:fs';
 
 const shape = process.env.FAKE_SHAPE || 'claude';
@@ -52,6 +53,7 @@ async function main() {
   }
   const output = lines.map((line) => {
     const row = JSON.parse(line);
+    if (process.env.FAKE_RESULT && (row.type === 'result' || row.conversation_id)) Object.assign(row, JSON.parse(process.env.FAKE_RESULT));
     if (row.usage) {
       if (process.env.FAKE_USAGE === 'missing') delete row.usage;
       if (process.env.FAKE_USAGE === 'empty') row.usage = {};

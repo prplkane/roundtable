@@ -125,11 +125,13 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   This is declared attribution, not an authenticated identity or proof of human approval.
   It grants no extra permissions. Legacy notes without a source retain their original label.
 - **Tool restrictions depend on the installed CLI.** Claude uses safe mode, an empty tool
-  list, no MCP servers and no permission prompts. Codex ignores user configuration and rules,
+  list, no MCP servers, MCP tools removed by name and no permission prompts. Codex ignores user configuration and rules,
   uses strict configuration, a read-only sandbox, no MCP servers, no web search and disabled
   tool features. These flags require a compatible CLI; unsupported options fail without a
   weaker fallback. Antigravity uses session-only deny rules for documented file, command,
-  URL and MCP tools. Its shared customizations and MCP discovery cannot be disabled, so live
+  URL and MCP tools. Its web search has no permission rule and cannot be denied, so the guard
+  below stops a seat at its first reported tool step, search included. Its shared
+  customizations and MCP discovery cannot be disabled either, so live
   Antigravity calls require explicit `allowLimitedIsolation: true` consent. No saved provider
   settings are changed. All prompts use stdin, not the process command line.
   The mandatory guard terminates an owned CLI when a prohibited tool event is reported,
@@ -142,7 +144,10 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   actions are not observable. These are provider restrictions and detection, not an OS
   security sandbox supplied by Roundtable. Flags are in `src/adapters/config.js`.
 - **Optional web research has a separate policy.** Explicit research consent starts one fresh
-  Codex CLI call with live web search enabled; other tool restrictions remain. Only the
+  call on the chosen searcher's CLI with only its web search allowed; other tool restrictions
+  remain. Codex turns on live `web_search`; Claude gets `WebSearch` as its only tool, approved
+  for that call; Antigravity, whose search cannot be switched off or on, keeps its deny rules,
+  and any reported tool other than `search_web` stops the call. API endpoints cannot search. Only the
   separately entered search question goes into that call. Search terms and visited pages are
   handled by the provider, so review the question for private details. The local wall clock,
   output limits and reported search-operation limit are enforced. One reported operation can

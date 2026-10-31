@@ -180,6 +180,7 @@ async function setup() {
     VENDOR_META[v.vendor] = { kind: v.kind, usageUrl: v.usageUrl, pool: v.pool, catalogue: v.catalogue, colour: v.colour, profiles: v.profiles, limitedIsolation: v.limitedIsolation === true };
     if (v.quota) S.quota[v.vendor] = v.quota;
     chair.insertAdjacentHTML('beforeend', `<option value="${v.vendor}">${esc(v.label)}</option>`);
+    if (v.search) $('searcher-vendor').insertAdjacentHTML('beforeend', `<option value="${v.vendor}">${esc(v.label)}</option>`);
     // one datalist per vendor, so the model field offers what that CLI is known to accept
     $('datalists').insertAdjacentHTML('beforeend', `<datalist id="models-${v.vendor}">${(v.catalogue?.models || []).map((m) => `<option value="${esc(m.id)}">${esc(m.label)}</option>`).join('')}</datalist>`);
   }
@@ -224,11 +225,13 @@ async function setup() {
   $('research-query').value = research?.query || '';
   $('research-searches').value = research?.maxSearches || 4;
   $('research-time').value = (research?.timeoutMs || 120000) / 1000;
-  // a new searcher starts on the lightest Codex model at low effort; a saved one keeps its own
+  // a new searcher starts on its vendor's lightest model at low effort; a saved one keeps its own
   // (settings saved before the searcher had its own model name none, so they start light too)
-  const named = !!research && ['model', 'effort', 'account'].some((key) => Object.hasOwn(research, key));
-  $('searcher-model').value = named ? research.model || '' : lightestModel('codex');
-  $('searcher-effort').value = named ? research.effort || '' : (VENDOR_META.codex?.catalogue?.efforts || []).includes('low') ? 'low' : '';
+  const searchers = [...$('searcher-vendor').options].map((o) => o.value);
+  $('searcher-vendor').value = searchers.includes(research?.vendor) ? research.vendor : searchers.includes(DEFAULT_SEARCHER) ? DEFAULT_SEARCHER : searchers[0] || '';
+  const named = !!research && ['model', 'effort', 'account'].some((key) => Object.hasOwn(research, key)) && $('searcher-vendor').value === (research.vendor || DEFAULT_SEARCHER);
+  if (named) { $('searcher-model').value = research.model || ''; $('searcher-effort').value = research.effort || ''; } else lightSearcher($('searcher-vendor').value);
+  $('add-searcher').disabled = !searchers.length;
   $('searcher-account').value = research?.account || '';
   $('searcher-wrap').hidden = !research; $('add-searcher').hidden = !!research;
   const ch = settings.chairman;
@@ -288,14 +291,20 @@ async function setup() {
   for (const id of ['chairman-model', 'chairman-effort', 'critique-rounds', 'memory']) $(id).addEventListener('input', renderProjection);
   $('add-searcher').addEventListener('click', () => { setSearcher(true); $('research-query').focus(); });
   $('remove-searcher').addEventListener('click', () => { setSearcher(false); $('add-searcher').focus(); });
+  // another vendor: its own lightest model and login, not the last vendor's
+  $('searcher-vendor').addEventListener('change', () => { lightSearcher($('searcher-vendor').value); renderSearcher(); renderProjection(); requestPreflight(); });
   $('searcher-card').addEventListener('change', (ev) => {
     if (ev.target.id !== 'searcher-model-pick') return;
     if (ev.target.value === '__other') { $('searcher-model').value = ''; renderSearcher(); $('searcher-model').hidden = false; $('searcher-model').focus(); return; }
-    $('searcher-model').value = ev.target.value; renderSearcher(); renderProjection();
+    const p = pickedModel($('searcher-vendor').value, ev.target.value, $('searcher-effort').value);
+    $('searcher-model').value = p.model; if (p.effort !== undefined) $('searcher-effort').value = p.effort || '';
+    renderSearcher(); renderProjection();
   });
   $('searcher-pips').addEventListener('click', (ev) => {
     const pip = ev.target.closest('.pip'); if (!pip) return;
-    $('searcher-effort').value = $('searcher-effort').value === pip.dataset.level ? '' : pip.dataset.level; // the filled last pip again: back to default
+    const fam = $('searcher-vendor').value === 'agy' && familyOf('agy', $('searcher-model').value.trim());
+    if (fam) { const p = pickedModel('agy', fam.id, pip.dataset.level); $('searcher-model').value = p.model; $('searcher-effort').value = p.effort; }
+    else $('searcher-effort').value = $('searcher-effort').value === pip.dataset.level ? '' : pip.dataset.level; // the filled last pip again: back to default
     renderSearcher(); renderProjection();
   });
   $('searcher-model').addEventListener('input', renderProjection);
@@ -519,7 +528,7 @@ function updateLamps() {
   $('refresh-status').textContent = S.preflighting ? 'Checking…' : 'Refresh status';
   $('preflight-status').textContent = S.preflighting ? 'Checking provider status…' : S.preflightError ||
     (S.preflightCheckedAt != null ? `Last check ${new Date(S.preflightCheckedAt).toLocaleTimeString()}` : '');
-  if (searcherOn()) { const lamp = poolLamp('codex', $('searcher-account').value.trim()); $('searcher-lamp').className = `lamp ${lamp.cls}`; $('searcher-lamp').title = lamp.note; }
+  if (searcherOn()) { const lamp = poolLamp($('searcher-vendor').value, searcherAccount()); $('searcher-lamp').className = `lamp ${lamp.cls}`; $('searcher-lamp').title = lamp.note; }
   $('seats').querySelectorAll('.seat').forEach((card) => {
     const s = S.draft[Number(card.dataset.i)]; if (!s) return;
     const l = poolLamp(s.vendor, seatAccount(s));
@@ -555,10 +564,21 @@ function renderChair() {
 
 // ---------- the searcher ----------
 // Not a seat: one call before round 0 that gathers cited sources from its query alone. A card
-// next to the chairman's, added and removed like a seat, with its own model, effort and login.
+// next to the chairman's, added and removed like a seat, with its own vendor, model, effort and
+// login. The vendor list holds only CLIs that can search with every other tool off (/api/seats).
+const DEFAULT_SEARCHER = 'codex'; // research.js: what an agent request without a vendor gets
 const searcherOn = () => !$('searcher-wrap').hidden;
+const searcherAccount = () => (VENDOR_META[$('searcher-vendor').value]?.profiles ? $('searcher-account').value.trim() : '');
 function draftSearcher() {
-  return { vendor: 'codex', model: $('searcher-model').value.trim() || undefined, effort: $('searcher-effort').value || undefined, account: $('searcher-account').value.trim() || undefined };
+  return { vendor: $('searcher-vendor').value, model: $('searcher-model').value.trim() || undefined, effort: $('searcher-effort').value || undefined, account: searcherAccount() || undefined };
+}
+// The lightest model at low effort: finding and quoting sources needs little reasoning. An
+// Antigravity id carries its level, so its "low" is part of the model.
+function lightSearcher(vendor) {
+  const cat = VENDOR_META[vendor]?.catalogue || {};
+  const model = lightestModel(vendor, cat.models || []) || '';
+  const p = vendor === 'agy' ? pickedModel(vendor, familyOf(vendor, model)?.id || model, 'low') : { model, effort: (cat.efforts || []).includes('low') ? 'low' : '' };
+  $('searcher-model').value = p.model || ''; $('searcher-effort').value = p.effort || '';
 }
 function setSearcher(on) {
   $('searcher-wrap').hidden = !on; $('add-searcher').hidden = on;
@@ -567,13 +587,16 @@ function setSearcher(on) {
 function renderSearcher() {
   if (!searcherOn()) return;
   const restoreFocus = rememberFocus($('searcher-card'));
-  $('searcher-card').style.setProperty('--seat', `var(--seat-${vendorColour('codex')})`);
+  const v = $('searcher-vendor').value;
+  $('searcher-card').style.setProperty('--seat', `var(--seat-${vendorColour(v)})`);
   $('searcher-avatar').innerHTML = avatar('searcher');
-  const picker = modelPicker('codex', $('searcher-account').value.trim(), $('searcher-model').value.trim(), 'id="searcher-model-pick"');
+  $('searcher-profile').hidden = !VENDOR_META[v]?.profiles; // no login profiles for a CLI without a state directory
+  const picker = modelPicker(v, searcherAccount(), $('searcher-model').value.trim(), 'id="searcher-model-pick"');
   $('searcher-model-slot').innerHTML = picker.html;
   $('searcher-model').hidden = !picker.other;
-  $('searcher-pips').innerHTML = pipsHtml('codex', $('searcher-effort').value, $('searcher-model').value.trim());
-  const lamp = poolLamp('codex', $('searcher-account').value.trim());
+  $('searcher-model').setAttribute('list', `models-${v}`);
+  $('searcher-pips').innerHTML = pipsHtml(v, $('searcher-effort').value, $('searcher-model').value.trim());
+  const lamp = poolLamp(v, searcherAccount());
   $('searcher-lamp').className = `lamp ${lamp.cls}`; $('searcher-lamp').title = lamp.note;
   restoreFocus();
 }
@@ -766,9 +789,9 @@ function renderProjection() {
   const p = project({ seats, chairman, critiqueRounds: Number($('critique-rounds').value) || 0, baselines: BASELINES, memory: $('memory').value, research: searcherOn() ? draftSearcher() : null });
   const researcher = draftSearcher();
   const label = (id) => (id === 'chairman' ? 'chairman' : id === 'research' ? 'searcher' : `${seats[Number(id.slice(5))]?.lens || id}`);
-  const colourOf = (id) => (id === 'chairman' ? vendorColour(chairman.vendor) : id === 'research' ? vendorColour('codex') : seats[Number(id.slice(5))]?.colour || 'ink');
-  // the consent switch appears only while a seat or the chairman runs on a vendor that needs it
-  $('isolation-field').hidden = ![...seats, chairman].some((s) => VENDOR_META[s?.vendor]?.limitedIsolation);
+  const colourOf = (id) => (id === 'chairman' ? vendorColour(chairman.vendor) : id === 'research' ? vendorColour(researcher.vendor) : seats[Number(id.slice(5))]?.colour || 'ink');
+  // the consent switch appears only while a seat, the chairman or the searcher runs on a vendor that needs it
+  $('isolation-field').hidden = ![...seats, chairman, searcherOn() ? researcher : null].some((s) => VENDOR_META[s?.vendor]?.limitedIsolation);
   $('projection').innerHTML = Object.values(p.byVendor).map((v) => {
     // the vendor's seats all on one account: that account's pool; mixed: the default one
     const keys = new Set(v.seats.map((id) => seatPool(id === 'chairman' ? chairman : id === 'research' ? researcher : seats[Number(id.slice(5))])));
@@ -839,8 +862,8 @@ async function start() {
     fieldNotes, seats: draftSeats(),
     chairman: draftChairman(),
     options: { critiqueRounds: Number($('critique-rounds').value), autoContinueMs: Number($('auto').value) * 1000, wallClockMs: Number($('wall').value) * 60000, memory: $('memory').value, unattended: $('unattended').checked, allowLimitedIsolation: $('limited-isolation').checked, budget: budgetBody(),
-      ...(searcherOn() ? { research: { query: $('research-query').value.trim(), maxSearches: Number($('research-searches').value), timeoutMs: Number($('research-time').value) * 1000,
-        model: $('searcher-model').value.trim(), effort: $('searcher-effort').value, account: $('searcher-account').value.trim() } } : {}) },
+      ...(searcherOn() ? { research: { vendor: $('searcher-vendor').value, query: $('research-query').value.trim(), maxSearches: Number($('research-searches').value), timeoutMs: Number($('research-time').value) * 1000,
+        model: $('searcher-model').value.trim(), effort: $('searcher-effort').value, account: searcherAccount() } } : {}) },
   };
   try {
     localStorage.setItem('roundtable.notes', JSON.stringify(notes));
@@ -859,7 +882,8 @@ async function start() {
   }
   // Confirm a known unavailable provider only after the form itself is valid.
   const red = [...S.draft.map((s) => ({ name: `${VENDOR_LABEL[s.vendor]} (${s.lens})`, l: poolLamp(s.vendor, seatAccount(s)) })),
-    { name: `the chairman (${VENDOR_LABEL[$('chairman').value]})`, l: poolLamp($('chairman').value, chairAccount()) }].filter((x) => x.l.cls === 'danger');
+    { name: `the chairman (${VENDOR_LABEL[$('chairman').value]})`, l: poolLamp($('chairman').value, chairAccount()) },
+    ...(searcherOn() ? [{ name: `the searcher (${VENDOR_LABEL[$('searcher-vendor').value]})`, l: poolLamp($('searcher-vendor').value, searcherAccount()) }] : [])].filter((x) => x.l.cls === 'danger');
   const sig = red.map((x) => `${x.name}:${x.l.note}`).join('|');
   if (red.length && S.startConfirm !== sig) {
     S.startConfirm = sig;
@@ -1461,7 +1485,7 @@ function renderResearch() {
       : r.error || 'Research was interrupted. It will not rerun automatically.';
     return;
   }
-  $('research-body').innerHTML = `<p class="hint">${r.searches} reported search operation${r.searches === 1 ? '' : 's'} · gathered ${esc(r.gatheredAt)}. Every seat and the chairman receive this same saved bundle. Citations, excerpts and publication dates are supplied by Codex and are not independently checked.</p>`
+  $('research-body').innerHTML = `<p class="hint">${r.searches} reported search operation${r.searches === 1 ? '' : 's'} · gathered ${esc(r.gatheredAt)}. Every seat and the chairman receive this same saved bundle. Citations, excerpts and publication dates are supplied by the searcher's provider and are not independently checked.</p>`
     + (r.sources || []).map((s) => `<details><summary>${esc(s.id)} · ${esc(s.title)}</summary><p><a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.url)}</a></p><p>${esc(s.excerpt)}</p><p class="hint">Published: ${esc(s.publishedAt || 'not reported')}</p></details>`).join('');
 }
 

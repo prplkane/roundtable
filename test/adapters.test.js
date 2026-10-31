@@ -10,7 +10,7 @@ import path from 'node:path';
 
 test('claude: fresh call on stdin, resume appends --resume', () => {
   const fresh = buildArgs(ADAPTERS.claude, { prompt: 'hi' });
-  assert.deepEqual(fresh.args, ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'plan', '--tools', '', '--disable-slash-commands', '--setting-sources', 'local', '--strict-mcp-config', '--safe-mode', '--permission-prompts', 'none']);
+  assert.deepEqual(fresh.args, ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'plan', '--tools', '', '--disallowedTools', 'mcp__*', '--disable-slash-commands', '--setting-sources', 'local', '--strict-mcp-config', '--safe-mode', '--permission-prompts', 'none']);
   assert.equal(fresh.stdin, 'hi');
   const res = buildArgs(ADAPTERS.claude, { prompt: 'hi', sessionId: 'S1', model: 'opus' });
   assert.deepEqual(res.args.slice(-4), ['--resume', 'S1', '--model', 'opus']);
@@ -35,6 +35,7 @@ test('restriction flags: every adapter sends its tool restrictions on fresh call
   for (const sid of [undefined, 'S1']) {
     const c = all('claude', sid);
     assert.deepEqual(c.slice(c.indexOf('--tools'), c.indexOf('--tools') + 2), ['--tools', ''], 'claude: empty built-in tool list');
+    assert.deepEqual(c.slice(c.indexOf('--disallowedTools'), c.indexOf('--disallowedTools') + 2), ['--disallowedTools', 'mcp__*'], 'claude: --tools does not reach MCP tools');
     for (const f of ['--strict-mcp-config', '--disable-slash-commands', '--safe-mode', '--permission-prompts']) assert.ok(c.includes(f), `claude ${f}`);
     assert.deepEqual(c.slice(c.indexOf('--permission-mode'), c.indexOf('--permission-mode') + 2), ['--permission-mode', 'plan']);
     const x = all('codex', sid);
@@ -263,6 +264,10 @@ test('tool-use guard: each adapter rejects reported tools and accepts a plain re
   assert.equal(detectToolUse('codex', '{"type":"item.started","item":{"type":"command_execution","command":"ls"}}'), true);
   assert.equal(detectToolUse('agy', '{"response":"","num_turns":1,"denied_actions":[{"action":"run_command"}]}'), true, 'a denied tool is still an attempt');
   assert.equal(detectToolUse('agy', '{"response":"pong","num_turns":1}'), false);
+  const step = (s) => JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'C1', step_index: 1, state: 'DONE', ...s } });
+  const done = JSON.stringify({ event: 'result', result: { status: 'SUCCESS', response: 'pong', num_turns: 1 } });
+  assert.equal(detectToolUse('agy', [step({ step_type: 'agent_response', text_delta: 'pong' }), done].join('\n')), false);
+  assert.equal(detectToolUse('agy', [step({ step_type: 'tool', tool_name: 'search_web', tool_info: { name: 'search_web' } }), done].join('\n')), true, 'one turn, but a search ran');
 });
 
 test('split tool events stop a hanging CLI before its timeout, including server tools and intermediate updates', async () => {
@@ -272,6 +277,9 @@ test('split tool events stop a hanging CLI before its timeout, including server 
     ['codex', { type: 'item.updated', item: { type: 'command_execution' } }],
     ['agy', { event: 'step_update', tool_info: { name: 'read_file' } }],
     ['agy', { event: 'step_update', subagent_info: { id: 'test' } }],
+    // agy 1.4.11 as it streams: the tool inside step_update, here the search no rule can deny
+    ['agy', { event: 'step_update', step_update: { step_index: 2, state: 'ACTIVE', step_type: 'tool', tool_name: 'search_web', tool_info: { name: 'search_web', parameters: { query: 'x' } } } }],
+    ['agy', { event: 'step_update', step_update: { step_index: 2, state: 'ACTIVE', step_type: 'tool' } }],
   ];
   try {
     for (const [name, event] of cases) {

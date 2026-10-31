@@ -49,10 +49,51 @@ const CODEX_TOOL_FEATURES = ['shell_tool', 'unified_exec', 'apps', 'plugins', 'b
 export const CODEX_NO_TOOLS = ['-c', 'mcp_servers={}', '-c', 'web_search="disabled"',
   ...CODEX_TOOL_FEATURES.flatMap((f) => ['-c', `features.${f}=false`])];
 const CODEX_ISOLATION = ['--ignore-user-config', '--ignore-rules', '--strict-config'];
+// agy's permission rules accept only command, read_file, write_file, read_url, mcp, execute_url and
+// unsandboxed (its rule pattern, CLI 1.4.11). Its search_web tool has no rule and cannot be denied
+// here: a "search_web(*)" entry is ignored without a warning. The reported-tool guard stops it.
 const AGY_DENY_TOOLS = ['--settings', JSON.stringify({ toolPermission: 'strict', permissions: {
   allow: [], ask: [], deny: ['read_file(*)', 'write_file(*)', 'read_url(*)', 'execute_url(*)', 'command(*)', 'mcp(*)'],
 } })];
 const toolBlock = (block) => ['tool_use', 'server_tool_use', 'mcp_tool_use'].includes(block?.type);
+
+// The searcher (research.js) on one vendor's CLI: web search on, every other tool still off.
+//   args(argv)       the fresh-call argv with exactly the search tool allowed; throws when the
+//                    flag it rewrites has moved, so a CLI change cannot widen what the call may do
+//   searchIds(e)     ids of the search operations one event reports (events may repeat an id)
+//   foreignTool      the usedTools check with only the search tool allowed: anything else stops it
+//   reported(events) searches the CLI counted itself, when it does
+//   usage(events)    token counters that include the search's own model calls, when the CLI
+//                    reports those apart from the reply's
+const moved = (label) => Object.assign(new Error(`Research needs the supported ${label} restriction flags.`), { code: 'RESEARCH_INVALID' });
+const CLAUDE_SEARCH = 'WebSearch';
+const claudeBlocks = (events) => events.flatMap((e) => e.type === 'assistant' && Array.isArray(e.message?.content) ? e.message.content.filter(toolBlock)
+  : e.type === 'stream_event' && toolBlock(e.event?.content_block) ? [e.event.content_block] : []);
+const claudeSearch = (b) => b.type === 'tool_use' && b.name === CLAUDE_SEARCH;
+const claudeResult = (events) => events.findLast((e) => e.type === 'result');
+const codexSearch = (e) => /^item\.(started|updated|completed)$/.test(e?.type) && e.item?.type === 'web_search';
+// any completed item that is not the message or its reasoning: command_execution, file
+// changes, MCP tool calls, web searches
+const codexTools = (events) => events.some((e) => /^item\.(completed|started|updated)$/.test(e.type) && e.item?.type && !['agent_message', 'reasoning'].includes(e.item.type));
+const AGY_SEARCH = 'search_web';
+const agyAttempts = (obj) => (typeof obj?.num_turns === 'number' && obj.num_turns > 1) || (Array.isArray(obj?.denied_actions) && obj.denied_actions.length > 0);
+
+// The tools one agy stream event reports, by name. agy 1.4 sends each tool step as
+// {event:"step_update", step_update:{step_type:"tool", tool_name, tool_info:{name}}}; earlier
+// builds put tool_info or subagent_info on the event itself or under `step`. Fails closed: a tool
+// step without a name is '?', and a subagent is 'subagent', so neither can pass as a search.
+function agyToolNames(event) {
+  if (!event || typeof event !== 'object') return [];
+  const names = [];
+  for (const s of [event, event.step, event.step_update]) {
+    if (!s || typeof s !== 'object') continue;
+    if (s.subagent_info != null) names.push('subagent');
+    if (s.tool_info == null && s.tool_name == null && s.step_type !== 'tool') continue;
+    const own = new Set([s.tool_info?.name, s.tool_name].filter((n) => typeof n === 'string' && n)); // both, if they disagree
+    names.push(...(own.size ? own : ['?']));
+  }
+  return names;
+}
 
 export const ADAPTERS = {
   claude: {
@@ -66,11 +107,13 @@ export const ADAPTERS = {
     // --strict-mcp-config with no --mcp-config: no MCP server at all. Without it the user's
     // claude.ai connectors still reached the seat (8 tools despite --tools "") and their schemas
     // cost about 3.4k input tokens per call.
+    // --disallowedTools "mcp__*": `--tools` does not reach MCP tools (CLI reference), so any MCP
+    // tool that still loads, a managed server for one, is removed from the context too.
     // Not --exclude-dynamic-system-prompt-sections: it helps only identical prompts. In a real
     // two-seat, two-round debate it cut the shared cached part from 2,156 to 1,230 tokens and
     // raised the cost by about 15%.
     args: ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'plan',
-      '--tools', '', '--disable-slash-commands', '--setting-sources', 'local', '--strict-mcp-config', '--safe-mode', '--permission-prompts', 'none'],
+      '--tools', '', '--disallowedTools', 'mcp__*', '--disable-slash-commands', '--setting-sources', 'local', '--strict-mcp-config', '--safe-mode', '--permission-prompts', 'none'],
     // `--bare` would also skip CLAUDE.md discovery and auto-memory, but it skips keychain reads
     // too and can report "not logged in". Safe mode preserves login while ignoring customizations.
     home: { env: 'CLAUDE_CONFIG_DIR' },
@@ -100,9 +143,31 @@ export const ADAPTERS = {
     costIsCumulative: true,
     cacheSemantics: 'additive', // input_tokens is often 2 next to thousands of cache reads
     // a tool_use content block in any assistant message, or more than one turn in the result
-    usedTools: (events) => events.some((e) => e.type === 'assistant' && Array.isArray(e.message?.content) && e.message.content.some(toolBlock))
-      || events.some((e) => e.type === 'stream_event' && toolBlock(e.event?.content_block))
+    usedTools: (events) => claudeBlocks(events).length > 0
       || events.some((e) => e.type === 'result' && typeof e.num_turns === 'number' && e.num_turns > 1),
+    // WebSearch alone. Plan mode with nobody to answer a prompt denies it unless it is also
+    // pre-approved. Each search is a turn, so the turn count is no signal here; the CLI counts the
+    // searches per model (modelUsage), and the search's own Haiku call is reported only there.
+    research: {
+      args: (args) => {
+        const i = args.indexOf('--tools');
+        if (i < 0 || args[i + 1] !== '') throw moved('Claude');
+        return [...args.slice(0, i), '--tools', CLAUDE_SEARCH, '--allowedTools', CLAUDE_SEARCH, ...args.slice(i + 2)];
+      },
+      searchIds: (e) => claudeBlocks([e]).filter(claudeSearch).map((b) => b.id),
+      foreignTool: (events) => claudeBlocks(events).some((b) => !claudeSearch(b))
+        || events.some((e) => e.type === 'result' && Array.isArray(e.permission_denials) && e.permission_denials.some((d) => d?.tool_name !== CLAUDE_SEARCH)),
+      reported: (events) => {
+        const models = Object.values(claudeResult(events)?.modelUsage || {});
+        return models.length && models.every((m) => Number.isSafeInteger(m?.webSearchRequests)) ? models.reduce((n, m) => n + m.webSearchRequests, 0) : undefined;
+      },
+      usage: (events) => {
+        const models = Object.values(claudeResult(events)?.modelUsage || {});
+        // a missing required field makes NaN, which usageCounters refuses; thinking is a breakdown
+        const sum = (k, optional = false) => models.reduce((n, m) => n + (optional ? m?.[k] ?? 0 : m?.[k]), 0);
+        return models.length ? { input: sum('inputTokens'), output: sum('outputTokens'), cacheRead: sum('cacheReadInputTokens'), cacheWrite: sum('cacheCreationInputTokens'), thinking: sum('thinkingTokens', true) } : null;
+      },
+    },
     quota: 'per-call', // see quota.js
     usageUrl: 'https://claude.ai/settings/usage',
     colour: 'rust',
@@ -146,9 +211,18 @@ export const ADAPTERS = {
     },
     costIsCumulative: false,
     cacheSemantics: 'subset', // the Codex protocol computes uncached input as input - cached
-    // any completed item that is not the message or its reasoning: command_execution, file
-    // changes, MCP tool calls, web searches
-    usedTools: (events) => events.some((e) => /^item\.(completed|started|updated)$/.test(e.type) && e.item?.type && !['agent_message', 'reasoning'].includes(e.item.type)),
+    usedTools: codexTools,
+    // web_search flipped from "disabled" to "live"; one web_search item spans started, updated
+    // and completed events with one id.
+    research: {
+      args: (args) => {
+        const i = args.indexOf('web_search="disabled"');
+        if (i < 0) throw moved('Codex');
+        return [...args.slice(0, i), 'web_search="live"', ...args.slice(i + 1)];
+      },
+      searchIds: (e) => (codexSearch(e) ? [e.item.id] : []),
+      foreignTool: (events) => codexTools(events.filter((e) => !codexSearch(e))),
+    },
     quota: 'app-server',
     usageUrl: 'https://chatgpt.com/settings/usage',
     colour: 'olive',
@@ -159,6 +233,10 @@ export const ADAPTERS = {
     kind: 'cli',
     label: 'Antigravity',
     binary: 'agy',
+    // --mode plan is kept for a CLI that honours it, but 1.4.11 ignores it while slash commands
+    // are off ("--mode plan has no effect while slash command expansion is disabled"). Slash
+    // commands stay off: a field note or a seat's reply must not expand into a skill. What keeps
+    // an agy seat read-only is the deny list and the reported-tool guard, not plan mode.
     args: ['--output-format', 'json', '--mode', 'plan', '--disable-slash-commands', ...AGY_DENY_TOOLS],
     limitedIsolation: true,
     home: null, // no documented environment variable for agy's state directory
@@ -191,14 +269,22 @@ export const ADAPTERS = {
     },
     costIsCumulative: false,
     cacheSemantics: 'unknown', // two identical 12k prompts reported no cache read
-    // more than one turn, or a tool the headless mode had to deny
-    usedTools: (obj, events = []) => (typeof obj?.num_turns === 'number' && obj.num_turns > 1)
-      || (Array.isArray(obj?.denied_actions) && obj.denied_actions.length > 0)
-      || events.some((e) => e.tool_info != null || e.subagent_info != null || e.step?.tool_info != null || e.step?.subagent_info != null),
+    // more than one turn, a tool the headless mode had to deny, or any reported tool step
+    usedTools: (obj, events = []) => agyAttempts(obj) || events.some((e) => agyToolNames(e).length > 0),
+    // search_web is always on (no permission rule reaches it, see AGY_DENY_TOOLS), so the argv
+    // stays the seat's. A tool step's ACTIVE and DONE updates share its step_index.
+    research: {
+      args: (args) => args,
+      searchIds: (e) => {
+        const names = agyToolNames(e), i = e?.step_update?.step_index;
+        return names.length === 1 && names[0] === AGY_SEARCH ? [Number.isSafeInteger(i) ? `step-${i}` : null] : [];
+      },
+      foreignTool: (obj, events = []) => agyAttempts(obj) || events.some((e) => agyToolNames(e).some((n) => n !== AGY_SEARCH)),
+    },
     quota: null,
     usageUrl: 'https://antigravity.google/g1-activity', // the CLI's own "AI credits activity" link
     colour: 'teal',
-    readOnly: '--mode plan',
+    readOnly: 'session deny rules for files, commands, URLs and MCP, plus the reported-tool guard (--mode plan is ignored while slash commands are off)',
   },
   // An OpenAI-compatible endpoint: self-hosted (Ollama, LM Studio, vLLM, llama.cpp) or a
   // pay-per-token API (DeepSeek, Moonshot, OpenAI). No binary, no argv: endpoint.js speaks HTTP.

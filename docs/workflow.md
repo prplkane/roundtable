@@ -69,7 +69,8 @@ A browser opens. Sign in with the ChatGPT account that holds your subscription.
 Live Antigravity seats require **Limited isolation** in the review settings, a switch that
 appears once Antigravity is at the table (`options.allowLimitedIsolation: true` in an agent request). The option and consent
 requirement are also in `roundtable agent --help`. Session rules deny documented tools, but
-the CLI cannot disable all shared customizations or MCP discovery.
+the CLI cannot disable all shared customizations or MCP discovery, and no rule reaches its web
+search; a seat that reports any tool step, a search included, is stopped at once.
 Use another provider if that limitation is unsuitable. Reported tool activity still stops
 the seat without a retry. Claude and Codex require their isolation flags to be supported;
 an older CLI fails with an update instruction instead of a weaker fallback.
@@ -556,10 +557,15 @@ names the endpoint on each seat's line (`API http://localhost:11434/v1`) and on 
 The **searcher** gathers web evidence once, before the blind replies. It is not a seat: it
 never sees your field notes, never argues and never votes. Press **+ Add searcher** under the
 seats to add its card, next to the chairman's; its × removes it. Write its **Query**, the
-only text sent to the web, and review it for private details. The card has its own model,
-effort and login profile, like the chairman's; a new searcher starts on the lightest Codex
-model at low effort, since finding and quoting sources needs little reasoning. Codex is the
-only vendor that can run a search with every other tool off, so the searcher runs on Codex.
+only text sent to the web, and review it for private details. The card has its own vendor,
+model, effort and login profile, like the chairman's. Pick the vendor whose pool has room:
+Claude, Codex or Antigravity. There is one searcher and one call, on that vendor only. A new
+searcher, or one moved to another vendor, starts on that vendor's lightest model at low
+effort, since finding and quoting sources needs little reasoning. Each CLI searches with every
+other tool kept off: Codex turns on only its web search, Claude gets WebSearch as its only
+tool, and Antigravity, whose web search is always on, keeps its other tools denied. An
+Antigravity searcher needs **Limited isolation**, like an Antigravity seat. An API endpoint
+has no search tool and is not offered.
 This is one additional subscription call, included in the quota projection and vendor budget.
 The setup estimate also reserves 12,000 input tokens for shared evidence in each discussion
 and verdict call. After research, admission checks use the saved source bundle's UTF-8 size
@@ -568,12 +574,16 @@ Measured dollar baselines are adjusted for that extra input. These are conservat
 allowances, not exact token counts or guaranteed spending limits.
 
 Set its **Limits**: searches (1–8 reported operations) and time (30–600 seconds). An operation
-can contain several queries or page visits, and can begin before Codex reports it. Roundtable
+can contain several queries or page visits, and can begin before the CLI reports it. Roundtable
 stops the call when a reported operation exceeds the limit; it cannot undo upstream work or
-guarantee a provider billing ceiling. Local commands, files, MCP and delegation remain forbidden.
+guarantee a provider billing ceiling. Claude also reports how many searches it ran when the
+call ends, and a count over the limit fails the research. Claude runs each search on a small
+model of its own; those tokens are included in the searcher's usage. Claude's WebSearch returns
+titles, links and that model's summary without opening the pages (WebFetch stays off), so its
+excerpts are shorter than Codex's. Local commands, files, MCP and delegation remain forbidden.
 
 The board saves up to eight sources with URLs, excerpts, publication dates where reported,
-and the time the bundle was gathered. Citations and excerpts are supplied by Codex, not
+and the time the bundle was gathered. Citations and excerpts are supplied by the searcher's provider, not
 independently verified by Roundtable. Every seat and the chairman gets the identical saved
 bundle, with tools disabled during discussion. The source panel, agent state, field-notes
 file and Markdown export include it. Its spending appears as the **searcher** row in Usage
@@ -586,12 +596,14 @@ The agent state reports a fixed failure description and safe progress fields; op
 for the original provider error details. Saved failures receive the same filtering.
 
 For the agent client, add this to the request's `options` (leave it out to keep research off).
-`model`, `effort` and `account` set the searcher; without them it runs the lightest Codex model
-at low effort on your usual login:
+`vendor` (`codex`, `claude` or `agy`; Codex when left out), `model`, `effort` and `account` set
+the searcher; without the last three it runs that vendor's lightest model at low effort on your
+usual login:
 
 ```json
 {
   "research": {
+    "vendor": "codex",
     "query": "Public evidence for a staged release",
     "maxSearches": 4,
     "timeoutMs": 120000,

@@ -160,7 +160,7 @@ export function decisionRecord(rows, slug, { warnings = [], metadataOnly = false
   }).filter(Boolean);
   const ch = usage.bySeat.chairman?.usage;
   const researchUsage = usage.bySeat.research?.usage;
-  if (researchUsage) usageRows.push(`| Codex shared research | ${tokens(researchUsage.input, researchUsage)} | ${tokens(researchUsage.cacheRead + researchUsage.cacheWrite, researchUsage)} | ${tokens(researchUsage.output, researchUsage)} | ${costCell(researchUsage)} |`);
+  if (researchUsage) usageRows.push(`| searcher (${usage.bySeat.research.seat?.vendor || rb.options?.research?.vendor || 'codex'}) | ${tokens(researchUsage.input, researchUsage)} | ${tokens(researchUsage.cacheRead + researchUsage.cacheWrite, researchUsage)} | ${tokens(researchUsage.output, researchUsage)} | ${costCell(researchUsage)} |`);
   if (ch) usageRows.push(`| chairman (${rb.chairman?.vendor || '?'}) | ${tokens(ch.input, ch)} | ${tokens(ch.cacheRead + ch.cacheWrite, ch)} | ${tokens(ch.output, ch)} | ${costCell(ch)} |`);
   const t = usage.total;
   const usageTable = usageRows.length

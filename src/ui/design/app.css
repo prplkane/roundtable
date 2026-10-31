@@ -668,7 +668,6 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
    there. Its query and limits sit in the card; the evidence panel on the board carries its mark. */
 .searcher-card { border-style: dashed; border-left-style: solid; }
 .searcher-card .seat-hd { background: var(--color-surface); }
-.searcher-vendor { font-weight: var(--weight-strong); }
 .f-top { align-items: start; }
 .f-top .label { padding-top: 4px; }
 .searcher-card textarea.flat { resize: vertical; min-height: 44px; font: var(--text-sm)/1.5 var(--font-sans); }

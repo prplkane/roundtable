@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Security and usage
+
+- Fix the Antigravity tool guard for CLI 1.4, which reports each tool as a `step_update` with
+  the tool inside it. The guard read only the older shapes, so a tool that no Antigravity
+  permission rule can deny, its web search, went unnoticed. Any reported tool step now stops
+  the seat at once, as it does for Claude and Codex.
+
 ### Local operation and interface
 
 - Show the chairman at work: while the verdict call runs, the Conclusion panel draws a pixel
@@ -29,9 +36,12 @@
 - Rework the paper theme on night's structure: a faint plum page, white fields with visible
   borders, seat colours closer to night's hues at text contrast, softer position tints.
 - Make research a visible role, the **searcher**: a card added with **+ Add searcher** beside
-  the chairman, with a pixel eye looking through a magnifier. It has its own
-  model, effort and login profile instead of borrowing the first Codex seat's, and starts on the
-  lightest Codex model at low effort; agent requests may set them in `options.research`. It
+  the chairman, with a pixel eye looking through a magnifier. It has its own vendor, model,
+  effort and login profile instead of borrowing the first Codex seat's. Pick Claude, Codex or
+  Antigravity on its card; it starts on that vendor's lightest model at low effort, and agent
+  requests may set all four in `options.research` (Codex when no vendor is named). Claude
+  searches with WebSearch as its only tool, and its own search count and search-model tokens
+  are included; Antigravity needs Limited isolation, and any tool but its web search stops it. It
   replaces the research panel and its switch, and is named on the board, in Usage details and in
   the quota picture. While it works the review state reads "Searcher at work".
 - Show the Antigravity consent as a Limited isolation switch in the run settings, styled like

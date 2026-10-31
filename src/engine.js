@@ -595,9 +595,9 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       state.status = 'researching';
       state.research = { status: 'running', maxSearches: opts.research.maxSearches, timeoutMs: opts.research.timeoutMs };
       record({ type: 'research-start', ...state.research }); fire('research', state.research);
-      // the searcher: its own model, effort and login profile from the research settings
-      const { model, effort, account } = opts.research;
-      const seat = { id: 'research', index: -2, vendor: 'codex', label: 'Searcher', lens: 'searcher', model, effort, account };
+      // the searcher: its own vendor, model, effort and login profile from the research settings
+      const { vendor, model, effort, account } = opts.research;
+      const seat = { id: 'research', index: -2, vendor, label: 'Searcher', lens: 'searcher', model, effort, account };
       result = await callSeat(seat, researchPrompt(opts.research), -1, 'research', chairmanCall(seat), { isChairman: true });
     }
     if (result.ok) {
