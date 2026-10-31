@@ -27,10 +27,8 @@
     <span class="run-mode" id="run-mode">Connecting</span>
     <span class="meta">
       <a class="btn btn-small" id="nav-debates" href="#" hidden>Debates</a>
-      <button class="btn btn-small" id="save-diagnostics" type="button">Save error log</button>
-      <button class="btn btn-small" id="sound" type="button" aria-pressed="true">Sound: on</button>
-      <button class="btn btn-small" id="compact" type="button" aria-pressed="false" title="Show each reply as its seat and stance; click a card to read it">Compact</button>
-      <button class="btn btn-small" id="theme" type="button">Night</button>
+      <button class="btn btn-small btn-icon" id="sound" type="button" aria-pressed="true" aria-label="Sound on"></button>
+      <button class="btn btn-small btn-icon" id="theme" type="button" aria-label="Switch to the night theme"></button>
     </span>
   </header>
 
@@ -40,11 +38,12 @@
     <p class="error" id="page-error" role="alert" hidden></p>
     <!-- Setup screen -->
     <section id="setup" class="screen">
-      <section class="panel" id="recent" aria-label="Debates">
-        <div class="panel-title"><span>Debates</span><span class="hint" id="recent-count"></span><button class="btn btn-small" id="clear-finished" type="button" disabled>Clear finished</button></div>
+      <details class="panel" id="recent" aria-label="Debates">
+        <summary class="panel-title fold"><span>Debates</span><span class="hint" id="recent-count"></span></summary>
         <p class="history-notice" id="history-notice" role="status" hidden></p>
         <div id="recent-list" class="debates"></div>
-      </section>
+        <div class="debates-foot" id="recent-foot" hidden><span id="debates-more-slot"></span><button class="text-btn" id="clear-finished" type="button" disabled>Clear finished</button></div>
+      </details>
       <details class="local-data" id="local-data">
         <summary>Local data and backups</summary>
         <p>Records for this server are saved in <code id="data-dir"></code>.</p>
@@ -85,7 +84,7 @@
 
       <section class="panel">
         <div class="panel-title"><span>Seats</span><span class="hint">Seats know each other by lens only, never by vendor.</span></div>
-        <p class="hint seats-hint" id="seat-setup-note" role="status" hidden></p>
+        <p class="hint panel-note" id="seat-setup-note" role="status" hidden></p>
         <div id="seats" class="seats" role="list"></div>
         <div id="datalists"></div>
         <div class="row seats-actions">
@@ -93,6 +92,7 @@
           <span class="hint" id="preflight-status" role="status"></span>
           <button class="btn btn-small" id="refresh-status" type="button">Refresh status</button>
           <button class="btn btn-small" id="add-seat" type="button">+ Add seat</button>
+          <button class="btn btn-small" id="add-searcher" type="button" title="A searcher gathers cited web sources once, before the discussion">+ Add searcher</button>
         </div>
         <div class="chair-wrap">
           <article class="seat-card chair-card" id="chair-card">
@@ -116,31 +116,43 @@
             </div>
           </article>
         </div>
+        <!-- The searcher: not a seat. It gathers cited web sources once, before round 0, from its query
+             alone; every seat and the chairman read the same sources. Its own model, effort, login. -->
+        <div class="chair-wrap searcher-wrap" id="searcher-wrap" hidden>
+          <article class="seat-card searcher-card" id="searcher-card" aria-labelledby="searcher-name">
+            <button class="remove" id="remove-searcher" type="button" aria-label="Remove the searcher" title="Remove the searcher">×</button>
+            <div class="seat-hd">
+              <span class="avatar avatar-lg" id="searcher-avatar"></span>
+              <div class="seat-id">
+                <span class="chair-title"><span id="searcher-name">Searcher</span> <select id="searcher-vendor" class="flat vendor" aria-label="Searcher vendor" title="The CLI that searches. Only CLIs that can search with every other tool kept off are offered."></select><span class="kind-tag">CLI · subscription</span></span>
+                <span id="searcher-model-slot"></span><input id="searcher-model" class="flat model" placeholder="model id" aria-label="Searcher model id" hidden>
+              </div>
+              <span class="lamp idle" id="searcher-lamp" title="not checked"></span>
+            </div>
+            <div class="seat-bd">
+              <p class="chair-role">Searches the web once before round 0 and gives every seat and the chairman the same cited sources. It sees only its query, never your notes, and never argues or votes.</p>
+              <label class="f f-top"><span class="label">Query</span><textarea id="research-query" class="flat" maxlength="2000" rows="2" placeholder="What should be checked on the web?" aria-describedby="research-query-note"></textarea></label>
+              <span class="seat-note" id="research-query-note">Only this query is sent to the web. Keep private details out of it.</span>
+              <div class="f"><span class="label">Effort</span><span class="pips" id="searcher-pips"></span><input id="searcher-effort" type="hidden"></div>
+              <div class="f"><span class="label help-label" data-help="searchLimits" tabindex="0" aria-describedby="help-searchLimits">Limits</span><span class="searcher-limits"><input id="research-searches" class="flat" type="number" min="1" max="8" value="4" aria-label="Search limit"> searches · <input id="research-time" class="flat" type="number" min="30" max="600" value="120" aria-label="Time limit in seconds"> s</span></div>
+              <details class="seat-more" id="searcher-profile"><summary>Login profile</summary><input id="searcher-account" class="flat" placeholder="none: your usual login" aria-label="Searcher login profile"></details>
+            </div>
+          </article>
+        </div>
         <div class="fields fields-row rules">
           <div class="field"><label class="label help-label" data-help="critique" tabindex="0" for="critique-rounds" aria-describedby="help-critique">Critique rounds</label><input id="critique-rounds" type="number" min="0" max="8" value="1" aria-describedby="help-critique"></div>
           <div class="field"><label class="label help-label" data-help="auto" tabindex="0" for="auto" aria-describedby="help-auto">Auto-continue (s)</label><input id="auto" type="number" min="0.1" step="0.1" max="600" value="60" aria-describedby="help-auto"></div>
           <div class="field"><label class="label help-label" data-help="wall" tabindex="0" for="wall" aria-describedby="help-wall">Wall clock (min)</label><input id="wall" type="number" min="1" max="180" value="30" aria-describedby="help-wall"></div>
           <div class="field"><label class="label help-label" data-help="memory" tabindex="0" for="memory" aria-describedby="help-memory">Memory</label><select id="memory" aria-describedby="help-memory"><option value="stateless">stateless: fresh call per round</option><option value="resume">resume: re-send the thread</option></select></div>
           <div class="field field-check"><label class="label help-label" data-help="unattended" tabindex="0" for="unattended" aria-describedby="help-unattended">Unattended</label><label class="check"><input id="unattended" type="checkbox" aria-describedby="help-unattended"><span class="switch" aria-hidden="true"></span><span class="switch-text" data-off="off" data-on="armed"></span></label></div>
-          <div class="field"><label class="check"><input id="limited-isolation" type="checkbox">Allow limited isolation for Antigravity</label><p class="hint">Antigravity tool rules deny operations, but shared customizations and MCP discovery cannot be disabled. Reported tool activity still stops the seat.</p></div>
+          <div class="field field-check" id="isolation-field" hidden><label class="label help-label" data-help="isolation" tabindex="0" for="limited-isolation" aria-describedby="help-isolation">Limited isolation</label><label class="check"><input id="limited-isolation" type="checkbox" aria-describedby="help-isolation"><span class="switch" aria-hidden="true"></span><span class="switch-text" data-off="off" data-on="allowed"></span></label></div>
         </div>
       </section>
-
-      <section class="panel" id="research-setup">
-        <div class="panel-title"><label class="check"><input id="research-enabled" type="checkbox">Research first with Codex</label></div>
-        <p class="hint">One extra subscription call gathers sources for every seat. Estimates include space for shared sources in later replies. Discussion then runs with tools disabled.</p>
-        <div id="research-fields" hidden>
-          <div class="field"><label class="label" for="research-query">Public search question</label><textarea id="research-query" maxlength="2000" rows="2" placeholder="What should be checked on the web?"></textarea><p class="hint">Only this question goes into research; review it for private details before starting.</p></div>
-          <div class="fields fields-row"><div class="field"><label class="label" for="research-searches">Search limit</label><input id="research-searches" type="number" min="1" max="8" value="4"></div><div class="field"><label class="label" for="research-time">Time limit (seconds)</label><input id="research-time" type="number" min="30" max="600" value="120"></div></div>
-          <p class="hint">The search limit counts operations reported by Codex; an operation can contain several queries or page visits. An excess operation may start before its report arrives. Sources and excerpts are supplied by Codex and are not independently checked.</p>
-        </div>
-      </section>
-
-      <section class="panel" id="projection-panel">
-        <div class="panel-title"><span>Quota picture</span></div>
-        <p class="hint seats-hint">One pool per account: every seat on it draws from the same limit. Figures are estimates from past debates on this machine; other use of the same account moves the windows too.</p>
+      <details class="panel" id="projection-panel">
+        <summary class="panel-title fold"><span>Quota picture</span><span class="hint" id="projection-summary"></span></summary>
+        <p class="hint panel-note">One pool per account: every seat on it draws from the same limit. Figures are estimates from past debates on this machine; other use of the same account moves the windows too.</p>
         <div id="projection" class="pools"></div>
-      </section>
+      </details>
 
       <div class="startbar">
         <span class="startbar-summary" id="start-summary"></span>
@@ -152,14 +164,19 @@
     <!-- Board screen -->
     <section id="board" class="screen" hidden>
       <div id="banners" class="banners" role="status" aria-live="polite"></div>
-      <section class="panel strip" aria-label="Usage">
-        <div class="panel-title"><span id="board-title"></span></div>
-        <div id="review-state" class="review-state" role="status"></div>
+      <!-- Quota first, as one quiet line; its table opens beneath the line, so the toggle never
+           moves. Then the question heads the state, the conclusion and the rounds. -->
+      <div class="usage-line" aria-label="Usage">
         <div id="usage-summary" class="usage-summary" aria-label="Reported quota remaining"></div>
-        <details id="usage-details" class="usage-details"><summary>Usage details</summary>
-        <table id="usage"><thead><tr><th class="label">Pool / seat</th><th class="label">In</th><th class="label">Cache</th><th class="label">Out</th><th class="label">Cost</th><th class="label">Time</th><th class="label" title="Input tokens, cache included, that this seat sent in the latest round">Round in</th></tr></thead><tbody></tbody></table>
-        </details>
-      </section>
+        <button class="fold-toggle" id="usage-toggle" type="button" aria-expanded="false" aria-controls="usage-details">Usage details</button>
+      </div>
+      <div id="usage-details" class="panel usage-details" hidden>
+        <table id="usage"><thead><tr><th class="label">Pool and seat</th><th class="label num" title="Fresh input tokens">Input</th><th class="label num" title="Input tokens read from or written to the provider's cache">Cached</th><th class="label num">Output</th><th class="label num" title="A + marks a sum where some calls reported no cost">Cost</th><th class="label num">Time</th><th class="label num" title="Input tokens, cache included, that this seat sent in its latest round">Last round</th></tr></thead><tbody></tbody></table>
+      </div>
+      <header class="review-head" aria-label="Review">
+        <h2 id="board-title" class="review-question"></h2>
+        <span id="review-state" class="review-state" role="status"></span>
+      </header>
 
       <section id="research-panel" class="panel" hidden aria-labelledby="research-heading"><div class="panel-title"><span id="research-heading">Shared web evidence</span></div><div id="research-body"></div></section>
 
@@ -212,12 +229,17 @@
     </form>
   </div>
 
+  <div id="boot" class="boot" hidden aria-hidden="true">
+    <div class="boot-card" id="boot-card"><span><span class="prompt">&gt;</span> loading the table<span class="cursor"></span></span></div>
+  </div>
+
   <footer class="statusline">
     <span id="sys" class="status ok">idle</span>
     <span id="st-round"></span>
     <span id="st-seats"></span>
     <span id="st-elapsed"></span>
     <span class="end">v0.4.0</span>
+    <button class="statusline-link" id="save-diagnostics" type="button">Save error log</button>
   </footer>
 </div>
 <dialog id="delete-history" aria-labelledby="delete-history-title" aria-describedby="delete-history-detail">

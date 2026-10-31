@@ -87,6 +87,22 @@ const ART = {
     'XXXXXXXX....',
     '............',
   ],
+  // the searcher: an eye looking through a magnifier. It is the court's investigator: it looks
+  // for evidence before the trial, and it reads; it never argues or votes.
+  searcher: [
+    '...XXXX.....',
+    '.XX....XX...',
+    '.X.XXXX.X...',
+    'X.X.XX.X.X..',
+    'X.X.XX.X.X..',
+    'X..XXXX..X..',
+    '.X......X...',
+    '.XX....XXX..',
+    '...XXXX.XXX.',
+    '.........XXX',
+    '..........XX',
+    '............',
+  ],
 };
 
 // Each run of filled cells in a row is one rect, so a pixel drawing stays small. The session

@@ -1,5 +1,55 @@
 # Changelog
 
+## Unreleased
+
+### Security and usage
+
+- Fix the Antigravity tool guard for CLI 1.4, which reports each tool as a `step_update` with
+  the tool inside it. The guard read only the older shapes, so a tool that no Antigravity
+  permission rule can deny, its web search, went unnoticed. Any reported tool step now stops
+  the seat at once, as it does for Claude and Codex.
+
+### Local operation and interface
+
+- Show the chairman at work: while the verdict call runs, the Conclusion panel draws a pixel
+  sheet being written under a quill instead of staying hidden. Reduced motion shows a still page.
+- Keep a round or detail the person folded or opened across redraws; before, every server
+  event reopened the latest round and closed everything else.
+- Give the option columns their own grid, so two options fill the row with no blank third
+  column beside them when a note or the thinking strip is present.
+- Move reported quota to one quiet line above the board; the question now heads the review
+  state, the conclusion and the rounds directly.
+- Show a plain boot screen when setup takes longer than a moment: the logo in pixels, its
+  ring breathing slowly in and out while a light runs round the seats, and one line of text.
+- Box only the main controls. Row Delete appears on hover or focus (always on touch), Show all
+  and Clear finished are quiet text at the foot of the debates list, the review state and CLI
+  seats are unboxed, recommended states take their colour, and partial token sums show "+".
+- Fewer controls in the header: Compact is gone and each card folds by a click on its head;
+  theme and sound are pixel icons; Save error log moved to the status line. The debates list
+  folds and the browser remembers it.
+- Lead the board with the question as its heading and the review state as a small tag beside
+  it. Usage details is a toggle that never moves; its table groups seats under one line per
+  account, right-aligns numbers and marks partial sums with "+" as the debates list does.
+- Start every fold closed: debates, More context, the Quota picture, login profiles, and rounds
+  once a review is finished. More context spans the panel; run settings take the width they
+  need. Quota cards share one layout, with a shade per seat and a hatched chairman in the bar.
+- Rework the paper theme on night's structure: a faint plum page, white fields with visible
+  borders, seat colours closer to night's hues at text contrast, softer position tints.
+- Make research a visible role, the **searcher**: a card added with **+ Add searcher** beside
+  the chairman, with a pixel eye looking through a magnifier. It has its own vendor, model,
+  effort and login profile instead of borrowing the first Codex seat's. Pick Claude, Codex or
+  Antigravity on its card; it starts on that vendor's lightest model at low effort, and agent
+  requests may set all four in `options.research` (Codex when no vendor is named). Claude
+  searches with WebSearch as its only tool, and its own search count and search-model tokens
+  are included; Antigravity needs Limited isolation, and any tool but its web search stops it. It
+  replaces the research panel and its switch, and is named on the board, in Usage details and in
+  the quota picture. While it works the review state reads "Searcher at work".
+- Show the Antigravity consent as a Limited isolation switch in the run settings, styled like
+  Unattended, with its explanation in the label's help; it appears only while Antigravity is
+  at the table.
+- Fix a stray brace in the stylesheet that dropped the quota readout grid, and debate titles
+  squeezed to one letter at medium widths.
+
 ## 0.4.0
 
 - Add optional Codex web research before discussion, with an explicit public search question,

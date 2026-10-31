@@ -66,10 +66,11 @@ A browser opens. Sign in with the ChatGPT account that holds your subscription.
 
 ### Antigravity (Google)
 
-Live Antigravity seats require **Allow limited isolation for Antigravity** in the review
-settings (`options.allowLimitedIsolation: true` in an agent request). The option and consent
+Live Antigravity seats require **Limited isolation** in the review settings, a switch that
+appears once Antigravity is at the table (`options.allowLimitedIsolation: true` in an agent request). The option and consent
 requirement are also in `roundtable agent --help`. Session rules deny documented tools, but
-the CLI cannot disable all shared customizations or MCP discovery.
+the CLI cannot disable all shared customizations or MCP discovery, and no rule reaches its web
+search; a seat that reports any tool step, a search included, is stopped at once.
 Use another provider if that limitation is unsuitable. Reported tool activity still stops
 the seat without a retry. Claude and Codex require their isolation flags to be supported;
 an older CLI fails with an update instruction instead of a weaker fallback.
@@ -171,7 +172,7 @@ Fill in:
   an empty one to remove it. Each is numbered (opt-1, opt-2) as the seats will see it; a seat may
   still propose its own, written as "other: …".
 - **Constraints**: what any answer must live within.
-- **More context** (collapsed until you open it or fill it): evidence known, evidence assumed,
+- **More context** (folded; its title counts the fields you filled): evidence known, evidence assumed,
   reversibility, deadline, and **Export to**, a folder in your codebase where the decision record
   is written the moment the verdict is ready (see step 6). Seats see only these notes in round 0,
   so include the facts they need to assess the options.
@@ -283,14 +284,17 @@ custom text.
 
 ### Read the quota picture
 
-The panel under the seats shows one block per vendor account. It lists what each seat is
-likely to draw in this debate, stacked in the seat's colour, the vendor's live remaining
-window where it reports one, and the measured share each seat would take. Antigravity reports
-no remaining credits, so you can type the figure from its credits page into its block.
+The **Quota picture** under the seats starts folded; its title lists each account's projected
+tokens. Open it for one card per vendor account: what each seat is likely to draw in this
+debate as one bar segment per seat (seats of one vendor in steps of its colour, the chairman
+hatched), the vendor's live windows where it reports them, and an optional cap. Antigravity
+reports no remaining credits, so you can track the figure from its credits page in its card.
 
 On the running board, usage starts collapsed. Each account shows its lowest reported percentage
 remaining and a small bar, with the window and reading age. Missing figures say **not reported**.
-Open **Usage details** for per-seat tokens, partial totals, costs, timing and other windows.
+Open **Usage details** for per-seat tokens, costs and timing, grouped by account with each
+account's live windows. A **+** after a total means some calls reported nothing; a dash means
+the CLI reports no cost. Rounds fold once a review finishes, so the conclusion leads.
 
 ### Open the table and take part
 
@@ -311,8 +315,8 @@ animation nor the sounds.
    always waits for you. This is the best moment to step in: correct a wrong assumption, add a
    fact, answer a seat's question. Type in the bar at the bottom and press **Continue**, or just
    press Continue.
-   **Compact** in the header folds every card to its seat and stance, so a round reads as who
-   chose what; click a card to open that reply. The browser remembers the choice.
+   Click a card's head to fold it to its seat and stance, and again to read the reply. The round in
+   progress opens by itself; a fold you make stays until the review changes.
 2. **Critique rounds.** Each seat sees the others' replies under their lens names and argues.
    Between rounds the countdown runs; type to hold it.
 3. **Questions for you.** Answer in one area above the replies. Identical questions share a field
@@ -548,13 +552,20 @@ names the endpoint on each seat's line (`API http://localhost:11434/v1`) and on 
 
 ## 8. Run a debate without the browser
 
-### Optional research before discussion
+### Optional searcher before discussion
 
-Enable **Research first with Codex** to gather web evidence before the blind replies. Enter
-a separate **Public search question** and review it for private details. Only this question
-goes into research; your field notes and discussion notes are sent later to the selected seats.
-The first Codex seat supplies the research model, effort and login profile; if there is none,
-a Codex chairman supplies them, otherwise the installed CLI uses its default model and login.
+The **searcher** gathers web evidence once, before the blind replies. It is not a seat: it
+never sees your field notes, never argues and never votes. Press **+ Add searcher** under the
+seats to add its card, next to the chairman's; its × removes it. Write its **Query**, the
+only text sent to the web, and review it for private details. The card has its own vendor,
+model, effort and login profile, like the chairman's. Pick the vendor whose pool has room:
+Claude, Codex or Antigravity. There is one searcher and one call, on that vendor only. A new
+searcher, or one moved to another vendor, starts on that vendor's lightest model at low
+effort, since finding and quoting sources needs little reasoning. Each CLI searches with every
+other tool kept off: Codex turns on only its web search, Claude gets WebSearch as its only
+tool, and Antigravity, whose web search is always on, keeps its other tools denied. An
+Antigravity searcher needs **Limited isolation**, like an Antigravity seat. An API endpoint
+has no search tool and is not offered.
 This is one additional subscription call, included in the quota projection and vendor budget.
 The setup estimate also reserves 12,000 input tokens for shared evidence in each discussion
 and verdict call. After research, admission checks use the saved source bundle's UTF-8 size
@@ -562,16 +573,21 @@ divided by three as an additive token estimate, including resumed conversations 
 Measured dollar baselines are adjusted for that extra input. These are conservative planning
 allowances, not exact token counts or guaranteed spending limits.
 
-Set **Search limit** (1–8 reported operations) and **Time limit** (30–600 seconds). An operation
-can contain several queries or page visits, and can begin before Codex reports it. Roundtable
+Set its **Limits**: searches (1–8 reported operations) and time (30–600 seconds). An operation
+can contain several queries or page visits, and can begin before the CLI reports it. Roundtable
 stops the call when a reported operation exceeds the limit; it cannot undo upstream work or
-guarantee a provider billing ceiling. Local commands, files, MCP and delegation remain forbidden.
+guarantee a provider billing ceiling. Claude also reports how many searches it ran when the
+call ends, and a count over the limit fails the research. Claude runs each search on a small
+model of its own; those tokens are included in the searcher's usage. Claude's WebSearch returns
+titles, links and that model's summary without opening the pages (WebFetch stays off), so its
+excerpts are shorter than Codex's. Local commands, files, MCP and delegation remain forbidden.
 
 The board saves up to eight sources with URLs, excerpts, publication dates where reported,
-and the time the bundle was gathered. Citations and excerpts are supplied by Codex, not
+and the time the bundle was gathered. Citations and excerpts are supplied by the searcher's provider, not
 independently verified by Roundtable. Every seat and the chairman gets the identical saved
 bundle, with tools disabled during discussion. The source panel, agent state, field-notes
-file and Markdown export include it. Research spending appears as **Codex · shared research**.
+file and Markdown export include it. Its spending appears as the **searcher** row in Usage
+details and a **searcher** segment in the quota picture.
 
 Research failure or interruption ends the review before discussion. Check the details and
 provider usage before explicitly starting a new review. Resume never repeats unfinished
@@ -579,14 +595,20 @@ research; completed bundles are reused without refetching pages.
 The agent state reports a fixed failure description and safe progress fields; open the board
 for the original provider error details. Saved failures receive the same filtering.
 
-For the agent client, add this to the request's `options` (leave it out to keep research off):
+For the agent client, add this to the request's `options` (leave it out to keep research off).
+`vendor` (`codex`, `claude` or `agy`; Codex when left out), `model`, `effort` and `account` set
+the searcher; without the last three it runs that vendor's lightest model at low effort on your
+usual login:
 
 ```json
 {
   "research": {
+    "vendor": "codex",
     "query": "Public evidence for a staged release",
     "maxSearches": 4,
-    "timeoutMs": 120000
+    "timeoutMs": 120000,
+    "model": "gpt-6-luna",
+    "effort": "low"
   }
 }
 ```

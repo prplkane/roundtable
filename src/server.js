@@ -12,7 +12,7 @@ import { checkPool, STATUS, endpointLamp, createPreflightCache } from './preflig
 import { retired } from './adapters/models.js';
 import { vendorCatalogue } from './adapters/catalogue.js';
 import { createDebate, DEFAULTS } from './engine.js';
-import { normaliseSeats, normaliseChairman, MOODS, COLOURS, poolKey, poolVendor, poolAccount } from './seats.js';
+import { normaliseSeats, normaliseChairman, MOODS, COLOURS, poolKey, poolVendor, poolAccount, lightestModel } from './seats.js';
 import { slugFor, openDebateDir, rebuildDebate } from './store.js';
 import { exportDebate, validateTarget, decisionRecord } from './export.js';
 import { rollup, hasUsableRound } from './engine.js';
@@ -434,10 +434,26 @@ function prepareDebate(raw, { board = false } = {}) {
     if (r) throw new Error(`${ADAPTERS[s.vendor].label} retired ${s.model} (${r.date}); use ${r.instead}.`);
   }
   const chairman = normaliseChairman(body.chairman, { vendors: ADAPTERS, efforts: effortsByVendor() });
-  if (!FAKE && !body.options.allowLimitedIsolation && [...seats, chairman].some((s) => s && ADAPTERS[s.vendor]?.limitedIsolation)) {
-    throw Object.assign(new Error('Antigravity has limited isolation. Enable Allow limited isolation explicitly, or choose another provider.'), { status: 400 });
+  if (!FAKE && !body.options.allowLimitedIsolation && [...seats, chairman, body.options.research].some((s) => s && ADAPTERS[s.vendor]?.limitedIsolation)) {
+    throw Object.assign(new Error('Antigravity has limited isolation. Turn on Limited isolation in the review settings, or choose another provider.'), { status: 400 });
   }
-  return { fieldNotes, seats, chairman, options: { ...DEFAULTS, ...body.options } };
+  const options = { ...DEFAULTS, ...body.options };
+  // the board always names the searcher's settings, even "default"; an agent may leave them out
+  const named = ['model', 'effort', 'account'].some((k) => raw?.options?.research && Object.hasOwn(raw.options.research, k));
+  if (options.research) options.research = searcherSettings(options.research, named);
+  return { fieldNotes, seats, chairman, options };
+}
+
+// The searcher runs on its own settings, checked like the chairman's. A request that names none
+// gets its vendor's lightest model at low effort: finding and quoting sources needs little reasoning.
+function searcherSettings(research, named) {
+  const v = research.vendor;
+  const efforts = effortsByVendor()[v] || ADAPTERS[v].effortLevels || [];
+  const s = normaliseChairman({ vendor: v, model: named ? research.model : lightestModel(v, modelsByVendor()[v]), effort: named ? research.effort : efforts.includes('low') ? 'low' : undefined, account: research.account }, { vendors: ADAPTERS, efforts: effortsByVendor() });
+  const gone = s.model && retired(v, s.model);
+  if (gone) throw Object.assign(new Error(`Searcher: ${ADAPTERS[v].label} retired ${s.model} (${gone.date}); use ${gone.instead}.`), { status: 400 });
+  const { model, effort, account, ...rest } = research;
+  return { ...rest, ...(s.model ? { model: s.model } : {}), ...(s.effort ? { effort: s.effort } : {}), ...(s.account ? { account: s.account } : {}) };
 }
 
 function startDebate(raw, opts) {
@@ -630,7 +646,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, {
         runtime: { mode: FAKE ? 'demo' : 'live', dataDir: DEBATES_DIR, ...(legacyDataDir ? { legacyDataDir } : {}), diagnostics: diagnostics.status() },
         vendors: Object.entries(ADAPTERS).map(([vendor, a]) => ({
-          vendor, kind: a.kind, label: a.label, colour: a.colour, usageUrl: a.usageUrl || null, quota: quota[vendor] || null, profiles: poolsByAccount(a),
+          vendor, kind: a.kind, label: a.label, colour: a.colour, usageUrl: a.usageUrl || null, quota: quota[vendor] || null, profiles: poolsByAccount(a), limitedIsolation: a.limitedIsolation === true, search: !!a.research,
           pool: a.pool, catalogue: cat[vendor],
         })),
         moods: Object.fromEntries(Object.entries(MOODS).map(([k, v]) => [k, v])),

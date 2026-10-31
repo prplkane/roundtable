@@ -140,9 +140,10 @@ export function project({ seats, chairman, critiqueRounds = 3, baselines = {}, m
     add(chairman.vendor, 'chairman', [{ input: fresh.input * CHAIRMAN_INPUT_FACTOR + extra, output: fresh.output * 1.5 * m, cost: cc == null ? undefined : cc * CHAIRMAN_INPUT_FACTOR + evidenceCost(cc, fresh, extra) }], chairman.model);
   }
   if (research) {
-    const selected = (seats || []).find((s) => s.vendor === 'codex') || (chairman?.vendor === 'codex' ? chairman : {});
-    const fresh = baseFor('codex', 'fresh', baselines), m = EFFORT_MULTIPLIER[selected.effort] ?? 1;
-    add('codex', 'research', [{ input: fresh.input * CHAIRMAN_INPUT_FACTOR, output: fresh.output * 1.5 * m }], selected.model);
+    const selected = typeof research === 'object' ? research : {}; // the searcher's own vendor, model and effort
+    const vendor = selected.vendor || 'codex';
+    const fresh = baseFor(vendor, 'fresh', baselines), m = EFFORT_MULTIPLIER[selected.effort] ?? 1;
+    add(vendor, 'research', [{ input: fresh.input * CHAIRMAN_INPUT_FACTOR, output: fresh.output * 1.5 * m }], selected.model);
   }
   const total = Object.values(byVendor).reduce((a, v) => a + v.total, 0);
   return { bySeat, byVendor, total, critiqueRounds };

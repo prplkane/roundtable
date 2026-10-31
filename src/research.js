@@ -1,5 +1,7 @@
 // Optional, separately bounded web research. No fetch, provider call or saved setting is
 // changed here. Sources are provider-supplied citations, not independently verified facts.
+import { ADAPTERS } from './adapters/config.js';
+
 const fail = (message) => { throw Object.assign(new Error(`Research: ${message}`), { status: 400, code: 'RESEARCH_INVALID' }); };
 const bounded = (n, lo, hi, name) => {
   if (!Number.isInteger(n) || n < lo || n > hi) fail(`${name} must be a whole number from ${lo} to ${hi}.`);
@@ -10,12 +12,28 @@ const text = (value, limit, name) => {
   return value.trim();
 };
 
+// The searcher: its own vendor, model, effort and login profile, never borrowed from a seat. Their
+// values are checked against the CLI by the server (seats.normaliseChairman), like the chairman's.
+const optional = (value, name) => {
+  if (value == null || value === '') return undefined;
+  if (typeof value !== 'string' || value.trim().length > 200) fail(`${name} must be text of at most 200 characters.`);
+  return value.trim() || undefined;
+};
+
+// The CLIs that can search with every other tool kept off (config.js `research`). An endpoint
+// seat has no search tool. Codex when a request names none: agent requests from before the choice.
+export const SEARCH_VENDORS = Object.keys(ADAPTERS).filter((v) => ADAPTERS[v].research);
+export const DEFAULT_SEARCHER = 'codex';
+
 export function researchSettings(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail('settings must be an object.');
-  if (value.vendor != null && value.vendor !== 'codex') fail('only Codex CLI supports this research mode.');
-  return { vendor: 'codex', query: text(value.query, 2000, 'search question'),
+  const vendor = value.vendor ?? DEFAULT_SEARCHER;
+  if (!SEARCH_VENDORS.includes(vendor)) fail(`the searcher runs on ${SEARCH_VENDORS.map((v) => ADAPTERS[v].label).join(', ')} CLI only.`);
+  const model = optional(value.model, 'searcher model'), effort = optional(value.effort, 'searcher effort'), account = optional(value.account, 'searcher login profile');
+  return { vendor, query: text(value.query, 2000, 'search question'),
     maxSearches: bounded(value.maxSearches ?? 4, 1, 8, 'search limit'),
-    timeoutMs: bounded(value.timeoutMs ?? 120000, 30000, 600000, 'time limit in milliseconds') };
+    timeoutMs: bounded(value.timeoutMs ?? 120000, 30000, 600000, 'time limit in milliseconds'),
+    ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(account ? { account } : {}) };
 }
 
 export function researchPrompt(settings) {
@@ -34,8 +52,11 @@ export function researchPrompt(settings) {
 
 export function researchSources(raw, gatheredAt = new Date().toISOString()) {
   if (typeof raw !== 'string' || raw.length > 40000) fail('source response exceeds the limit.');
+  // Claude wraps the object in one ```json fence despite "ONLY JSON". The whole reply must be that
+  // one block: text before or after it is still refused.
+  const fenced = /^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/.exec(raw.trim());
   let data;
-  try { data = JSON.parse(raw); } catch { fail('the provider did not return the source JSON.'); }
+  try { data = JSON.parse(fenced ? fenced[1] : raw); } catch { fail('the provider did not return the source JSON.'); }
   if (!Array.isArray(data?.sources) || data.sources.length < 1 || data.sources.length > 8) fail('expected 1–8 sources.');
   const seen = new Set();
   return data.sources.map((s, i) => {
@@ -51,19 +72,25 @@ export function researchSources(raw, gatheredAt = new Date().toISOString()) {
   });
 }
 
-// Codex JSONL reports one web_search item across started/updated/completed events. Count
-// each ID once, rejecting anything else at the ordinary mandatory tool boundary.
-export function researchObserver(settings) {
+// Counts the searches one call reports, each operation ID once (a CLI can repeat one across
+// started/updated/completed events), and stops the call when the count passes the limit.
+// searchIds is the vendor's (config.js research.searchIds); any other tool is the adapter's guard.
+// A count the CLI reports itself afterwards (report) can only raise the figure.
+export const limitExceeded = () => Object.assign(new Error('The reported search-operation limit was exceeded. Research stopped before discussion.'), { code: 'RESEARCH_LIMIT' });
+export function researchObserver(settings, searchIds) {
   const seen = new Set();
+  let reported = 0;
   return {
-    get searches() { return seen.size; },
+    get searches() { return Math.max(seen.size, reported); },
     accept(event) {
-      if (!/^item\.(started|updated|completed)$/.test(event?.type) || event.item?.type !== 'web_search') return false;
-      const id = event.item.id;
-      if (typeof id !== 'string' || !id || id.length > 200) fail('web-search event has no usable operation ID.');
-      seen.add(id);
-      if (seen.size > settings.maxSearches) throw Object.assign(new Error('The reported search-operation limit was exceeded. Research stopped before discussion.'), { code: 'RESEARCH_LIMIT' });
-      return true;
+      const ids = searchIds(event);
+      for (const id of ids) {
+        if (typeof id !== 'string' || !id || id.length > 200) fail('web-search event has no usable operation ID.');
+        seen.add(id);
+      }
+      if (seen.size > settings.maxSearches) throw limitExceeded();
+      return ids.length > 0;
     },
+    report(n) { if (Number.isSafeInteger(n) && n >= 0) reported = n; },
   };
 }
