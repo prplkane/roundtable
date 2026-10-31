@@ -29,7 +29,7 @@
 - Rework the paper theme on night's structure: a faint plum page, white fields with visible
   borders, seat colours closer to night's hues at text contrast, softer position tints.
 - Make research a visible role, the **searcher**: a card added with **+ Add searcher** beside
-  the chairman, with a pixel magnifier whose lens carries the gavel's cross. It has its own
+  the chairman, with a pixel eye looking through a magnifier. It has its own
   model, effort and login profile instead of borrowing the first Codex seat's, and starts on the
   lightest Codex model at low effort; agent requests may set them in `options.research`. It
   replaces the research panel and its switch, and is named on the board, in Usage details and in
