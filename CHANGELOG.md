@@ -11,6 +11,10 @@
 
 ### Local operation and interface
 
+- Move a reply card as it opens and folds: the body under its seat and position unrolls over
+  the board's base motion time and rolls up a little faster before the card folds. Reduced
+  motion opens and folds it at once. The card head is also a button, so Enter or Space opens
+  and folds it, and focus stays on it while other replies land.
 - Codex calls disable analytics/telemetry uploads and unlimited connection retries. A valid
   completed answer with measured usage survives a CLI that hangs during shutdown; incomplete
   answers still fail without a timeout retry. Search and reconnect stages appear in diagnostics.

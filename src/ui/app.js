@@ -22,6 +22,8 @@ const helpNotes = installHelp();
 const ceremony = installCeremony();
 let openingSlug = null;
 const replyReveals = new Map();
+// Reply cards mid-motion (folding cards, below): reply key -> { kind: 'unfold' | 'fold', at }.
+const cardMotion = new Map();
 const replyKey = (r) => `${r.type}:${r.attemptId || `${r.seat?.id || 'chairman'}:${r.round ?? -1}`}`;
 // The launch token the server put in the page; every POST carries it (server.js refuse()).
 const SEND = { 'content-type': 'application/json', 'x-roundtable-token': document.querySelector('meta[name="roundtable-token"]')?.content || '' };
@@ -1049,6 +1051,7 @@ function resetBoard({ clearDrafts = false } = {}) {
     budgetStop: null, exported: null, exportError: null, replayed: false, connected: null, chairmanFallback: null, transcriptWarning: null, unattended: false, research: null,
     actionPending: null, actionError: null, holdPending: false, synthChoice: null, stopContext: null, reviewDeadline: null }); // hash routing reuses S: nothing from the last board
   if (clearDrafts || !S.questionDrafts) S.questionDrafts = {};
+  cardMotion.clear(); // a fold still rolling up belongs to the board that is gone
   if (clearDrafts) { $('question-inputs').replaceChildren(); delete $('question-inputs').dataset.signature; setUsageOpen(false); $('decision-actions').open = false; }
   if (clearDrafts) {
     $('human-msg').value = ''; $('accept-note').value = ''; $('export-status').textContent = '';
@@ -1113,6 +1116,8 @@ const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<
 const list = (items) => (items && items.length ? `<ul>${items.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>` : '<span class="muted">none</span>');
 const seatName = (seat) => seat.label || VENDOR_LABEL[seat.vendor] || seat.vendor;
 const seatMeta = (seat) => [seat.endpoint ? 'API' : 'CLI', seat.model, seat.effort].filter(Boolean).join(' · ');
+// What a folded card hides: everything under the seat and position (or a failed call's one line).
+const foldable = (html) => `<div class="reply-more"><div>${html}</div></div>`;
 
 // position: the seat's standing against the round's majority; provisional while the round is
 // still coming in (the majority so far), final from round-done.
@@ -1132,25 +1137,27 @@ function card(r, position = null, provisional = false) {
       : cancelled === 'wall-clock' ? 'Cancelled because the review time limit expired. Earlier replies are kept.'
       : (r.errorKind === 'policy' ? r.errors?.[0] || 'This seat is stopped by the provider tool policy.' : r.skipped ? `Skipped: ${VENDOR_LABEL[seat.vendor] || seat.vendor} is out for this debate.` :
         (r.errorKind === 'budget' && r.errors?.[0] ? r.errors[0] : ERROR_LINE[r.errorKind] || 'The provider call failed. Check the details and save the error log.')) + errorReference(r.diagnostic);
-    body = `<p class="fail-line ${cancelled ? 'muted' : 'danger'}">${esc(line)}${r.resetsAt ? ` Resets ${esc(new Date(r.resetsAt).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}.` : ''}</p><details class="fail-detail"><summary>Details</summary><pre>${esc(callDetails(r.errors, r.progress) + (cancelled ? errorReference(r.diagnostic) : ''))}</pre></details>`;
+    body = `<p class="fail-line ${cancelled ? 'muted' : 'danger'}">${esc(line)}${r.resetsAt ? ` Resets ${esc(new Date(r.resetsAt).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}.` : ''}</p>${foldable(`<details class="fail-detail"><summary>Details</summary><pre>${esc(callDetails(r.errors, r.progress) + (cancelled ? errorReference(r.diagnostic) : ''))}</pre></details>`)}`;
   }
   else if (r.parsed.pass) body = '<span class="muted">Nothing new to add.</span>';
-  else if (!r.valid) body = `<pre>${esc(r.text)}</pre>`;
+  else if (!r.valid) body = foldable(`<pre>${esc(r.text)}</pre>`);
   else {
     const section = (title, items, tone) => `<section class="argument-section argument-${tone}"><h4>${title}</h4>${items.length ? `<ul>${items.map((text) => `<li>${argumentHtml(text, tone)}</li>`).join('')}</ul>` : '<span class="muted">None stated.</span>'}</section>`;
     body = `<div class="seat-stance"><span class="label">Position</span><strong>${esc(optionLabel(r.stanceKey, S.fieldNotes?.options))}</strong></div>
-      ${r.parsed.agreeWith.length ? section('Agrees with', r.parsed.agreeWith, 'agree') : ''}
+      ${foldable(`${r.parsed.agreeWith.length ? section('Agrees with', r.parsed.agreeWith, 'agree') : ''}
       ${section('Disagrees with · why', r.parsed.disagree, 'disagree')}
       ${section('New points', r.parsed.new, 'new')}
       ${section('Assumptions', r.parsed.assumptions, 'assumptions')}
-      ${r.question ? `<details class="question"><summary>Question for you${S.gate?.round === r.round ? ' · answer above' : ''}</summary><p>${esc(r.question)}</p></details>` : ''}`;
+      ${r.question ? `<details class="question"><summary>Question for you${S.gate?.round === r.round ? ' · answer above' : ''}</summary><p>${esc(r.question)}</p></details>` : ''}`)}`;
   }
   const meta = seatMeta(seat);
+  // the head's spoken name: its spans carry no separators, so a screen reader would run them together
+  const headLabel = [seatName(seat), seat.lens, ...flags.map((f) => f.replace(/<[^>]*>/g, ''))].join(', ');
   // the dot is the live connection state in the current round, the recorded one in older rounds
   const current = r.round === S.rounds.length - 1;
   const conn = cancelled ? 'cancelled' : current ? (S.conn[seat.id] || r.state) : (r.state || (r.failed ? 'failed' : 'replied'));
   return `<article class="card ${S.opened.has(replyKey(r)) ? '' : 'folded'}" data-key="${esc(replyKey(r))}" style="--seat: var(--seat-${esc(seat.colour)})" data-position="${esc(position || 'none')}" title="${esc(position ? POSITION_LABEL[position] + (provisional ? ' so far' : '') : '')}">
-    <div class="card-head"><span class="vendor" title="${esc(meta)}">${esc(seatName(seat))}</span><span class="lens">${esc(seat.lens)}</span>${led(conn)}${seat.mood?.hidden ? `<span class="avatar card-avatar">${avatar(seat.mood.hidden, HIDDEN_MOODS.find((h) => h.art === seat.mood.hidden)?.sprite)}</span>` : seat.mood?.preset && seat.mood.preset !== 'grill' ? `<span class="muted" title="${esc(MOOD_HELP[seat.mood.preset] || '')}">${esc(seat.mood.preset)}</span>` : ''}<span class="flags">${flags.join('')}</span></div>
+    <div class="card-head" role="button" tabindex="0" aria-expanded="${S.opened.has(replyKey(r))}" aria-label="${esc(headLabel)}"><span class="vendor" title="${esc(meta)}">${esc(seatName(seat))}</span><span class="lens">${esc(seat.lens)}</span>${led(conn)}${seat.mood?.hidden ? `<span class="avatar card-avatar">${avatar(seat.mood.hidden, HIDDEN_MOODS.find((h) => h.art === seat.mood.hidden)?.sprite)}</span>` : seat.mood?.preset && seat.mood.preset !== 'grill' ? `<span class="muted" title="${esc(MOOD_HELP[seat.mood.preset] || '')}">${esc(seat.mood.preset)}</span>` : ''}<span class="flags">${flags.join('')}</span></div>
     <div class="reply-text" data-reveal="${esc(replyKey(r))}">${body}</div>
   </article>`;
 }
@@ -1504,7 +1511,10 @@ function renderResearch() {
 
 function render() {
   renderResearch();
+  const focusKey = document.activeElement?.matches?.('#rounds .card-head[role="button"]') ? document.activeElement.closest('.card[data-key]').dataset.key : null;
   $('rounds').innerHTML = S.rounds.map((r, i) => renderRound(i, r, i === S.rounds.length - 1)).join('');
+  applyCardMotion();
+  if (focusKey) liveCard(focusKey)?.querySelector('.card-head')?.focus({ preventScroll: true });
   for (const d of $('rounds').querySelectorAll('.card[data-key] details')) d.open = S.openDetails.has(`${d.closest('.card[data-key]').dataset.key}|${d.className}`);
   renderUsage(); renderVerdict(); renderGate(); renderAccept(); renderExportStatus(); renderBanners();
   $('verdict-body').dataset.reveal = S.verdict ? replyKey(S.verdict) : '';
@@ -1681,8 +1691,44 @@ $('export-form').addEventListener('submit', async (ev) => {
 new ResizeObserver(() => document.documentElement.style.setProperty('--board-bar-height', `${Math.ceil($('humanbar').getBoundingClientRect().height)}px`)).observe($('humanbar'));
 
 // ---------- folding cards ----------
-// Each card folds on its own: a click on its head (or the position line) leaves the seat and
-// stance, another click opens the reply again. Folds last until the review changes.
+// Every reply starts folded to its seat and position, also in the round still coming in. A
+// click on its head or position line, or Enter or Space on the head, opens it; again folds it.
+// A card the person opens stays open until the review changes.
+// The body moves on the board's motion tokens: it unrolls over --motion-base as the card opens
+// and rolls up over --motion-fast before it folds. The board redraws on every event, so a card
+// mid-motion takes its class again with the elapsed time taken off, as the word reveal does,
+// and a fold is committed only once the body is shut. Reduced motion sets both tokens to 0, so
+// the card changes at once.
+const motionMs = (token) => parseFloat(getComputedStyle(document.documentElement).getPropertyValue(token)) || 0;
+const liveCard = (key) => $('rounds').querySelector(`.card[data-key="${CSS.escape(key)}"]`);
+function toggleCard(card) {
+  const key = card.dataset.key;
+  if (cardMotion.has(key)) return; // one motion at a time per card
+  const opening = !S.opened.has(key);
+  const ms = motionMs(opening ? '--motion-base' : '--motion-fast');
+  if (opening) {
+    S.opened.add(key);
+    if (ms) {
+      cardMotion.set(key, { kind: 'unfold', at: performance.now() });
+      setTimeout(() => { cardMotion.delete(key); liveCard(key)?.classList.remove('is-unfolding'); }, ms);
+    }
+    render();
+  } else if (!ms) {
+    S.opened.delete(key); render();
+  } else {
+    cardMotion.set(key, { kind: 'fold', at: performance.now() });
+    applyCardMotion();
+    setTimeout(() => { cardMotion.delete(key); S.opened.delete(key); render(); }, ms);
+  }
+}
+function applyCardMotion() {
+  for (const el of $('rounds').querySelectorAll('.card[data-key]')) {
+    const m = cardMotion.get(el.dataset.key);
+    if (!m) continue;
+    el.classList.add(m.kind === 'fold' ? 'is-folding' : 'is-unfolding');
+    el.style.setProperty('--motion-elapsed', `${-Math.round(performance.now() - m.at)}ms`);
+  }
+}
 // A fold the person changes by hand is remembered until the review changes (the click lands
 // before the browser toggles the details, so the state it will have is the opposite of now).
 $('rounds').addEventListener('click', (ev) => {
@@ -1698,9 +1744,13 @@ $('rounds').addEventListener('click', (ev) => {
   if (String(getSelection?.() || '')) return; // the mouse-up that ends a text selection is a click too: keep the card as it is
   const card = ev.target.closest('.card-head, .seat-stance')?.closest('.card[data-key]');
   if (!card) return;
-  const key = card.dataset.key;
-  if (S.opened.has(key)) S.opened.delete(key); else S.opened.add(key);
-  render();
+  toggleCard(card);
+});
+$('rounds').addEventListener('keydown', (ev) => {
+  if (ev.key !== 'Enter' && ev.key !== ' ') return;
+  if (!ev.target.matches?.('.card-head[role="button"]')) return;
+  ev.preventDefault(); // Space would scroll the page
+  toggleCard(ev.target.closest('.card[data-key]'));
 });
 
 // ---------- theme ----------

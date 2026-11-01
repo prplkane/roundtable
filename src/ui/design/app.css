@@ -109,6 +109,7 @@ body { margin: 0; background: var(--color-bg); color: var(--color-text); font: v
   .text-reveal-word { animation: none !important; opacity: 1; text-shadow: none; }
   .cursor, .led-thinking { animation: none; }
   .switch, .switch::after { transition: none; }
+  .card .reply-more { animation: none !important; } /* the tokens are 0 here as well; a card opens and folds at once */
 }
 
 html { scroll-padding-bottom: calc(var(--board-bar-height, 0px) + 52px); }
@@ -258,14 +259,28 @@ details.panel:not([open]) > .panel-title { border-bottom: 0; }
 .question-actions { padding: var(--space-3); justify-content: space-between; }
 .card pre { margin: 0; white-space: pre-wrap; font: var(--text-sm)/1.5 var(--font-mono); color: var(--color-text-muted); max-height: 220px; overflow: auto; }
 .card.pending { opacity: 0.7; }
-/* Folding: a click on a card's head leaves its seat and stance; the glyph at the head's end says which way it goes */
+/* Folding: every reply starts folded to its seat and stance; a click on its head opens it, and the
+   glyph at the head's end says which way it goes. The head is a button for the keyboard too. */
 .card[data-key] :is(.card-head, .seat-stance) { cursor: pointer; }
+.card[data-key] .card-head:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; border-radius: 2px; }
 .card[data-key] .card-head::after { content: "▾"; margin-left: var(--space-2); font: var(--text-xs) var(--font-mono); color: var(--color-text-muted); }
 .card[data-key] .card-head .flags:empty { margin-left: auto; }
-.card[data-key].folded .card-head::after { content: "▸"; }
-.card[data-key].folded :is(.argument-section, .question, pre, .fail-detail) { display: none; }
-.card[data-key].folded .seat-stance { flex-direction: row; align-items: baseline; gap: var(--space-2); padding: 2px 0 0; border-bottom: 0; }
-.card[data-key].folded .seat-stance strong { font-size: var(--text-base); }
+.card[data-key]:is(.folded, .is-folding) .card-head::after { content: "▸"; }
+.card[data-key].folded .reply-more { display: none; }
+/* the stance line takes its folded form at the click, so only the body below it moves */
+.card[data-key]:is(.folded, .is-folding) .seat-stance { flex-direction: row; align-items: baseline; gap: var(--space-2); padding: 2px 0 0; border-bottom: 0; }
+.card[data-key]:is(.folded, .is-folding) .seat-stance strong { font-size: var(--text-base); }
+/* What a folded card hides, in one grid row so its height can move between 0fr and 1fr. It
+   unrolls over --motion-base and rolls up over --motion-fast (app.js toggleCard); the negative
+   margin takes the card's gap with it, so nothing jumps when the body leaves the layout. */
+.reply-more { display: grid; grid-template-rows: 1fr; }
+.reply-more > div { min-height: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.card:is(.is-unfolding, .is-folding) .reply-more > div { overflow: hidden; }
+.card.is-unfolding .reply-more { animation: card-unfold var(--motion-base) var(--ease) var(--motion-elapsed, 0ms) both; }
+.card.is-folding .reply-more { animation: card-fold var(--motion-fast) var(--ease) var(--motion-elapsed, 0ms) both; }
+/* both ends spelled out: an implicit end resolves to pixels, which cannot blend with 0fr */
+@keyframes card-unfold { from { grid-template-rows: 0fr; margin-top: calc(var(--space-2) * -1); } to { grid-template-rows: 1fr; margin-top: 0; } }
+@keyframes card-fold { from { grid-template-rows: 1fr; margin-top: 0; } to { grid-template-rows: 0fr; margin-top: calc(var(--space-2) * -1); } }
 .card.pending .lens::after { content: " working"; color: var(--color-text-muted); font-weight: var(--weight-regular); }
 .human-note { grid-column: 1 / -1; border: var(--border-width) dashed var(--color-border-strong); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); font-size: var(--text-sm); }
 .human-note b { font: var(--weight-strong) var(--text-xs) var(--font-mono); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--color-accent); margin-right: var(--space-2); }
