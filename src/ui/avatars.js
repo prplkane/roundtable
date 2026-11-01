@@ -87,20 +87,21 @@ const ART = {
     'XXXXXXXX....',
     '............',
   ],
-  // the searcher: an eye looking through a magnifier. It is the court's investigator: it looks
-  // for evidence before the trial, and it reads; it never argues or votes.
+  // the searcher: an open eye, pointed at the corners, a glint in the iris. It is the court's
+  // investigator: it looks for evidence before the trial and reads; it never argues or votes.
+  // (An eye inside a magnifier's lens has no room at 12 pixels and reads as a snout.)
   searcher: [
-    '...XXXX.....',
-    '.XX....XX...',
-    '.X.XXXX.X...',
-    'X.X.XX.X.X..',
-    'X.X.XX.X.X..',
-    'X..XXXX..X..',
-    '.X......X...',
-    '.XX....XXX..',
-    '...XXXX.XXX.',
-    '.........XXX',
-    '..........XX',
+    '............',
+    '............',
+    '....XXXX....',
+    '..XX....XX..',
+    '.X..XXXX..X.',
+    'X..XX.XXX..X',
+    'X..XXXXXX..X',
+    '.X..XXXX..X.',
+    '..XX....XX..',
+    '....XXXX....',
+    '............',
     '............',
   ],
 };

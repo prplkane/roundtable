@@ -611,6 +611,14 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .scribe-quill { fill: var(--color-action); }
 .scribe-note { grid-column: 1 / -1; margin: 0; text-align: center; padding-bottom: var(--space-2); }
 
+/* The searcher at work: the eye reading a column of results that scan.js draws while research runs */
+.scan { display: flex; justify-content: center; padding-top: var(--space-2); }
+.scan-art { width: 108px; height: 108px; }
+.scan-unread { fill: var(--color-border-strong); }
+.scan-read { fill: var(--color-text-muted); }
+.scan-kept, .scan-eye { fill: var(--color-action); }
+.scan-note { margin: 0; text-align: center; padding-bottom: var(--space-2); }
+
 /* Loading: shown only when setup takes longer than a moment (app.js, boot). A plain boot
    screen: the page colour, the logo (loader.js) and one line of text, no card, tile or shadow.
    The ring breathes in four slow steps (rest, out, rest, in) while a light runs round it; every

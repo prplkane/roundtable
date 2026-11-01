@@ -19,11 +19,14 @@ Claude, Codex or Antigravity CLIs, or an OpenAI-compatible endpoint for a local 
 1. **Define the decision.** Add the alternatives, known facts and constraints. Choose two to
    eight participants, called seats, and give each a perspective such as risk, cost or evidence.
    Seats can use different models or share the same provider.
-2. **Collect independent positions.** Each seat answers before seeing the others' responses.
+2. **Gather sources first (optional).** Add a searcher: one extra call, on the provider you
+   pick, that searches the web for a public question you write. Every seat and the chairman
+   then read the same cited sources. It never sees your notes and never argues or votes.
+3. **Collect independent positions.** Each seat answers before seeing the others' responses.
    The board then pauses for your input.
-3. **Discuss the differences.** A critique round lets seats review the previous replies and
+4. **Discuss the differences.** A critique round lets seats review the previous replies and
    revise their positions. Questions appear together so you can answer them in one place.
-4. **Review the recommendation.** A designated chairman summarizes the discussion and its
+5. **Review the recommendation.** A designated chairman summarizes the discussion and its
    disagreements. Accept the recommendation or record a different decision, then export the
    record as Markdown.
 

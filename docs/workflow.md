@@ -66,13 +66,13 @@ A browser opens. Sign in with the ChatGPT account that holds your subscription.
 
 ### Antigravity (Google)
 
-Live Antigravity seats require **Limited isolation** in the review settings, a switch that
-appears once Antigravity is at the table (`options.allowLimitedIsolation: true` in an agent request). The option and consent
-requirement are also in `roundtable agent --help`. Session rules deny documented tools, but
-the CLI cannot disable all shared customizations or MCP discovery, and no rule reaches its web
-search; a seat that reports any tool step, a search included, is stopped at once.
-Use another provider if that limitation is unsuitable. Reported tool activity still stops
-the seat without a retry. Claude and Codex require their isolation flags to be supported;
+Antigravity as a seat, the chairman or the searcher requires **Limited isolation** in the
+review settings, a switch that appears once Antigravity is chosen
+(`options.allowLimitedIsolation: true` in an agent request; also in `roundtable agent --help`).
+Antigravity cannot be fully sealed off: it still loads your shared Antigravity customizations
+and discovers your MCP servers, and its web search cannot be switched off. Roundtable denies
+its file, command, URL and MCP tools and stops the call, without a retry, at the first tool it
+reports. Use another provider if that is unsuitable. Claude and Codex require their isolation flags to be supported;
 an older CLI fails with an update instruction instead of a weaker fallback.
 Invalid, incomplete or oversized provider streams also stop that seat for the review;
 reported spending is retained, and the failed session is not reused.
@@ -581,6 +581,9 @@ call ends, and a count over the limit fails the research. Claude runs each searc
 model of its own; those tokens are included in the searcher's usage. Claude's WebSearch returns
 titles, links and that model's summary without opening the pages (WebFetch stays off), so its
 excerpts are shorter than Codex's. Local commands, files, MCP and delegation remain forbidden.
+
+While the searcher works, the review state reads **Searcher at work** and the sources panel
+shows its eye moving down a column of results (still, with reduced motion).
 
 The board saves up to eight sources with URLs, excerpts, publication dates where reported,
 and the time the bundle was gathered. Citations and excerpts are supplied by the searcher's provider, not

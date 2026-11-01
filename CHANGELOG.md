@@ -36,17 +36,21 @@
 - Rework the paper theme on night's structure: a faint plum page, white fields with visible
   borders, seat colours closer to night's hues at text contrast, softer position tints.
 - Make research a visible role, the **searcher**: a card added with **+ Add searcher** beside
-  the chairman, with a pixel eye looking through a magnifier. It has its own vendor, model,
+  the chairman, with an open pixel eye as its mark. It has its own vendor, model,
   effort and login profile instead of borrowing the first Codex seat's. Pick Claude, Codex or
   Antigravity on its card; it starts on that vendor's lightest model at low effort, and agent
   requests may set all four in `options.research` (Codex when no vendor is named). Claude
   searches with WebSearch as its only tool, and its own search count and search-model tokens
   are included; Antigravity needs Limited isolation, and any tool but its web search stops it. It
   replaces the research panel and its switch, and is named on the board, in Usage details and in
-  the quota picture. While it works the review state reads "Searcher at work".
+  the quota picture. While it works the review state reads "Searcher at work" and the sources
+  panel shows its eye moving down a column of results, lighting the ones it keeps; with reduced
+  motion the picture stays still. Its card title and Effort carry a help tip, the README's
+  "How a review works" names it as an optional step, and the chairman's Effort has the tip too.
 - Show the Antigravity consent as a Limited isolation switch in the run settings, styled like
-  Unattended, with its explanation in the label's help; it appears only while Antigravity is
-  at the table.
+  Unattended, with its explanation in the label's help; it appears only while a seat, the
+  chairman or the searcher runs on Antigravity. The help says in three sentences what cannot be
+  sealed off, what Roundtable denies and stops, and when the switch is needed.
 - Fix a stray brace in the stylesheet that dropped the quota readout grid, and debate titles
   squeezed to one letter at medium widths.
 

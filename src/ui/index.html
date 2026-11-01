@@ -92,7 +92,7 @@
           <span class="hint" id="preflight-status" role="status"></span>
           <button class="btn btn-small" id="refresh-status" type="button">Refresh status</button>
           <button class="btn btn-small" id="add-seat" type="button">+ Add seat</button>
-          <button class="btn btn-small" id="add-searcher" type="button" title="A searcher gathers cited web sources once, before the discussion">+ Add searcher</button>
+          <button class="btn btn-small" id="add-searcher" type="button" title="Optional: one extra call that searches the web for your query before the first round, so every seat and the chairman read the same cited sources">+ Add searcher</button>
         </div>
         <div class="chair-wrap">
           <article class="seat-card chair-card" id="chair-card">
@@ -110,7 +110,7 @@
                 <label class="f"><span class="label">Endpoint</span><input id="chairman-endpoint" class="flat" list="endpoints" placeholder="http://localhost:11434/v1" aria-label="Chairman endpoint base URL" title="The base URL of an OpenAI-compatible server, ending in /v1. Plain http only on this machine or a private network."></label>
                 <label class="f"><span class="label">Key var</span><input id="chairman-keyenv" class="flat" placeholder="none (local server)" aria-label="Chairman key environment variable" title="The NAME of the environment variable that holds the key, set in the shell roundtable was started from. Never the key itself."></label>
               </div>
-              <div class="f"><span class="label">Effort</span><span class="pips" id="chair-pips"></span><select id="chairman-effort" class="effort" hidden><option value="">default</option></select></div>
+              <div class="f"><span class="label help-label" data-help="effort" tabindex="0" aria-describedby="help-effort">Effort</span><span class="pips" id="chair-pips"></span><select id="chairman-effort" class="effort" hidden><option value="">default</option></select></div>
               <span class="seat-note" id="chair-note"></span>
               <details class="seat-more" id="chair-profile"><summary>Login profile</summary><input id="chairman-account" class="flat" placeholder="none: your usual login" aria-label="Chairman login profile"></details>
             </div>
@@ -124,16 +124,16 @@
             <div class="seat-hd">
               <span class="avatar avatar-lg" id="searcher-avatar"></span>
               <div class="seat-id">
-                <span class="chair-title"><span id="searcher-name">Searcher</span> <select id="searcher-vendor" class="flat vendor" aria-label="Searcher vendor" title="The CLI that searches. Only CLIs that can search with every other tool kept off are offered."></select><span class="kind-tag">CLI · subscription</span></span>
+                <span class="chair-title"><span id="searcher-name" class="help-label" data-help="searcher" tabindex="0" aria-describedby="help-searcher">Searcher</span> <select id="searcher-vendor" class="flat vendor" aria-label="Searcher vendor" title="The CLI that searches. Only CLIs that can search with every other tool kept off are offered."></select><span class="kind-tag">CLI · subscription</span></span>
                 <span id="searcher-model-slot"></span><input id="searcher-model" class="flat model" placeholder="model id" aria-label="Searcher model id" hidden>
               </div>
               <span class="lamp idle" id="searcher-lamp" title="not checked"></span>
             </div>
             <div class="seat-bd">
-              <p class="chair-role">Searches the web once before round 0 and gives every seat and the chairman the same cited sources. It sees only its query, never your notes, and never argues or votes.</p>
+              <p class="chair-role">Searches the web for your query once, before the first round, and gives every seat and the chairman the same cited sources. It sees only the query, never your notes, and never argues or votes.</p>
               <label class="f f-top"><span class="label">Query</span><textarea id="research-query" class="flat" maxlength="2000" rows="2" placeholder="What should be checked on the web?" aria-describedby="research-query-note"></textarea></label>
               <span class="seat-note" id="research-query-note">Only this query is sent to the web. Keep private details out of it.</span>
-              <div class="f"><span class="label">Effort</span><span class="pips" id="searcher-pips"></span><input id="searcher-effort" type="hidden"></div>
+              <div class="f"><span class="label help-label" data-help="effort" tabindex="0" aria-describedby="help-effort">Effort</span><span class="pips" id="searcher-pips"></span><input id="searcher-effort" type="hidden"></div>
               <div class="f"><span class="label help-label" data-help="searchLimits" tabindex="0" aria-describedby="help-searchLimits">Limits</span><span class="searcher-limits"><input id="research-searches" class="flat" type="number" min="1" max="8" value="4" aria-label="Search limit"> searches · <input id="research-time" class="flat" type="number" min="30" max="600" value="120" aria-label="Time limit in seconds"> s</span></div>
               <details class="seat-more" id="searcher-profile"><summary>Login profile</summary><input id="searcher-account" class="flat" placeholder="none: your usual login" aria-label="Searcher login profile"></details>
             </div>

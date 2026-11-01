@@ -9,6 +9,7 @@ import { createBrowserDiagnostics, requestAction } from '/ui/diagnostics.js';
 import { installHelp, revealText, MOOD_HELP } from '/ui/help.js';
 import { installCeremony } from '/ui/ceremony.js';
 import { scribeMarkup, startScribe, stopScribe } from '/ui/scribe.js';
+import { scanMarkup, startScan, stopScan } from '/ui/scan.js';
 import { icon } from '/ui/icons.js';
 import { loaderMarkup } from '/ui/loader.js';
 import { noteRecord, noteLabel } from '/src/notes.js';
@@ -1479,12 +1480,17 @@ function renderResearch() {
   const r = S.research;
   $('research-panel').hidden = !r;
   if (r && !$('research-heading').querySelector('svg')) $('research-heading').innerHTML = `<span class="heading-avatar">${avatar('searcher')}</span>Sources from the searcher`;
-  if (!r) { $('research-body').textContent = ''; return; }
-  if (r.status !== 'done') {
-    $('research-body').textContent = r.status === 'running' ? `The searcher is collecting sources: at most ${r.maxSearches} reported search operations, ${Math.round(r.timeoutMs / 1000)} seconds.`
-      : r.error || 'Research was interrupted. It will not rerun automatically.';
+  if (!r) { stopScan(); $('research-body').textContent = ''; return; }
+  // While the searcher works, the panel shows its eye reading results, like the chairman's quill.
+  if (r.status === 'running') {
+    const note = `The searcher is collecting sources: at most ${r.maxSearches} reported search operations, ${Math.round(r.timeoutMs / 1000)} seconds.`;
+    if (!$('research-body').querySelector('.scan')) $('research-body').innerHTML = `${scanMarkup()}<p class="hint scan-note"></p>`;
+    $('research-body').querySelector('.scan-note').textContent = note;
+    startScan($('research-body').querySelector('.scan'));
     return;
   }
+  stopScan();
+  if (r.status !== 'done') { $('research-body').textContent = r.error || 'Research was interrupted. It will not rerun automatically.'; return; }
   $('research-body').innerHTML = `<p class="hint">${r.searches} reported search operation${r.searches === 1 ? '' : 's'} · gathered ${esc(r.gatheredAt)}. Every seat and the chairman receive this same saved bundle. Citations, excerpts and publication dates are supplied by the searcher's provider and are not independently checked.</p>`
     + (r.sources || []).map((s) => `<details><summary>${esc(s.id)} · ${esc(s.title)}</summary><p><a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.url)}</a></p><p>${esc(s.excerpt)}</p><p class="hint">Published: ${esc(s.publishedAt || 'not reported')}</p></details>`).join('');
 }
