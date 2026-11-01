@@ -1128,6 +1128,8 @@ function card(r, position = null, provisional = false) {
   if (r.question) flags.push('<span class="status" title="This seat asked you a question">asked you</span>'); // visible on a folded card too
   if (r.reprompted) flags.push('<span class="status warn">re-prompted</span>');
   if (r.usedTools) flags.push(`<span class="status ${r.toolFail ? 'danger' : 'warn'}">used tools</span>`);
+  // a recovered stall, saved with the attempt (progress.reconnects): the reply is complete, the cost may not be
+  if (Number.isSafeInteger(r.progress?.reconnects) && r.progress.reconnects > 0) flags.push(`<span class="status warn" title="The provider connection went silent for the idle limit; the CLI reconnected ${r.progress.reconnects} time${r.progress.reconnects === 1 ? '' : 's'} and started the answer again. The interrupted attempt may have been charged without appearing in usage.">reconnected ×${r.progress.reconnects}</span>`);
   if (r.failed) flags.push(`<span class="status ${cancelled ? 'warn' : 'danger'}">${cancelled ? 'cancelled' : r.timedOut ? 'call timed out' : 'no reply'}</span>`);
   else if (!r.valid) flags.push('<span class="status warn">off contract</span>');
   let body;
@@ -1329,7 +1331,7 @@ function renderVerdict() {
        <details id="verdict-details" class="verdict-details wide" ${detailsOpen ? 'open' : ''}><summary>Discussion details</summary><div class="verdict-support">
          ${questionSection('Further exploration', view.questions.optional, 'Optional follow-up for you; no answer is required to finish this review.')}
          ${positions ? `<section class="section wide"><h3 class="label">Panel positions</h3><p class="hint">These are the seats’ final positions, not a confidence score. Agreement alone is not evidence.</p><ul class="verdict-positions">${positions}</ul></section>` : ''}
-         <div class="verdict-meta">chairman ${esc(VENDOR_LABEL[v.seat?.vendor] || v.seat?.vendor || 'unknown')}${v.seat && seatMeta(v.seat) ? ` (${esc(seatMeta(v.seat))})` : ''} · ${S.rounds.length} rounds · stopped: ${esc(S.stopReason)} · debates/${esc(S.slug)}/verdict.md</div>
+         <div class="verdict-meta">chairman ${esc(VENDOR_LABEL[v.seat?.vendor] || v.seat?.vendor || 'unknown')}${v.seat && seatMeta(v.seat) ? ` (${esc(seatMeta(v.seat))})` : ''}${Number.isSafeInteger(v.progress?.reconnects) && v.progress.reconnects > 0 ? ` · reconnected ×${v.progress.reconnects}` : ''} · ${S.rounds.length} rounds · stopped: ${esc(S.stopReason)} · debates/${esc(S.slug)}/verdict.md</div>
        </div></details>`
     : `<pre class="wide">${esc(v.text)}</pre>`;
 }

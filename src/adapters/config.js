@@ -12,6 +12,8 @@
 //              (or `stdinArgs` in stream mode); codex replaces the subcommand, the others append
 //  model       argv for a model override; (id) => argv (inserted before a trailing "-")
 //  effort      argv for a reasoning-effort override; (level) => argv
+//  stream      argv for how the reply is streamed, derived from the call's time limit;
+//              (timeoutMs) => argv (codex: a provider entry of its own, see CODEX_PROVIDER)
 //  effortLevels  levels the CLI accepts (source named per vendor); the UI offers only these
 //  effortInModel  regex: when the chosen model id already carries the level, skip `effort`
 //  modelHints  ids the CLI is known to accept, offered as suggestions (free text still allowed)
@@ -56,6 +58,31 @@ export const CODEX_NO_TELEMETRY = ['-c', 'analytics.enabled=false', '-c', 'otel.
 // A bounded review must not inherit the interactive CLI's unlimited connection retries.
 // Shell snapshots serve no purpose for seats with shell tools disabled.
 export const CODEX_RUNTIME = ['-c', 'features.unbounded_connection_retries=false', '-c', 'features.shell_snapshot=false'];
+// How a Codex reply is streamed. The built-in `openai` provider is a reserved id that exposes no
+// idle or reconnect setting; its WebSocket transport has a record of hangs (openai/codex issues
+// 13710, 18723, 22156), and the CLI's documented stream-idle default, 300 s, equals Roundtable's
+// default call limit, so the CLI's own recovery could never run before the call was killed. A
+// provider entry of our own, pointing at the same ChatGPT backend with the same login, streams
+// over SSE with an idle limit that fits inside the call limit and a bounded number of reconnects.
+// A reconnect starts the answer again, and the interrupted attempt's tokens may be charged
+// without being reported. Measured 2026-11-01: stalls happened with one call running too, so
+// this is not a concurrency fix; a stall inside a hosted web search did not trip the idle limit.
+// Every key is in the CLI's configuration reference, and all were accepted by CLI 0.162.1 under
+// --strict-config, where an unknown key fails the call; that a custom provider may use the
+// ChatGPT login is demonstrated, not documented (SECURITY.md).
+export const CODEX_PROVIDER = 'roundtable';
+export const CODEX_STREAM_RECONNECTS = 2;
+const CODEX_STREAM_MARGIN_MS = 15_000; // process start, prewarm (a model-list refresh can take 5 s), first token
+// Never above the CLI's own default; the floor matters only for call limits under 45 s.
+export const CODEX_STREAM_IDLE_RANGE = [10_000, 300_000];
+// (call limit - margin) / (reconnects + 1): every reconnect runs before Roundtable's own deadline.
+export const codexStreamIdleMs = (timeoutMs = 300_000) => Math.min(CODEX_STREAM_IDLE_RANGE[1],
+  Math.max(CODEX_STREAM_IDLE_RANGE[0], Math.floor((timeoutMs - CODEX_STREAM_MARGIN_MS) / (CODEX_STREAM_RECONNECTS + 1))));
+export const codexStream = (timeoutMs) => ['-c', `model_provider="${CODEX_PROVIDER}"`, ...Object.entries({
+  name: '"OpenAI"', base_url: '"https://chatgpt.com/backend-api/codex"', requires_openai_auth: 'true', wire_api: '"responses"',
+  supports_websockets: 'false', stream_idle_timeout_ms: String(codexStreamIdleMs(timeoutMs)), stream_max_retries: String(CODEX_STREAM_RECONNECTS),
+  request_max_retries: '2', // connection failures before the stream opens; the default of 4 stays out of a bounded review
+}).flatMap(([k, v]) => ['-c', `model_providers.${CODEX_PROVIDER}.${k}=${v}`])];
 // agy's permission rules accept only command, read_file, write_file, read_url, mcp, execute_url and
 // unsandboxed (its rule pattern, CLI 1.4.11). Its search_web tool has no rule and cannot be denied
 // here: a "search_web(*)" entry is ignored without a warning. The reported-tool guard stops it.
@@ -207,6 +234,7 @@ export const ADAPTERS = {
     model: (m) => ['-m', m],
     // Same path as the sandbox policy on resume: one argv element, TOML-quoted.
     effort: (e) => ['-c', `model_reasoning_effort="${e}"`],
+    stream: codexStream, // fresh and resume calls alike: the extras go on both
     // CLI effort vocabulary; availability depends on the selected model and installed CLI.
     // ~/.codex/config.toml is not a source: --ignore-user-config keeps it from the seat.
     effortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],

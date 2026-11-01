@@ -149,6 +149,17 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   that completed call, and a truncated tail or subsequent prohibited tool still rejects it.
   Codex telemetry exports, analytics, shell snapshots and unlimited connection retries are
   disabled per call; shared CLI settings and login files are not changed.
+  Each Codex call also names a provider entry of its own that points at the same ChatGPT
+  backend and uses the same login, so the reply streams over SSE with an idle limit derived
+  from the call limit ((limit − 15 s) ÷ 3, between 10 s and 300 s) and at most two reconnects.
+  The built-in provider exposes no idle or reconnect setting, and the CLI's documented
+  stream-idle default, 300 s, equals the default call limit, so its own recovery could never run
+  before Roundtable ended the call. Every key is in the CLI's configuration reference; that a
+  custom provider may use the ChatGPT login is demonstrated, not documented. A CLI that refuses
+  it is expected to fail the call with an authentication error, which marks the pool down for
+  the review; one that ignores it is expected to fall back to the built-in provider. A reconnect
+  starts the answer again, and the interrupted attempt's tokens may be charged by the provider
+  without appearing in the reported usage.
   Codex also receives a short review-specific base prompt through a uniquely created temporary
   file, removed after the call. It contains no field notes or personal context. The tool flags,
   read-only sandbox and reported-tool guard apply independently of these instructions.

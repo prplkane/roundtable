@@ -768,6 +768,17 @@ remain failures with unknown spending where the provider reported none; they are
 automatically. Search and reconnect stages in the error details help distinguish these from
 slow model replies. These controls do not guarantee the provider's availability.
 
+A Codex reply streams over SSE through a provider entry Roundtable names per call, pointing at
+the same ChatGPT backend with the same login. When the stream stays silent for the idle limit,
+(call limit − 15 s) ÷ 3 between 10 s and 300 s, so 95 s at the default five-minute call limit,
+the CLI reconnects and starts the answer again, at most twice; once those are used up the call
+fails as a stalled connection, before the call limit. The provider may charge the interrupted
+attempts' tokens without their appearing in usage. Raising the call limit lengthens the idle
+limit with it, so long silent reasoning at high effort is served by a longer call limit. Every
+reconnect the CLI reports is counted: a reply that came after one carries a
+**reconnected ×N** mark on its card, and the count is saved with the attempt, where failure
+details, error logs and the agent state show it. The markdown transcript does not carry it.
+
 Provider failure **Details** show whether output arrived, the last observed stage, elapsed
 and idle time, and the exit code when available. A timeout after reasoning is evidence that
 the call started; it does not identify why the provider stalled. Save the error log before
@@ -822,6 +833,7 @@ there is no current snapshot. Refresh with an authenticated JSON `POST /api/pref
 | The verdict failed, or was not written | **Write the verdict with** a vendor of your choice, under the bar. If the chairman's vendor ran out, another one is preselected. |
 | "reconnecting" banner | The board lost the server. The debate keeps running there; the board catches up when the connection is back. The banner clears even while waiting for input with no new events. |
 | A seat is "re-prompted" | Its reply broke the format. It gets one format repair. Tool activity instead stops the seat without a retry. |
+| A seat is "reconnected ×1" | Its provider connection went silent for the idle limit and the CLI started the answer again. The reply is complete; the interrupted attempt may have been charged without appearing in usage. Repeated marks on one vendor point at the provider, not at the seat. |
 | "address already in use" | Another server is on that port. Stop it, or start with a different `PORT`. |
 | The board says the debate is unknown | The server was restarted. Reopen the address; the board replays from disk and offers Resume. |
 | A vendor's remaining quota shows nothing | Antigravity never reports it; type the figure from its credits page. Codex shows only a weekly window on some plans. |

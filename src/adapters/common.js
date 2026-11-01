@@ -86,14 +86,15 @@ export function normaliseUsage(cfg, u, rawCost = null) {
   return { ...u, input, raw, usageVersion: USAGE_VERSION, cacheSemantics: semantics };
 }
 
-// Turn a config row plus (prompt, sessionId, model, effort) into argv and stdin. Pure, so it is unit tested.
-export function buildArgs(cfg, { prompt, sessionId = null, model = null, effort = null, instructionsFile = null }) {
+// Turn a config row plus (prompt, sessionId, model, effort, call limit) into argv and stdin. Pure, so it is unit tested.
+export function buildArgs(cfg, { prompt, sessionId = null, model = null, effort = null, instructionsFile = null, timeoutMs = 300_000 }) {
   const useStdin = cfg.promptVia === 'stdin' ||
     (cfg.promptVia === 'argv-or-stdin' && prompt.length > ARGV_LIMIT);
   const streamMode = useStdin && !!cfg.stdinArgs;
   const base = streamMode ? cfg.stdinArgs : cfg.args;
   const args = sessionId ? cfg.resume(sessionId, base) : [...base];
   const extra = [];
+  if (cfg.stream) extra.push(...cfg.stream(timeoutMs)); // the stream's idle limit fits inside the call limit
   if (model && cfg.model) extra.push(...cfg.model(model));
   if (instructionsFile) extra.push('-c', `model_instructions_file=${JSON.stringify(instructionsFile)}`);
   // Skip the effort flag when the model id already names the level (agy), so nothing is said twice.
@@ -145,7 +146,9 @@ export function makeAdapter(name, overrides = {}) {
     const guard = searching ? searching.foreignTool : cfg.usedTools; // search allowed, every other tool still stops the call
     if (cfg.limitedIsolation && !opts.allowLimitedIsolation) throw Object.assign(new Error('Explicit consent to limited isolation is required.'), { code: 'ISOLATION_REQUIRED' });
     bin ??= cfg.bin || resolveBinary(cfg.binary, cfg.npmBin); // cfg.bin: a test's fake CLI
-    const built = buildArgs(cfg, { prompt, sessionId, model: opts.model, effort: opts.effort, instructionsFile });
+    // One time limit for the process and for the argv derived from it (cfg.stream).
+    const timeoutMs = research ? Math.min(research.timeoutMs, opts.timeoutMs ?? research.timeoutMs) : opts.timeoutMs ?? 300_000;
+    const built = buildArgs(cfg, { prompt, sessionId, model: opts.model, effort: opts.effort, instructionsFile, timeoutMs });
     const { stdin, streamMode } = built;
     const args = searching ? searching.args(built.args) : built.args;
 
@@ -155,7 +158,7 @@ export function makeAdapter(name, overrides = {}) {
     let home = null;
     if (opts.home && cfg.home) { mkdirSync(opts.home, { recursive: true }); home = { env: cfg.home.env, dir: opts.home }; }
     if (opts.cwd) mkdirSync(opts.cwd, { recursive: true }); // a missing cwd makes spawn fail with ENOENT
-    let pendingLine = '', processError = null, res, eventCount = 0, stage = 'waiting', hasReply = false, terminalUsage = false;
+    let pendingLine = '', processError = null, res, eventCount = 0, stage = 'waiting', hasReply = false, terminalUsage = false, reconnects = 0;
     const inspect = (chunk) => {
       pendingLine += chunk;
       let end;
@@ -175,7 +178,9 @@ export function makeAdapter(name, overrides = {}) {
           if (event?.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string' && event.item.text.trim()) hasReply = true;
           if (event?.type === 'turn.completed') terminalUsage = !!usageCounters({ input: event.usage?.input_tokens, output: event.usage?.output_tokens,
             cacheRead: event.usage?.cached_input_tokens, cacheWrite: event.usage?.cache_write_input_tokens, thinking: event.usage?.reasoning_output_tokens });
-          if (event?.type === 'error' && /reconnect|retry|stream.*disconnect/i.test(event.message || '')) stage = 'reconnecting';
+          // the CLI's "Reconnecting... n/m": the stream stalled and the answer starts again; counted
+          // into the saved progress so a recovered stall stays visible (retry notices set the stage only)
+          if (event?.type === 'error' && /reconnect|retry|stream.*disconnect/i.test(event.message || '')) { stage = 'reconnecting'; if (/reconnect/i.test(event.message)) reconnects++; }
           if (event?.type === 'turn.failed') {
             stage = 'provider-error';
             throw Object.assign(new Error(String(event.error?.message || 'Codex reported a failed turn.').slice(0, 1000)), { code: 'CLI_FAILURE' });
@@ -190,7 +195,7 @@ export function makeAdapter(name, overrides = {}) {
     };
     try { res = await runProcess(bin, args, {
       // opts.minimal: the seat runs as cheaply as the vendor allows (cfg.minimalEnv, if any)
-      stdin, cwd: opts.cwd, timeoutMs: research ? Math.min(research.timeoutMs, opts.timeoutMs ?? research.timeoutMs) : opts.timeoutMs ?? 300_000, env: { ...cleanEnv(home), ...(opts.minimal && cfg.minimalEnv) }, tag: opts.tag ?? null,
+      stdin, cwd: opts.cwd, timeoutMs, env: { ...cleanEnv(home), ...(opts.minimal && cfg.minimalEnv) }, tag: opts.tag ?? null,
       onStdout: inspect, completionGraceMs: cfg.completionGraceMs,
     }); } catch (e) { processError = e; res = { stdout: e.stdout || '', stderr: e.stderr || '', code: null, ms: e.ms || 0, progress: e.progress }; }
     // A last event need not end in a newline. Validate it too; a truncated tail must not
@@ -252,7 +257,7 @@ export function makeAdapter(name, overrides = {}) {
     } : null;
     // A CLI can report dollars without tokens. Preserve both the charge and its cumulative
     // reading separately so a restart does not charge that part of the session again.
-    const progress = safeProgress({ ...res.progress, eventCount, stage,
+    const progress = safeProgress({ ...res.progress, eventCount, stage, ...(reconnects ? { reconnects } : {}),
       ...(processError?.code === 'PROVIDER_PROTOCOL' ? { outcome: 'protocol' } : {}),
       ...(usedTools || processError?.usedTools ? { outcome: 'policy' } : {}),
     });

@@ -7,12 +7,13 @@ import { createDebate } from '../src/engine.js';
 
 test('transport diagnostics admit only bounded numbers and fixed stages, never provider content', () => {
   const raw = { elapsedMs: 300000, timeoutMs: 300000, firstOutputMs: 2000, idleMs: 290000,
-    stdoutBytes: 400, stderrBytes: 0, eventCount: 3, stage: 'reasoning', outcome: 'timeout',
+    stdoutBytes: 400, stderrBytes: 0, eventCount: 3, stage: 'reasoning', outcome: 'timeout', reconnects: 2,
     prompt: 'PRIVATE-MARKER', reasoning: 'PRIVATE-MARKER', sessionId: 'PRIVATE-MARKER', tool: 'PRIVATE-MARKER' };
   const safe = safeProgress(raw);
   assert.doesNotMatch(JSON.stringify(safe), /PRIVATE-MARKER|prompt|sessionId|tool/);
-  assert.match(progressText(safe), /First output after 2 s.*last 290 s.*reasoning/);
-  assert.deepEqual(safeProgress({ elapsedMs: -1, eventCount: Infinity, exitCode: '0', stage: 'PRIVATE-MARKER', outcome: 'PRIVATE-MARKER' }), {});
+  assert.match(progressText(safe), /First output after 2 s.*last 290 s.*reasoning.*reconnected 2 times/);
+  assert.match(progressText({ elapsedMs: 100, reconnects: 1 }), /reconnected 1 time and started the answer again/);
+  assert.deepEqual(safeProgress({ elapsedMs: -1, eventCount: Infinity, exitCode: '0', stage: 'PRIVATE-MARKER', outcome: 'PRIVATE-MARKER', reconnects: 101 }), {});
   assert.match(progressText({ elapsedMs: 100, stdoutBytes: 0, stderrBytes: 0 }), /No provider output arrived/);
 });
 
@@ -90,6 +91,53 @@ test('search and reconnect timeouts retain a useful stage without copying provid
       });
     }
   } finally { for (const k of ['FAKE_SHAPE', 'FAKE_SLEEP', 'FAKE_PRELUDE']) delete process.env[k]; }
+});
+
+test('reconnects are counted into saved progress, the attempt, the reply and the agent state', async () => {
+  const reconnect = JSON.stringify({ type: 'error', message: 'Reconnecting... 1/2 PRIVATE-MARKER' }) + '\n';
+  try {
+    process.env.FAKE_SHAPE = 'codex'; process.env.FAKE_PRELUDE = reconnect + reconnect;
+    const run = makeAdapter('codex', { bin: { file: process.execPath, prefix: [path.resolve('test/fixtures/fake-cli.mjs')] } });
+    // a recovered stall: the answer is complete and the count stays on it
+    const result = await run('synthetic question', null, { timeoutMs: 5000 });
+    assert.ok(result.text);
+    assert.equal(result.progress.reconnects, 2);
+    assert.equal(result.progress.stage, 'completed');
+    assert.doesNotMatch(JSON.stringify(result.progress), /PRIVATE-MARKER/);
+    assert.match(progressText(result.progress), /reconnected 2 times/);
+    // the reconnects used up: the CLI's own idle error is a timeout before the call limit, with the count in its text
+    process.env.FAKE_PRELUDE = reconnect + reconnect + JSON.stringify({ type: 'turn.failed', error: { message: 'stream idle timeout PRIVATE-MARKER' } }) + '\n';
+    await assert.rejects(run('synthetic question', null, { timeoutMs: 5000 }), (e) => {
+      assert.equal(e.kind, 'timeout'); assert.equal(e.progress.reconnects, 2); assert.equal(e.progress.stage, 'provider-error');
+      assert.match(e.message, /stalled before completion.*reconnected 2 times/);
+      assert.doesNotMatch(JSON.stringify(e.progress) + e.message, /PRIVATE-MARKER/);
+      return true;
+    });
+  } finally { for (const k of ['FAKE_SHAPE', 'FAKE_PRELUDE']) delete process.env[k]; }
+
+  // the engine keeps the count on the attempt row and the reply row, so the ledger and the board see it
+  const rows = [];
+  const text = 'STANCE: Trial\nAGREE_WITH: []\nDISAGREE:\n- nothing\nNEW:\n- none\nASSUMPTIONS:\n- it holds';
+  await createDebate({ fieldNotes: { decision: 'Trial?', options: ['Trial', 'Wait'] }, seats: [{ vendor: 'codex', lens: 'risk' }, { vendor: 'claude', lens: 'cost' }],
+    options: { critiqueRounds: 0 }, store: { append: (r) => rows.push(r) }, gate: async () => ({ action: 'continue' }),
+    runner: async () => ({ text, usage: { input: 10, cacheRead: 0, cacheWrite: 0, output: 5, thinking: 0, cost: null, ms: 5000 },
+      progress: { elapsedMs: 5000, stage: 'completed', outcome: 'completed', reconnects: 1, raw: 'PRIVATE-MARKER' } }),
+  }).run();
+  for (const type of ['attempt', 'reply']) {
+    const saved = rows.filter((r) => r.type === type);
+    assert.ok(saved.length >= 2, `${type} rows`);
+    for (const r of saved) assert.equal(r.progress.reconnects, 1, `${type} keeps the count`);
+  }
+  assert.doesNotMatch(JSON.stringify(rows), /PRIVATE-MARKER/);
+
+  // the agent state names it on a complete reply, not only on a failed one
+  const { reviewSnapshot } = await import('../src/snapshot.js');
+  const reply = (progress) => ({ seat: { id: 's1', lens: 'risk', vendor: 'codex' }, round: 0, valid: true, stanceKey: 'trial',
+    parsed: { agreeWith: [], disagree: [], new: [], assumptions: [] }, progress });
+  const state = (progress) => ({ status: 'done', seats: [{ id: 's1' }], rounds: [[reply(progress)]], fieldNotes: { decision: 'Trial?', options: ['Trial', 'Wait'] } });
+  const snap = (progress) => reviewSnapshot({ slug: 'synthetic', gen: 1, rebuilt: state(progress), events: [], finished: true }).replies[0];
+  assert.equal(snap({ elapsedMs: 5000, stage: 'completed', reconnects: 1 }).reconnects, 1);
+  assert.equal(snap({ elapsedMs: 5000, stage: 'completed' }).reconnects, undefined);
 });
 
 test('failed attempts and replies save sanitized transport details without a paid timeout retry', async () => {

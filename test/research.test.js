@@ -140,6 +140,7 @@ test('research CLI permits only reported web searches, enforces the count and ke
     assert.equal(result.research.searches, 1);
     assert.equal(result.usedTools, false);
     assert.ok(result.raw.args.includes('web_search="live"'));
+    assert.ok(result.raw.args.includes('model_providers.roundtable.supports_websockets=false'), 'the searcher streams the same way as a seat');
     assert.ok(result.raw.args.includes('mcp_servers={}'));
     assert.ok(result.raw.args.includes('features.shell_tool=false'));
     await assert.rejects(run('ordinary debate'), (e) => e.code === 'TOOL_POLICY');

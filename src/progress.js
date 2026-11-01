@@ -2,7 +2,8 @@
 // Never accept provider text, names, paths, IDs or arbitrary event fields here.
 const BOUNDS = { elapsedMs: 86_400_000, timeoutMs: 10_800_000, firstOutputMs: 86_400_000,
   idleMs: 86_400_000, stdoutBytes: 16 * 1024 * 1024, stderrBytes: 16 * 1024 * 1024,
-  eventCount: 1_000_000, exitCode: 4_294_967_295 };
+  eventCount: 1_000_000, exitCode: 4_294_967_295,
+  reconnects: 100 }; // times the CLI reported starting the answer again on a stalled stream
 const STAGES = new Set(['waiting', 'started', 'reasoning', 'reply', 'completed', 'tool', 'searching', 'reconnecting', 'provider-error', 'headers', 'body']);
 const OUTCOMES = new Set(['exited', 'completed', 'timeout', 'cancelled', 'spawn-error', 'provider-error', 'policy', 'output-limit', 'protocol']);
 
@@ -23,6 +24,7 @@ export function progressText(input) {
   else if (p.firstOutputMs != null) parts.push(`First output after ${seconds(p.firstOutputMs)}; no output for the last ${seconds(p.idleMs || 0)}.`);
   const stages = { waiting: 'waiting for output', started: 'call started', reasoning: 'reasoning', reply: 'answer text received', completed: 'completion received', tool: 'tool activity', searching: 'web search', reconnecting: 'provider reconnecting', 'provider-error': 'provider reported failure', headers: 'HTTP headers received', body: 'HTTP body arriving' };
   if (p.stage) parts.push(`Last observed stage: ${stages[p.stage]}.`);
+  if (p.reconnects) parts.push(`Provider reconnected ${p.reconnects} time${p.reconnects === 1 ? '' : 's'} and started the answer again.`);
   if (p.exitCode != null) parts.push(`Exit code ${p.exitCode}.`);
   return parts.join(' ');
 }

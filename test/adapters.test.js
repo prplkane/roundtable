@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ADAPTERS, ARGV_LIMIT, CODEX_NO_TOOLS, CODEX_NO_TELEMETRY, CODEX_RUNTIME } from '../src/adapters/config.js';
+import { ADAPTERS, ARGV_LIMIT, CODEX_NO_TOOLS, CODEX_NO_TELEMETRY, CODEX_RUNTIME, CODEX_STREAM_RECONNECTS, codexStream, codexStreamIdleMs } from '../src/adapters/config.js';
 import { buildArgs, pickJson, pickJsonl, makeAdapter, detectToolUse, usageDelta } from '../src/adapters/common.js';
 import { claudeQuota, codexQuota } from '../src/adapters/quota.js';
 import { cleanEnv, profileHome, runProcess, killAll, liveChildren, resolveBinary } from '../src/adapters/spawn.js';
@@ -18,7 +18,7 @@ test('claude: fresh call on stdin, resume appends --resume', () => {
 
 test('codex: resume replaces the subcommand and keeps the trailing "-" last', () => {
   const fresh = buildArgs(ADAPTERS.codex, { prompt: 'hi', model: 'gpt-x' });
-  assert.deepEqual(fresh.args, ['exec', '--json', '--sandbox', 'read-only', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules', '--strict-config', '-c', 'project_doc_max_bytes=0', ...CODEX_NO_TOOLS, ...CODEX_NO_TELEMETRY, ...CODEX_RUNTIME, '-m', 'gpt-x', '-']);
+  assert.deepEqual(fresh.args, ['exec', '--json', '--sandbox', 'read-only', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules', '--strict-config', '-c', 'project_doc_max_bytes=0', ...CODEX_NO_TOOLS, ...CODEX_NO_TELEMETRY, ...CODEX_RUNTIME, ...codexStream(300_000), '-m', 'gpt-x', '-']);
   const res = buildArgs(ADAPTERS.codex, { prompt: 'hi', sessionId: 'T1' });
   assert.equal(res.args.filter((a) => a === 'exec').length, 1, 'exec must appear once');
   assert.deepEqual(res.args.slice(0, 3), ['exec', 'resume', 'T1']);
@@ -29,7 +29,32 @@ test('codex: resume replaces the subcommand and keeps the trailing "-" last', ()
   for (const flag of CODEX_NO_TOOLS) assert.ok(res.args.includes(flag), `resume keeps ${flag}`);
   for (const flag of CODEX_NO_TELEMETRY) assert.ok(res.args.includes(flag), `resume keeps ${flag}`);
   for (const flag of CODEX_RUNTIME) assert.ok(res.args.includes(flag), `resume keeps ${flag}`);
+  for (const flag of codexStream(300_000)) assert.ok(res.args.includes(flag), `resume keeps ${flag}`);
   assert.equal(res.stdin, 'hi');
+});
+
+test('codex: the stream idle limit fits every reconnect inside the call limit', async () => {
+  assert.equal(codexStreamIdleMs(300_000), 95_000);
+  assert.equal(codexStreamIdleMs(120_000), 35_000);
+  assert.equal(codexStreamIdleMs(30_000), 10_000, 'floor: a tight call limit cannot buy a reasoning-length idle');
+  assert.equal(codexStreamIdleMs(1_800_000), 300_000, 'cap: the CLI default');
+  assert.equal(codexStreamIdleMs(), 95_000, 'no limit given: the default call limit');
+  for (const limit of [60_000, 300_000, 600_000, 900_000]) assert.ok(codexStreamIdleMs(limit) * (CODEX_STREAM_RECONNECTS + 1) + 15_000 <= limit, `${limit} nests`);
+  const args = buildArgs(ADAPTERS.codex, { prompt: 'hi', timeoutMs: 120_000 }).args;
+  assert.ok(args.includes('model_provider="roundtable"'));
+  assert.ok(args.includes('model_providers.roundtable.supports_websockets=false'));
+  assert.ok(args.includes('model_providers.roundtable.requires_openai_auth=true'), 'same login');
+  assert.ok(args.includes('model_providers.roundtable.stream_idle_timeout_ms=35000'));
+  assert.ok(args.includes('model_providers.roundtable.stream_max_retries=2'));
+  assert.equal(args.at(-1), '-');
+  assert.ok(!buildArgs(ADAPTERS.claude, { prompt: 'hi' }).args.some((a) => a.includes('model_provider')), 'only codex has a stream block');
+  // the call limit the engine passes reaches the argv through the adapter
+  process.env.FAKE_SHAPE = 'codex';
+  const bin = { file: process.execPath, prefix: [path.resolve('test/fixtures/fake-cli.mjs')] };
+  try {
+    const res = await makeAdapter('codex', { bin })('q', null, { timeoutMs: 120_000 });
+    assert.ok(res.raw.args.includes('model_providers.roundtable.stream_idle_timeout_ms=35000'));
+  } finally { delete process.env.FAKE_SHAPE; }
 });
 
 test('binary resolution respects PATH order across Windows npm scripts and native executables', () => {

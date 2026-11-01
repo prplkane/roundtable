@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Local operation and interface
+
+- Stream Codex replies over SSE with an idle limit that fits inside the call limit and two
+  reconnects, through a provider entry named per call that points at the same ChatGPT backend
+  with the same login. The built-in provider offers no idle or reconnect setting, and the CLI's
+  documented stream-idle default equals the default call limit, so a stalled reply ran the full
+  five minutes before failing; it now reconnects after 95 seconds at that limit and fails sooner
+  once the reconnects are used up. That a custom provider may use the ChatGPT login is not documented;
+  `SECURITY.md` names both ways a future CLI could react. Every reconnect is counted into the
+  attempt's saved progress and shown as a "reconnected ×N" mark on the reply card, in failure
+  details, error logs and the agent state, so a recovered stall stays visible.
+
 ## 0.5.0
 
 ### Security and usage
