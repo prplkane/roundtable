@@ -69,6 +69,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       // Recorded provider threads can have advanced beyond the saved review, even without a
       // partial reply row. Recover with new threads; keep all prior spend in the ledger.
       delete seat.lastRawCost;
+      delete seat.lastRawUsage;
       return seat;
     }),
     chairman: chairman || { vendor: seats[0].vendor },
@@ -231,6 +232,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       if (res.sessionId) seat.sessionId = res.sessionId;
       const rawCost = res.usage?.raw?.cost ?? res.rawCost;
       if (typeof rawCost === 'number') seat.lastRawCost = rawCost;
+      if (res.usage?.rawScope === 'session') seat.lastRawUsage = res.usage.raw;
       return { ...EMPTY_USAGE, ...(res.usage || {}), cost: res.usage?.cost ?? res.cost ?? null,
         ...(!res.usage && rawCost != null ? { raw: { cost: rawCost } } : {}), ms: res.usage?.ms ?? res.ms ?? (now() - t0) };
     };
@@ -238,7 +240,8 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       // prevCost: the session's last cumulative cost reading, so a resumed call is charged only
       // its own part even after a server restart (adapters/common.js).
       const res = await runner(seat.vendor, prompt, sessionId, { timeoutMs: researching ? opts.research.timeoutMs : opts.callTimeoutMs,
-        ...(researching ? { research: opts.research } : {}), signal: controller.signal, seat, model: seat.model, effort: seat.effort, allowLimitedIsolation: opts.allowLimitedIsolation === true, prevCost: sessionId ? seat.lastRawCost : undefined });
+        ...(researching ? { research: opts.research } : {}), signal: controller.signal, seat, model: seat.model, effort: seat.effort, allowLimitedIsolation: opts.allowLimitedIsolation === true,
+        prevCost: sessionId ? seat.lastRawCost : undefined, prevUsage: sessionId ? seat.lastRawUsage : undefined });
       const usage = accounting(res);
       if (res.usedTools) {
         seat.sessionId = null;
@@ -257,8 +260,8 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       if (e.usedTools || e.kind === 'policy') seat.sessionId = null;
       return { ok: false, text: '', usage, reported: !!e.usage, error, progress: safeProgress(e.progress),
         ...(researching && Number.isInteger(e.research?.searches) && e.research.searches >= 0 && e.research.searches <= 9 ? { searches: e.research.searches } : {}),
-        systemCode: ['TIMEOUT', 'KILLED', 'TOOL_POLICY', 'OUTPUT_LIMIT', 'PROVIDER_PROTOCOL', 'CLI_EXIT', 'ISOLATION_REQUIRED', 'RESEARCH_LIMIT', 'RESEARCH_INVALID', 'ENOENT', 'EACCES', 'EPERM'].includes(e.code) ? e.code : undefined,
-        kind: e.usedTools ? 'policy' : kind, usedTools: !!e.usedTools, cancelReason, resetsAt: e.resetsAt || null, timedOut: !cancelReason && e.code === 'TIMEOUT', fresh: sessionId == null };
+        systemCode: ['TIMEOUT', 'KILLED', 'TOOL_POLICY', 'OUTPUT_LIMIT', 'PROVIDER_PROTOCOL', 'CLI_EXIT', 'CLI_FAILURE', 'ISOLATION_REQUIRED', 'RESEARCH_LIMIT', 'RESEARCH_INVALID', 'ENOENT', 'EACCES', 'EPERM'].includes(e.code) ? e.code : undefined,
+        kind: e.usedTools ? 'policy' : kind, usedTools: !!e.usedTools, cancelReason, resetsAt: e.resetsAt || null, timedOut: !cancelReason && kind === 'timeout', fresh: sessionId == null };
     }
   }
 

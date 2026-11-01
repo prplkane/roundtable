@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ADAPTERS, ARGV_LIMIT, CODEX_NO_TOOLS } from '../src/adapters/config.js';
-import { buildArgs, pickJson, pickJsonl, makeAdapter, detectToolUse } from '../src/adapters/common.js';
+import { ADAPTERS, ARGV_LIMIT, CODEX_NO_TOOLS, CODEX_NO_TELEMETRY, CODEX_RUNTIME } from '../src/adapters/config.js';
+import { buildArgs, pickJson, pickJsonl, makeAdapter, detectToolUse, usageDelta } from '../src/adapters/common.js';
 import { claudeQuota, codexQuota } from '../src/adapters/quota.js';
-import { cleanEnv, profileHome, runProcess, killAll, liveChildren } from '../src/adapters/spawn.js';
+import { cleanEnv, profileHome, runProcess, killAll, liveChildren, resolveBinary } from '../src/adapters/spawn.js';
 import { mkdtempSync, writeFileSync, existsSync, readFileSync, mkdirSync, readdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,7 +18,7 @@ test('claude: fresh call on stdin, resume appends --resume', () => {
 
 test('codex: resume replaces the subcommand and keeps the trailing "-" last', () => {
   const fresh = buildArgs(ADAPTERS.codex, { prompt: 'hi', model: 'gpt-x' });
-  assert.deepEqual(fresh.args, ['exec', '--json', '--sandbox', 'read-only', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules', '--strict-config', '-c', 'project_doc_max_bytes=0', ...CODEX_NO_TOOLS, '-m', 'gpt-x', '-']);
+  assert.deepEqual(fresh.args, ['exec', '--json', '--sandbox', 'read-only', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules', '--strict-config', '-c', 'project_doc_max_bytes=0', ...CODEX_NO_TOOLS, ...CODEX_NO_TELEMETRY, ...CODEX_RUNTIME, '-m', 'gpt-x', '-']);
   const res = buildArgs(ADAPTERS.codex, { prompt: 'hi', sessionId: 'T1' });
   assert.equal(res.args.filter((a) => a === 'exec').length, 1, 'exec must appear once');
   assert.deepEqual(res.args.slice(0, 3), ['exec', 'resume', 'T1']);
@@ -27,7 +27,87 @@ test('codex: resume replaces the subcommand and keeps the trailing "-" last', ()
   assert.ok(res.args.includes('sandbox_mode="read-only"'));
   assert.ok(res.args.includes('project_doc_max_bytes=0'), 'AGENTS.md stays out on resume too');
   for (const flag of CODEX_NO_TOOLS) assert.ok(res.args.includes(flag), `resume keeps ${flag}`);
+  for (const flag of CODEX_NO_TELEMETRY) assert.ok(res.args.includes(flag), `resume keeps ${flag}`);
+  for (const flag of CODEX_RUNTIME) assert.ok(res.args.includes(flag), `resume keeps ${flag}`);
   assert.equal(res.stdin, 'hi');
+});
+
+test('binary resolution respects PATH order across Windows npm scripts and native executables', () => {
+  const npmBin = ['@openai/codex', 'bin/codex.js'];
+  const script = path.win32.join('C:\\npm', 'node_modules', ...npmBin);
+  const exe = 'C:\\desktop\\codex.exe';
+  const exists = (p) => [script, exe, 'C:\\npm\\codex.cmd'].includes(p);
+  assert.deepEqual(resolveBinary('codex', npmBin, { platform: 'win32', env: { PATH: 'C:\\npm;C:\\desktop' }, exists }), { file: process.execPath, prefix: [script] });
+  assert.deepEqual(resolveBinary('codex', npmBin, { platform: 'win32', env: { PATH: 'C:\\desktop;C:\\npm' }, exists }), { file: exe, prefix: [] });
+  assert.deepEqual(resolveBinary('codex', npmBin, { platform: 'win32', env: { PATH: 'C:\\npm;C:\\desktop' }, exists: (p) => [script, exe].includes(p) }), { file: exe, prefix: [] }, 'a package without a PATH shim cannot shadow an executable');
+  assert.deepEqual(resolveBinary('codex', npmBin, { platform: 'linux', env: { PATH: '/bin:/later' }, exists: (p) => p === '/bin/codex' }), { file: '/bin/codex', prefix: [] });
+  assert.throws(() => resolveBinary('codex', npmBin, { env: { PATH: '' } }), /not found on PATH/);
+});
+
+test('Codex warnings are not tools, but a failed turn stops promptly with its actual cause', async () => {
+  const warning = { type: 'item.completed', item: { type: 'error', message: 'Optional feature unavailable.' } };
+  assert.equal(detectToolUse('codex', JSON.stringify(warning)), false);
+  assert.equal(detectToolUse('codex', JSON.stringify({ type: 'item.started', item: { type: 'unknown_tool' } })), true);
+  process.env.FAKE_SHAPE = 'codex';
+  const bin = { file: process.execPath, prefix: [path.resolve('test/fixtures/fake-cli.mjs')] };
+  try {
+    process.env.FAKE_PRELUDE = JSON.stringify(warning) + '\n';
+    assert.equal((await makeAdapter('codex', { bin })('q')).usedTools, false);
+    process.env.FAKE_SLEEP = '10000';
+    for (const [message, kind] of [['Not logged in', 'auth'], ['Usage limit reached', 'quota'], ['connection reset', 'network']]) {
+      process.env.FAKE_PRELUDE = JSON.stringify({ type: 'turn.failed', error: { message } }) + '\n';
+      await assert.rejects(makeAdapter('codex', { bin })('q', null, { timeoutMs: 3000 }), (e) => {
+        assert.equal(e.code, 'CLI_FAILURE'); assert.equal(e.kind, kind);
+        assert.equal(e.progress.stage, 'provider-error'); assert.equal(e.progress.outcome, 'provider-error');
+        assert.equal(e.usage, null); assert.equal(e.text, undefined);
+        return true;
+      });
+    }
+  } finally { for (const k of ['FAKE_SHAPE', 'FAKE_SLEEP', 'FAKE_PRELUDE']) delete process.env[k]; }
+});
+
+test('Codex uses a private review prompt on fresh and resumed calls and removes the temporary file', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'rt-instructions-'));
+  process.env.FAKE_SHAPE = 'codex'; process.env.FAKE_RECORD = path.join(dir, 'record.json');
+  const run = makeAdapter('codex', { bin: { file: process.execPath, prefix: [path.resolve('test/fixtures/fake-cli.mjs')] } });
+  const files = [];
+  try {
+    for (const sessionId of [null, 'T1']) {
+      await run('synthetic question', sessionId);
+      const record = JSON.parse(readFileSync(process.env.FAKE_RECORD, 'utf8'));
+      assert.equal(record.instructions, ADAPTERS.codex.instructions);
+      assert.equal(record.stdin, 'synthetic question');
+      assert.ok(record.argv.includes('features.shell_tool=false'));
+      assert.ok(record.argv.includes('web_search="disabled"'));
+      assert.equal(existsSync(record.instructionsFile), false);
+      assert.equal(existsSync(path.dirname(record.instructionsFile)), false);
+      files.push(record.instructionsFile);
+    }
+    assert.notEqual(files[0], files[1], 'calls never share an instruction file');
+    process.env.FAKE_EXIT = '1';
+    await assert.rejects(run('failed call'), (e) => e.code === 'CLI_EXIT');
+    assert.equal(existsSync(JSON.parse(readFileSync(process.env.FAKE_RECORD, 'utf8')).instructionsFile), false);
+  } finally { for (const k of ['FAKE_SHAPE', 'FAKE_RECORD', 'FAKE_EXIT']) delete process.env[k]; }
+});
+
+test('Codex resume charges only newly reported tokens and preserves the original session totals', async () => {
+  const run = makeAdapter('codex', { bin: { file: process.execPath, prefix: [path.resolve('test/fixtures/fake-cli.mjs')] } });
+  process.env.FAKE_SHAPE = 'codex';
+  try {
+    process.env.FAKE_TOKEN_USAGE = JSON.stringify({ input_tokens: 100, cached_input_tokens: 20, output_tokens: 10 });
+    const first = await run('first');
+    process.env.FAKE_TOKEN_USAGE = JSON.stringify({ input_tokens: 180, cached_input_tokens: 50, output_tokens: 16 });
+    const second = await run('second', first.sessionId, { prevUsage: first.usage.raw });
+    assert.equal(first.usage.input + first.usage.cacheRead + second.usage.input + second.usage.cacheRead, 180);
+    assert.equal(first.usage.output + second.usage.output, 16);
+    assert.equal(second.usage.input, 50); assert.equal(second.usage.cacheRead, 30); assert.equal(second.usage.output, 6);
+    assert.equal(second.usage.raw.input, 180); assert.equal(second.usage.rawScope, 'session');
+    const fresh = await run('new thread', null, { prevUsage: first.usage.raw });
+    assert.equal(fresh.usage.input + fresh.usage.cacheRead, 180, 'fresh calls never subtract a previous session');
+    assert.equal((await run('unknown baseline', 'T1', { prevUsage: {} })).usage, null);
+    assert.equal((await run('decreasing counters', 'T1', { prevUsage: { input: 200, output: 20 } })).usage, null);
+  } finally { delete process.env.FAKE_SHAPE; delete process.env.FAKE_TOKEN_USAGE; }
+  assert.equal(usageDelta({ input: 2, output: 2 }, null), null);
 });
 
 test('restriction flags: every adapter sends its tool restrictions on fresh calls and resumes', () => {
@@ -41,6 +121,7 @@ test('restriction flags: every adapter sends its tool restrictions on fresh call
     const x = all('codex', sid);
     for (const f of ['--ignore-user-config', '--ignore-rules', '--strict-config']) assert.ok(x.includes(f), `codex ${f}`);
     for (const f of ['mcp_servers={}', 'web_search="disabled"', 'features.shell_tool=false', 'features.unified_exec=false', 'features.apps=false']) assert.ok(x.includes(f), `codex ${f}`);
+    for (const f of ['analytics.enabled=false', 'otel.exporter="none"', 'otel.metrics_exporter="none"', 'otel.trace_exporter="none"']) assert.ok(x.includes(f), `codex ${f}: no upload outlives the reply`);
     const a = all('agy', sid);
     assert.deepEqual(a.slice(a.indexOf('--mode'), a.indexOf('--mode') + 2), ['--mode', 'plan']);
     assert.ok(a.includes('--disable-slash-commands'));
@@ -384,4 +465,13 @@ test('API-key variables do not reach a CLI unless ROUNDTABLE_API_BILLING=1: a se
   const allowed = cleanEnv(null, { allowApiKeys: true, source });
   assert.ok(allowed.ANTHROPIC_API_KEY && allowed.OPENAI_API_KEY && allowed.GEMINI_API_KEY);
   assert.equal(allowed.CLAUDECODE, undefined, 'the Claude Code session variables stay out either way');
+});
+
+test('nested Codex sessions drop parent app routing while preserving login homes and network restrictions', () => {
+  const source = { PATH: 'x', CODEX_HOME: '/login', CODEX_SANDBOX: 'restricted', CODEX_SANDBOX_NETWORK_DISABLED: '1',
+    CODEX_APP_TOOLS_PIPE_PATH: 'parent-pipe', CODEX_APP_RUNTIME_CLI_PATH: 'parent-cli', CODEX_INTERNAL_ORIGINATOR_OVERRIDE: 'parent',
+    CODEX_SESSION_ID: 'parent-session', CODEX_THREAD_ID: 'parent-thread', CODEX_TOOL_CALL_ID: 'finished-call', CODEX_PERMISSION_PROFILE: 'parent-profile' };
+  const expected = { PATH: 'x', CODEX_HOME: '/login', CODEX_SANDBOX: 'restricted', CODEX_SANDBOX_NETWORK_DISABLED: '1' };
+  assert.deepEqual(cleanEnv(null, { source }), expected);
+  assert.deepEqual(cleanEnv({ env: 'CODEX_HOME', dir: '/profile' }, { source, allowApiKeys: true }), { ...expected, CODEX_HOME: '/profile' });
 });

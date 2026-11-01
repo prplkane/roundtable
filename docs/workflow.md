@@ -236,6 +236,13 @@ custom text.
   labels from the prompts; each seat receives its own mood instructions.
 - Still shared: the CLI's own state folder (login, local history) unless the seat has a login
   profile, and whatever the vendor applies to every request from your account.
+- Codex ignores your user configuration, so a default model or effort in that file does not
+  control the seat. Choose both explicitly to reproduce a review. CLI resolution follows PATH
+  order across native binaries and npm installations, including on Windows.
+- Codex seats use a short decision-review base prompt instead of general coding instructions.
+  Parent Codex app routing/session variables are removed before starting CLIs or reading quota.
+  Login profiles and inherited network restrictions are preserved. This also applies when a
+  coding agent launches Roundtable as a background server.
 - Use different lenses to test different assumptions. Agreement between seats is not evidence
   that their shared assumptions are correct.
 
@@ -295,6 +302,12 @@ remaining and a small bar, with the window and reading age. Missing figures say 
 Open **Usage details** for per-seat tokens, costs and timing, grouped by account with each
 account's live windows. A **+** after a total means some calls reported nothing; a dash means
 the CLI reports no cost. Rounds fold once a review finishes, so the conclusion leads.
+
+Codex reports cumulative tokens when resuming a thread. Roundtable charges only the increase
+since that seat's last reading and keeps the original totals under `usage.raw`. A missing or
+decreasing baseline is unknown spending, not zero. Recovering an interrupted review starts new
+provider threads and resets this baseline while retaining earlier spending. Older saved totals
+are not rewritten automatically.
 
 ### Open the table and take part
 
@@ -745,6 +758,15 @@ unsent notes and reload. A failed history load says **unavailable**, with **Retr
 it does not claim your records are gone. A setup-load failure offers **Reload**.
 
 ### Error logs
+
+Codex calls disable analytics and telemetry exports, shell snapshots and unlimited connection
+retries for that process only. After a complete answer and valid usage arrive, Roundtable gives
+the CLI one second to exit and then terminates a stuck process while preserving the result.
+It continues checking tool policy and stream validity during that grace period. A partial
+answer, missing usage or a failed turn cannot use this shortcut. Timeouts before completion
+remain failures with unknown spending where the provider reported none; they are not retried
+automatically. Search and reconnect stages in the error details help distinguish these from
+slow model replies. These controls do not guarantee the provider's availability.
 
 Provider failure **Details** show whether output arrived, the last observed stage, elapsed
 and idle time, and the exit code when available. A timeout after reasoning is evidence that

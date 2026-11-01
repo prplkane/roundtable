@@ -3,8 +3,8 @@
 const BOUNDS = { elapsedMs: 86_400_000, timeoutMs: 10_800_000, firstOutputMs: 86_400_000,
   idleMs: 86_400_000, stdoutBytes: 16 * 1024 * 1024, stderrBytes: 16 * 1024 * 1024,
   eventCount: 1_000_000, exitCode: 4_294_967_295 };
-const STAGES = new Set(['waiting', 'started', 'reasoning', 'reply', 'completed', 'tool', 'headers', 'body']);
-const OUTCOMES = new Set(['exited', 'timeout', 'cancelled', 'spawn-error', 'policy', 'output-limit', 'protocol']);
+const STAGES = new Set(['waiting', 'started', 'reasoning', 'reply', 'completed', 'tool', 'searching', 'reconnecting', 'provider-error', 'headers', 'body']);
+const OUTCOMES = new Set(['exited', 'completed', 'timeout', 'cancelled', 'spawn-error', 'provider-error', 'policy', 'output-limit', 'protocol']);
 
 export function safeProgress(input) {
   const out = {};
@@ -21,7 +21,7 @@ export function progressText(input) {
   const parts = [`Elapsed ${seconds(p.elapsedMs)}${p.timeoutMs == null ? '' : `; limit ${seconds(p.timeoutMs)}`}.`];
   if (p.firstOutputMs == null && p.stdoutBytes === 0 && p.stderrBytes === 0) parts.push('No provider output arrived.');
   else if (p.firstOutputMs != null) parts.push(`First output after ${seconds(p.firstOutputMs)}; no output for the last ${seconds(p.idleMs || 0)}.`);
-  const stages = { waiting: 'waiting for output', started: 'call started', reasoning: 'reasoning', reply: 'reply received', completed: 'completion received', tool: 'tool activity', headers: 'HTTP headers received', body: 'HTTP body arriving' };
+  const stages = { waiting: 'waiting for output', started: 'call started', reasoning: 'reasoning', reply: 'answer text received', completed: 'completion received', tool: 'tool activity', searching: 'web search', reconnecting: 'provider reconnecting', 'provider-error': 'provider reported failure', headers: 'HTTP headers received', body: 'HTTP body arriving' };
   if (p.stage) parts.push(`Last observed stage: ${stages[p.stage]}.`);
   if (p.exitCode != null) parts.push(`Exit code ${p.exitCode}.`);
   return parts.join(' ');

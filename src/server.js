@@ -506,7 +506,7 @@ function attachEngine(d, { fieldNotes, seats, chairman, options, resume = null, 
     adapters[vendor](prompt, sessionId, {
       cwd: store.seatDir(opts.seat?.id || 'chairman'), home: opts.seat?.account && ADAPTERS[vendor].home ? profileHome(vendor, opts.seat.account) : null,
       endpoint: opts.seat?.endpoint ? { url: opts.seat.endpoint, keyEnv: opts.seat.keyEnv || null } : null, // an API seat: where to send the round
-      timeoutMs: opts.timeoutMs, prevCost: opts.prevCost, model: opts.model || undefined, effort: opts.effort || undefined, tag: d.slug,
+      timeoutMs: opts.timeoutMs, prevCost: opts.prevCost, prevUsage: opts.prevUsage, model: opts.model || undefined, effort: opts.effort || undefined, tag: d.slug,
       allowLimitedIsolation: opts.allowLimitedIsolation,
       research: opts.research,
       minimal: !!opts.seat?.mood?.hidden, // a hidden mood runs as cheaply as its vendor allows

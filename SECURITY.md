@@ -13,7 +13,7 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   `~/.local/share/roundtable/...`) that you log into yourself once; Roundtable only points the
   CLI at it through the variable the CLI documents.
 - **Billing: the subscription, unless you say otherwise.** The child's environment is yours minus
-  the Claude Code session variables and minus API-key variables (`ANTHROPIC_API_KEY`,
+  Claude Code session variables, parent Codex app routing/session variables and API-key variables (`ANTHROPIC_API_KEY`,
   `OPENAI_API_KEY`, `GEMINI_API_KEY` and the like), so a key left in your shell cannot move a
   debate onto pay-per-token. Set `ROUNDTABLE_API_BILLING=1` to pass them through on purpose.
 - **Budget caps check admission, including retries.** Each provider attempt is checked against
@@ -142,6 +142,16 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   `strictTools: false` is refused and cannot disable it in old records. Streams are bounded
   to 8 MiB combined stdout/stderr and a pending event to 1 MiB. Invalid, incomplete or oversized
   streams stop the seat for the review, discard its session and retain reported spending.
+  Codex warning/error items are diagnostics, not tool activity; unknown item types still fail
+  closed. A failed turn is rejected immediately. After a validated answer, completion event
+  and token counts, a Codex process that does not exit within one second is terminated and its
+  result preserved. Output and tool checks continue until termination. No retry is made for
+  that completed call, and a truncated tail or subsequent prohibited tool still rejects it.
+  Codex telemetry exports, analytics, shell snapshots and unlimited connection retries are
+  disabled per call; shared CLI settings and login files are not changed.
+  Codex also receives a short review-specific base prompt through a uniquely created temporary
+  file, removed after the call. It contains no field notes or personal context. The tool flags,
+  read-only sandbox and reported-tool guard apply independently of these instructions.
   Detection can arrive after an operation has started and cannot undo it. Undisclosed remote
   actions are not observable. These are provider restrictions and detection, not an OS
   security sandbox supplied by Roundtable. Flags are in `src/adapters/config.js`.

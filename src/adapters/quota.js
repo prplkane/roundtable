@@ -9,7 +9,7 @@
 //  codex   separate read, no model call: `codex app-server` over stdio, JSON-RPC
 //          account/rateLimits/read -> rateLimits.{primary,secondary}.usedPercent (0..100).
 //  agy     nothing headless (/usage is an interactive panel), so only a usage-page link.
-import { resolveBinary } from './spawn.js';
+import { resolveBinary, cleanEnv } from './spawn.js';
 import { spawn, execFileSync } from 'node:child_process';
 
 // Keys seen in rate_limit_info.unifiedWindows (the third appeared in the first real debate after the
@@ -52,7 +52,7 @@ export function readCodexQuota({ timeoutMs = 20_000, home = null } = {}) {
   return new Promise((resolve) => {
     let bin;
     try { bin = resolveBinary('codex', ['@openai/codex', 'bin/codex.js']); } catch { return resolve(null); }
-    const child = spawn(bin.file, [...bin.prefix, 'app-server'], { windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'], ...(home ? { env: { ...process.env, CODEX_HOME: home } } : {}) });
+    const child = spawn(bin.file, [...bin.prefix, 'app-server'], { windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'], env: cleanEnv(home ? { env: 'CODEX_HOME', dir: home } : null) });
     let buf = '', done = false;
     const finish = (v) => {
       if (done) return;

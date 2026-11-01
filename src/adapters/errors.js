@@ -51,6 +51,9 @@ export function classifyError({ message = '', stdout = '', stderr = '', code = n
   if (code === 'ENOENT' || /not found on PATH/i.test(text)) return { kind: 'missing', message: `${label} CLI not found on this machine.`, resetsAt: null, detail };
   if (code === 'KILLED') return { kind: 'killed', message: 'Stopped before it answered.', resetsAt: null, detail };
   if (code === 'TIMEOUT') return { kind: 'timeout', message: `${label} did not answer in time.`, resetsAt: null, detail };
+  if (code === 'CLI_FAILURE' && /idle timeout|timeout waiting for (?:SSE|stream)/i.test(text)) return {
+    kind: 'timeout', message: `${label}'s provider connection stalled before completion.`, resetsAt: null, detail,
+  };
   if (QUOTA.test(text)) {
     const resetsAt = resetTime(text, now);
     return { kind: 'quota', message: `${label}: usage limit reached${resetsAt ? `, resets ${when(resetsAt)}` : ''}.`, resetsAt, detail };

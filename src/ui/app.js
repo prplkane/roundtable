@@ -156,7 +156,7 @@ const ERROR_LINE = {
   auth: 'Provider login needs attention. Sign in with its CLI, then refresh status.',
   missing: 'Provider CLI not found. Install it and restart Roundtable.',
   network: 'Could not reach the provider. Check your connection and its service status.',
-  timeout: 'This provider reached its per-call time limit. Other replies are kept. Try a smaller review or another model.',
+  timeout: 'This provider reached its per-call time limit. Other replies are kept. Check the saved progress and provider status before retrying.',
   killed: 'Stopped before it answered.', format: 'The reply did not follow the required format. Try another model.',
   budget: 'The budget blocked this call. Check the cap and reported usage before continuing.',
 };
@@ -351,8 +351,8 @@ function poolEntry(vendor, weightedTokens) {
     </details>`;
 }
 
-// "default (max)" when the catalogue knows what the CLI's own default is (codex: config.toml);
-// a blank seat runs at that level, which is where a slow Codex seat usually comes from.
+// "default (<level>)" when the catalogue knows the CLI's own default level; today no vendor
+// reports one (codex's config.toml is not a source: the seat runs with --ignore-user-config).
 const defaultEffortLabel = (vendor) => { const d = VENDOR_META[vendor]?.catalogue?.defaultEffort; return d ? `default (${d})` : 'default'; };
 const effortOptions = (vendor, chosen, none = defaultEffortLabel(vendor)) => `<option value="">${esc(none)}</option>${(VENDOR_META[vendor]?.catalogue?.efforts || []).map((e) => `<option value="${e}" ${e === chosen ? 'selected' : ''}>${e}</option>`).join('')}`;
 

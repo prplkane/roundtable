@@ -215,7 +215,7 @@ function normaliseEndpoint(raw, label) {
 }
 
 // vendors: { [vendor]: { label, effortLevels } } (the adapter table). efforts may widen a
-// vendor's levels from the catalogue (codex reads its list from config.toml); models is the
+// vendor's levels from the catalogue (agy's come from its model ids); models is the
 // catalogue's model list per vendor, for the lightest model a hidden mood runs on.
 export function normaliseSeats(input, { vendors, efforts = {}, models = {}, hidden = false }) {
   const issue = seatSetupIssue((input || []).map((raw) => raw && vendors[raw.vendor] ? raw : null));

@@ -11,6 +11,21 @@
 
 ### Local operation and interface
 
+- Codex calls disable analytics/telemetry uploads and unlimited connection retries. A valid
+  completed answer with measured usage survives a CLI that hangs during shutdown; incomplete
+  answers still fail without a timeout retry. Search and reconnect stages appear in diagnostics.
+- Treat Codex warning items as diagnostics instead of tool use, and surface a failed turn's
+  provider error promptly. Unknown tools remain blocked. Resolve npm and native CLIs in PATH
+  order so a later desktop binary cannot replace the terminal's selected installation.
+- Stop presenting Codex defaults from user configuration that isolated calls ignore. Keep
+  model and effort choices explicit when reproducibility matters.
+- Keep parent Codex app routing and session variables out of child CLIs and quota reads.
+  Use a shorter decision-review base prompt for Codex instead of its coding-agent prompt;
+  the tool restrictions remain unchanged. The temporary instruction file is removed after
+  each call, including failures.
+- Charge Codex resume calls by the increase in session token counters. Previous rounds are no
+  longer counted again against usage and budget caps. Missing or decreasing baselines remain
+  unknown; fresh sessions start their accounting from zero.
 - Show the chairman at work: while the verdict call runs, the Conclusion panel draws a pixel
   sheet being written under a quill instead of staying hidden. Reduced motion shows a still page.
 - Keep a round or detail the person folded or opened across redraws; before, every server

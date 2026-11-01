@@ -1,20 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseCodexConfig, parseAgyModels, vendorCatalogue } from '../src/adapters/catalogue.js';
-
-test('parseCodexConfig reads strings and string arrays, ignores the rest', () => {
-  const toml = [
-    '# comment', 'model = "gpt-6.1-sol"', 'model_reasoning_effort = "medium"',
-    'enabled-reasoning-efforts = ["low", "medium", "high", "xhigh", "ultra", "max"]',
-    'sandbox_mode = "read-only"', '[profiles.fast]', 'number = 3',
-  ].join('\n');
-  const c = parseCodexConfig(toml);
-  assert.equal(c.model, 'gpt-6.1-sol');
-  assert.equal(c.model_reasoning_effort, 'medium');
-  assert.deepEqual(c['enabled-reasoning-efforts'], ['low', 'medium', 'high', 'xhigh', 'ultra', 'max']);
-  assert.equal(c.number, undefined);
-  assert.deepEqual(parseCodexConfig(''), {});
-});
+import { parseAgyModels, vendorCatalogue } from '../src/adapters/catalogue.js';
 
 test('parseAgyModels keeps "<id>\\t<label>" lines and drops the status line', () => {
   const out = 'Fetching available models...\ngemini-4-argon-high\tGemini 4 Argon (High)\nclaude-opus-5-5-low\tClaude Opus 5.5 (Low)\n\n';
@@ -24,14 +10,15 @@ test('parseAgyModels keeps "<id>\\t<label>" lines and drops the status line', ()
   ]);
 });
 
-test('vendorCatalogue merges config.toml and the agy list over the static hints', async () => {
+test('vendorCatalogue merges the agy list over the static hints; codex never quotes config.toml, which the seat ignores', async () => {
   const cat = await vendorCatalogue({
     agyModels: async () => [{ id: 'gemini-4-argon-medium', label: 'Gemini 4 Argon (Medium)' }],
-    codexConfig: () => ({ model: 'gpt-6.1-sol', model_reasoning_effort: 'medium', 'enabled-reasoning-efforts': ['low', 'max'] }),
   });
-  assert.equal(cat.codex.defaultModel, 'gpt-6.1-sol');
-  assert.equal(cat.codex.defaultEffort, 'medium');
-  assert.deepEqual(cat.codex.efforts, ['low', 'max']);
+  // --ignore-user-config: the seat runs on the CLI's own default, whatever ~/.codex/config.toml says
+  assert.equal(cat.codex.defaultModel, null);
+  assert.equal(cat.codex.defaultEffort, null);
+  assert.equal(cat.codex.defaultLabel, 'CLI default');
+  assert.deepEqual(cat.codex.efforts, ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
   assert.deepEqual(cat.agy.models, [{ id: 'gemini-4-argon-medium', label: 'Gemini 4 Argon (Medium)' }]);
   assert.equal(cat.agy.effortInModel, true);
   // claude and codex come from the plan table (adapters/models.js); agy is grouped by model
@@ -41,8 +28,8 @@ test('vendorCatalogue merges config.toml and the agy list over the static hints'
   assert.deepEqual(cat.agy.families, [{ id: 'gemini-4-argon', label: 'Gemini 4 Argon', levels: ['medium'] }]);
   assert.match(cat.agy.pool, /Google/);
   // with nothing readable the static hints stand
-  const bare = await vendorCatalogue({ agyModels: async () => [], codexConfig: () => ({}) });
-  assert.deepEqual(bare.codex.efforts, ['low', 'medium', 'high', 'xhigh']);
+  const bare = await vendorCatalogue({ agyModels: async () => [] });
+  assert.deepEqual(bare.codex.efforts, ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
   assert.deepEqual(bare.agy.models, []);
 });
 
