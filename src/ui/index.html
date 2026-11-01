@@ -112,6 +112,7 @@
               </div>
               <div class="f"><span class="label help-label" data-help="effort" tabindex="0" aria-describedby="help-effort">Effort</span><span class="pips" id="chair-pips"></span><select id="chairman-effort" class="effort" hidden><option value="">default</option></select></div>
               <span class="seat-note" id="chair-note"></span>
+              <span class="iso-slot" id="chair-iso"></span>
               <details class="seat-more" id="chair-profile"><summary>Login profile</summary><input id="chairman-account" class="flat" placeholder="none: your usual login" aria-label="Chairman login profile"></details>
             </div>
           </article>
@@ -135,6 +136,7 @@
               <span class="seat-note" id="research-query-note">Only this query is sent to the web. Keep private details out of it.</span>
               <div class="f"><span class="label help-label" data-help="effort" tabindex="0" aria-describedby="help-effort">Effort</span><span class="pips" id="searcher-pips"></span><input id="searcher-effort" type="hidden"></div>
               <div class="f"><span class="label help-label" data-help="searchLimits" tabindex="0" aria-describedby="help-searchLimits">Limits</span><span class="searcher-limits"><input id="research-searches" class="flat" type="number" min="1" max="8" value="4" aria-label="Search limit"> searches · <input id="research-time" class="flat" type="number" min="30" max="600" value="120" aria-label="Time limit in seconds"> s</span></div>
+              <span class="iso-slot" id="searcher-iso"></span>
               <details class="seat-more" id="searcher-profile"><summary>Login profile</summary><input id="searcher-account" class="flat" placeholder="none: your usual login" aria-label="Searcher login profile"></details>
             </div>
           </article>
@@ -145,7 +147,6 @@
           <div class="field"><label class="label help-label" data-help="wall" tabindex="0" for="wall" aria-describedby="help-wall">Wall clock (min)</label><input id="wall" type="number" min="1" max="180" value="30" aria-describedby="help-wall"></div>
           <div class="field"><label class="label help-label" data-help="memory" tabindex="0" for="memory" aria-describedby="help-memory">Memory</label><select id="memory" aria-describedby="help-memory"><option value="stateless">stateless: fresh call per round</option><option value="resume">resume: re-send the thread</option></select></div>
           <div class="field field-check"><label class="label help-label" data-help="unattended" tabindex="0" for="unattended" aria-describedby="help-unattended">Unattended</label><label class="check"><input id="unattended" type="checkbox" aria-describedby="help-unattended"><span class="switch" aria-hidden="true"></span><span class="switch-text" data-off="off" data-on="armed"></span></label></div>
-          <div class="field field-check" id="isolation-field" hidden><label class="label help-label" data-help="isolation" tabindex="0" for="limited-isolation" aria-describedby="help-isolation">Limited isolation</label><label class="check"><input id="limited-isolation" type="checkbox" aria-describedby="help-isolation"><span class="switch" aria-hidden="true"></span><span class="switch-text" data-off="off" data-on="allowed"></span></label></div>
         </div>
       </section>
       <details class="panel" id="projection-panel">

@@ -139,7 +139,7 @@ const S = {
   verdict: null, status: 'idle', startedAt: null, stopReason: null, pending: new Set(), quota: {}, calib: {}, pools: {}, chairman: null, configuredChairman: null,
   conn: {}, // seat id -> connection state (idle, thinking, replied, reprompted, failed, timed-out), from seat-state events
   positions: [], // per round: seat id -> agreed | disagreed | neutral | passed | null, from round-done
-  folded: new Set(), // reply keys folded to their seat and stance by a click on the card head
+  opened: new Set(), // reply keys opened by a click on the card head; every reply starts folded to its seat and stance
   // Folds the person set by hand, so a redraw on the next event keeps them: roundOpen by round
   // index (unset: the latest round is open), openDetails by reply key and details class.
   roundOpen: {}, openDetails: new Set(),
@@ -221,7 +221,6 @@ async function setup() {
   }
   if (['stateless', 'resume'].includes(settings.options?.memory)) $('memory').value = settings.options.memory;
   $('unattended').checked = settings.options?.unattended === true;
-  $('limited-isolation').checked = settings.options?.allowLimitedIsolation === true;
   const research = settings.options?.research;
   $('research-query').value = research?.query || '';
   $('research-searches').value = research?.maxSearches || 4;
@@ -468,6 +467,7 @@ function seatRow(s, i) {
       <label class="f"><span class="label">Key var</span><input class="flat keyenv" aria-label="Key environment variable" value="${esc(s.keyEnv || '')}" placeholder="none (local server)" title="The NAME of the environment variable that holds the key, set in the shell roundtable was started from. Never the key itself."></label>` : ''}
       <div class="f"><span class="label help-label" data-help="effort" tabindex="0" aria-describedby="help-effort">Effort</span><span class="pips ${hidden ? 'locked' : ''}">${pipsHtml(s.vendor, s.effort, s.model)}</span><select class="effort" hidden>${effortOptions(s.vendor, s.effort)}</select></div>
       <span class="seat-note lamp-note ${lamp.cls === 'danger' || lamp.cls === 'warn' ? lamp.cls : ''}">${esc(lamp.note)}</span>
+      ${isoNote(s.vendor)}
       ${api ? '' : `<details class="seat-more"><summary>Login profile${s.account ? `: ${esc(s.account)}` : ''}</summary><input class="flat account" aria-label="Login profile" value="${esc(s.account || '')}" placeholder="none: your usual login" title="A second login of this CLI, for example a work subscription; node src/doctor.js shows how to log a profile in"></details>`}
     </div>
   </article>`;
@@ -559,9 +559,17 @@ function renderChair() {
   $('chairman-model').hidden = !picker.other;
   $('chairman-model').placeholder = api ? 'model id (required)' : 'model id';
   $('chair-pips').innerHTML = pipsHtml(v, $('chairman-effort').value, $('chairman-model').value.trim());
+  $('chair-iso').innerHTML = isoNote(v);
   updateLamps();
   restoreFocus();
 }
+
+// Antigravity cannot be sealed off (config.js limitedIsolation). The card that runs on it says so,
+// its tip explains, and choosing it there is the consent the board sends (isolationAccepted).
+// An agent request has no card, so it must send options.allowLimitedIsolation itself.
+const isoNote = (vendor) => (VENDOR_META[vendor]?.limitedIsolation
+  ? '<span class="seat-note warn iso-note help-label" data-help="isolation" tabindex="0" aria-describedby="help-isolation">Limited isolation: your Antigravity customizations and MCP servers still load</span>' : '');
+const isolationAccepted = () => [...draftSeats(), draftChairman(), searcherOn() ? draftSearcher() : null].some((s) => VENDOR_META[s?.vendor]?.limitedIsolation);
 
 // ---------- the searcher ----------
 // Not a seat: one call before round 0 that gathers cited sources from its query alone. A card
@@ -599,6 +607,7 @@ function renderSearcher() {
   $('searcher-pips').innerHTML = pipsHtml(v, $('searcher-effort').value, $('searcher-model').value.trim());
   const lamp = poolLamp(v, searcherAccount());
   $('searcher-lamp').className = `lamp ${lamp.cls}`; $('searcher-lamp').title = lamp.note;
+  $('searcher-iso').innerHTML = isoNote(v);
   restoreFocus();
 }
 
@@ -791,8 +800,6 @@ function renderProjection() {
   const researcher = draftSearcher();
   const label = (id) => (id === 'chairman' ? 'chairman' : id === 'research' ? 'searcher' : `${seats[Number(id.slice(5))]?.lens || id}`);
   const colourOf = (id) => (id === 'chairman' ? vendorColour(chairman.vendor) : id === 'research' ? vendorColour(researcher.vendor) : seats[Number(id.slice(5))]?.colour || 'ink');
-  // the consent switch appears only while a seat, the chairman or the searcher runs on a vendor that needs it
-  $('isolation-field').hidden = ![...seats, chairman, searcherOn() ? researcher : null].some((s) => VENDOR_META[s?.vendor]?.limitedIsolation);
   $('projection').innerHTML = Object.values(p.byVendor).map((v) => {
     // the vendor's seats all on one account: that account's pool; mixed: the default one
     const keys = new Set(v.seats.map((id) => seatPool(id === 'chairman' ? chairman : id === 'research' ? researcher : seats[Number(id.slice(5))])));
@@ -862,7 +869,7 @@ async function start() {
   const body = {
     fieldNotes, seats: draftSeats(),
     chairman: draftChairman(),
-    options: { critiqueRounds: Number($('critique-rounds').value), autoContinueMs: Number($('auto').value) * 1000, wallClockMs: Number($('wall').value) * 60000, memory: $('memory').value, unattended: $('unattended').checked, allowLimitedIsolation: $('limited-isolation').checked, budget: budgetBody(),
+    options: { critiqueRounds: Number($('critique-rounds').value), autoContinueMs: Number($('auto').value) * 1000, wallClockMs: Number($('wall').value) * 60000, memory: $('memory').value, unattended: $('unattended').checked, allowLimitedIsolation: isolationAccepted(), budget: budgetBody(),
       ...(searcherOn() ? { research: { vendor: $('searcher-vendor').value, query: $('research-query').value.trim(), maxSearches: Number($('research-searches').value), timeoutMs: Number($('research-time').value) * 1000,
         model: $('searcher-model').value.trim(), effort: $('searcher-effort').value, account: searcherAccount() } } : {}) },
   };
@@ -1038,7 +1045,7 @@ function openBoard(slug) {
 
 function resetBoard({ clearDrafts = false } = {}) {
   replyReveals.clear();
-  Object.assign(S, { seats: [], fieldNotes: null, rows: [], rounds: [], folded: new Set(), roundOpen: {}, openDetails: new Set(), humanNotes: [], initialNotes: [], gate: null, deadline: null, held: false, verdict: null, status: 'idle', startedAt: null, stopReason: null, pending: new Set(), chairman: null, configuredChairman: null, interrupted: null, stopQueued: false, finishQueued: false, error: null, conn: {}, positions: [], accepted: null, synthesis: null, down: {},
+  Object.assign(S, { seats: [], fieldNotes: null, rows: [], rounds: [], opened: new Set(), roundOpen: {}, openDetails: new Set(), humanNotes: [], initialNotes: [], gate: null, deadline: null, held: false, verdict: null, status: 'idle', startedAt: null, stopReason: null, pending: new Set(), chairman: null, configuredChairman: null, interrupted: null, stopQueued: false, finishQueued: false, error: null, conn: {}, positions: [], accepted: null, synthesis: null, down: {},
     budgetStop: null, exported: null, exportError: null, replayed: false, connected: null, chairmanFallback: null, transcriptWarning: null, unattended: false, research: null,
     actionPending: null, actionError: null, holdPending: false, synthChoice: null, stopContext: null, reviewDeadline: null }); // hash routing reuses S: nothing from the last board
   if (clearDrafts || !S.questionDrafts) S.questionDrafts = {};
@@ -1142,7 +1149,7 @@ function card(r, position = null, provisional = false) {
   // the dot is the live connection state in the current round, the recorded one in older rounds
   const current = r.round === S.rounds.length - 1;
   const conn = cancelled ? 'cancelled' : current ? (S.conn[seat.id] || r.state) : (r.state || (r.failed ? 'failed' : 'replied'));
-  return `<article class="card ${S.folded.has(replyKey(r)) ? 'folded' : ''}" data-key="${esc(replyKey(r))}" style="--seat: var(--seat-${esc(seat.colour)})" data-position="${esc(position || 'none')}" title="${esc(position ? POSITION_LABEL[position] + (provisional ? ' so far' : '') : '')}">
+  return `<article class="card ${S.opened.has(replyKey(r)) ? '' : 'folded'}" data-key="${esc(replyKey(r))}" style="--seat: var(--seat-${esc(seat.colour)})" data-position="${esc(position || 'none')}" title="${esc(position ? POSITION_LABEL[position] + (provisional ? ' so far' : '') : '')}">
     <div class="card-head"><span class="vendor" title="${esc(meta)}">${esc(seatName(seat))}</span><span class="lens">${esc(seat.lens)}</span>${led(conn)}${seat.mood?.hidden ? `<span class="avatar card-avatar">${avatar(seat.mood.hidden, HIDDEN_MOODS.find((h) => h.art === seat.mood.hidden)?.sprite)}</span>` : seat.mood?.preset && seat.mood.preset !== 'grill' ? `<span class="muted" title="${esc(MOOD_HELP[seat.mood.preset] || '')}">${esc(seat.mood.preset)}</span>` : ''}<span class="flags">${flags.join('')}</span></div>
     <div class="reply-text" data-reveal="${esc(replyKey(r))}">${body}</div>
   </article>`;
@@ -1692,7 +1699,7 @@ $('rounds').addEventListener('click', (ev) => {
   const card = ev.target.closest('.card-head, .seat-stance')?.closest('.card[data-key]');
   if (!card) return;
   const key = card.dataset.key;
-  if (S.folded.has(key)) S.folded.delete(key); else S.folded.add(key);
+  if (S.opened.has(key)) S.opened.delete(key); else S.opened.add(key);
   render();
 });
 

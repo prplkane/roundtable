@@ -66,13 +66,13 @@ A browser opens. Sign in with the ChatGPT account that holds your subscription.
 
 ### Antigravity (Google)
 
-Antigravity as a seat, the chairman or the searcher requires **Limited isolation** in the
-review settings, a switch that appears once Antigravity is chosen
-(`options.allowLimitedIsolation: true` in an agent request; also in `roundtable agent --help`).
 Antigravity cannot be fully sealed off: it still loads your shared Antigravity customizations
 and discovers your MCP servers, and its web search cannot be switched off. Roundtable denies
 its file, command, URL and MCP tools and stops the call, without a retry, at the first tool it
-reports. Use another provider if that is unsuitable. Claude and Codex require their isolation flags to be supported;
+reports. A seat, chairman or searcher card set to Antigravity says **Limited isolation** with
+this explanation as its tip; choosing Antigravity there accepts it. An agent request must send
+`options.allowLimitedIsolation: true` (also in `roundtable agent --help`), or the server
+refuses Antigravity. Use another provider if that is unsuitable. Claude and Codex require their isolation flags to be supported;
 an older CLI fails with an update instruction instead of a weaker fallback.
 Invalid, incomplete or oversized provider streams also stop that seat for the review;
 reported spending is retained, and the failed session is not reused.
@@ -315,8 +315,9 @@ animation nor the sounds.
    always waits for you. This is the best moment to step in: correct a wrong assumption, add a
    fact, answer a seat's question. Type in the bar at the bottom and press **Continue**, or just
    press Continue.
-   Click a card's head to fold it to its seat and stance, and again to read the reply. The round in
-   progress opens by itself; a fold you make stays until the review changes.
+   Each reply card starts folded to its seat and position, including in the round still coming
+   in; click its head to read the reply, and again to fold it. A card you open stays open until
+   the review changes.
 2. **Critique rounds.** Each seat sees the others' replies under their lens names and argues.
    Between rounds the countdown runs; type to hold it.
 3. **Questions for you.** Answer in one area above the replies. Identical questions share a field
@@ -564,7 +565,8 @@ searcher, or one moved to another vendor, starts on that vendor's lightest model
 effort, since finding and quoting sources needs little reasoning. Each CLI searches with every
 other tool kept off: Codex turns on only its web search, Claude gets WebSearch as its only
 tool, and Antigravity, whose web search is always on, keeps its other tools denied. An
-Antigravity searcher needs **Limited isolation**, like an Antigravity seat. An API endpoint
+Antigravity searcher has the same limited isolation as an Antigravity seat, and its card says
+so. An API endpoint
 has no search tool and is not offered.
 This is one additional subscription call, included in the quota projection and vendor budget.
 The setup estimate also reserves 12,000 input tokens for shared evidence in each discussion

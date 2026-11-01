@@ -435,7 +435,8 @@ function prepareDebate(raw, { board = false } = {}) {
   }
   const chairman = normaliseChairman(body.chairman, { vendors: ADAPTERS, efforts: effortsByVendor() });
   if (!FAKE && !body.options.allowLimitedIsolation && [...seats, chairman, body.options.research].some((s) => s && ADAPTERS[s.vendor]?.limitedIsolation)) {
-    throw Object.assign(new Error('Antigravity has limited isolation. Turn on Limited isolation in the review settings, or choose another provider.'), { status: 400 });
+    // the board sends this whenever a card it shows runs on Antigravity; an agent must send it
+    throw Object.assign(new Error('Antigravity cannot be fully isolated. Send options.allowLimitedIsolation: true once the person accepts that, or choose another provider.'), { status: 400 });
   }
   const options = { ...DEFAULTS, ...body.options };
   // the board always names the searcher's settings, even "default"; an agent may leave them out

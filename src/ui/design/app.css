@@ -364,6 +364,7 @@ details.panel:not([open]) > .panel-title { border-bottom: 0; }
 .f { display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: center; gap: var(--space-2); min-height: 26px; }
 .seat-note { font: var(--text-xs) var(--font-mono); color: var(--color-text-muted); }
 .seat-note.danger { color: var(--color-danger); } .seat-note.warn { color: var(--color-warn); }
+.iso-note { min-height: 0; } /* a card on Antigravity: the limitation, its explanation as the tip */
 /* flat controls */
 .seat-card .flat { width: 100%; padding: 2px var(--space-1); font-size: var(--text-sm); color: var(--color-text); background: transparent; border: var(--border-width) solid transparent; border-bottom: var(--border-width) dashed var(--color-border-strong); border-radius: var(--radius-sm); }
 .seat-card .flat:hover { border-color: var(--color-border-strong); }

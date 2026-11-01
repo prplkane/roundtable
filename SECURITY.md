@@ -132,7 +132,9 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   URL and MCP tools. Its web search has no permission rule and cannot be denied, so the guard
   below stops a seat at its first reported tool step, search included. Its shared
   customizations and MCP discovery cannot be disabled either, so live
-  Antigravity calls require explicit `allowLimitedIsolation: true` consent. No saved provider
+  Antigravity calls require explicit consent: on the board, choosing Antigravity on a card that
+  states the limitation; in an agent request, `allowLimitedIsolation: true`. The server refuses
+  Antigravity without it. No saved provider
   settings are changed. All prompts use stdin, not the process command line.
   The mandatory guard terminates an owned CLI when a prohibited tool event is reported,
   stops that seat for the review, retains known or unknown spending and excludes its answer

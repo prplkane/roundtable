@@ -24,7 +24,8 @@
 - Box only the main controls. Row Delete appears on hover or focus (always on touch), Show all
   and Clear finished are quiet text at the foot of the debates list, the review state and CLI
   seats are unboxed, recommended states take their colour, and partial token sums show "+".
-- Fewer controls in the header: Compact is gone and each card folds by a click on its head;
+- Fewer controls in the header: Compact is gone; each reply card starts folded to its seat and
+  position, even in the round that is still coming in, and opens by a click on its head;
   theme and sound are pixel icons; Save error log moved to the status line. The debates list
   folds and the browser remembers it.
 - Lead the board with the question as its heading and the review state as a small tag beside
@@ -41,16 +42,17 @@
   Antigravity on its card; it starts on that vendor's lightest model at low effort, and agent
   requests may set all four in `options.research` (Codex when no vendor is named). Claude
   searches with WebSearch as its only tool, and its own search count and search-model tokens
-  are included; Antigravity needs Limited isolation, and any tool but its web search stops it. It
+  are included; on Antigravity any tool but its web search stops it. It
   replaces the research panel and its switch, and is named on the board, in Usage details and in
   the quota picture. While it works the review state reads "Searcher at work" and the sources
   panel shows its eye moving down a column of results, lighting the ones it keeps; with reduced
   motion the picture stays still. Its card title and Effort carry a help tip, the README's
   "How a review works" names it as an optional step, and the chairman's Effort has the tip too.
-- Show the Antigravity consent as a Limited isolation switch in the run settings, styled like
-  Unattended, with its explanation in the label's help; it appears only while a seat, the
-  chairman or the searcher runs on Antigravity. The help says in three sentences what cannot be
-  sealed off, what Roundtable denies and stops, and when the switch is needed.
+- Show Antigravity's limited isolation on the card that runs on it, seat, chairman or searcher:
+  one warning line whose tip says in three sentences what cannot be sealed off, what Roundtable
+  denies and stops, and that choosing Antigravity accepts it. Choosing it there is the consent
+  the board sends, so there is no separate switch and no refusal when the table opens. Agent
+  requests still send `allowLimitedIsolation: true`; without it the server refuses Antigravity.
 - Fix a stray brace in the stylesheet that dropped the quota readout grid, and debate titles
   squeezed to one letter at medium widths.
 
