@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Review fixes
+
+- Keep successful research when the searcher repeats a source URL. Repeated URLs become one
+  citation, with distinct excerpts combined when they fit the existing limit. Every record
+  still passes URL, date and length checks; no extra model call is made to repair duplicates.
+
 ### Local operation and interface
 
 - Stream Codex replies over SSE with an idle limit that fits inside the call limit and two

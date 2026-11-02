@@ -178,7 +178,11 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   its event arrives. This is not a provider-enforced search or billing ceiling. Research
   spending joins the review's vendor budget and is shown separately from discussion seats.
   Up to eight source URLs, dates and excerpts are saved as provider-supplied, unverified data;
-  every seat and the chairman receives that same bundle. Source text cannot authorize tools
+  all returned records are validated before repeated normalized URLs are combined into one
+  citation. The first title/date are retained and distinct excerpts are appended only when
+  their complete combined text fits the 1,200-character limit. The raw eight-record limit
+  still applies; malformed duplicates cannot bypass validation. No repair call is made.
+  Every seat and the chairman receives that same bundle. Source text cannot authorize tools
   or human decisions. Failed or interrupted research stops before discussion and is never
   automatically rerun; completed evidence is reused without fetching it again. Ordinary
   discussion and verdict calls always retain the no-tools policy.

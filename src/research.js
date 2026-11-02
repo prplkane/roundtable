@@ -45,6 +45,7 @@ export function researchPrompt(settings) {
     'Return ONLY JSON: {"sources":[{"url":"https://...","title":"...","excerpt":"...","publishedAt":"YYYY-MM-DD or null"}]}.',
     'Include 1–8 distinct source URLs actually used, a short supporting excerpt of at most 1200 characters each,',
     'and the publication date only if the source states it (otherwise null). Do not invent quotations, dates or links.',
+    'Use one entry per URL: combine facts from the same page in its excerpt instead of repeating the URL.',
     'If no usable sources were found, return {"sources":[]} so the review stops.',
     JSON.stringify({ kind: 'search_question', text: settings.query }),
   ].join('\n');
@@ -58,18 +59,26 @@ export function researchSources(raw, gatheredAt = new Date().toISOString()) {
   let data;
   try { data = JSON.parse(fenced ? fenced[1] : raw); } catch { fail('the provider did not return the source JSON.'); }
   if (!Array.isArray(data?.sources) || data.sources.length < 1 || data.sources.length > 8) fail('expected 1–8 sources.');
-  const seen = new Set();
-  return data.sources.map((s, i) => {
+  const seen = new Map();
+  for (const s of data.sources) {
     const url = text(s?.url, 2000, 'source URL');
     let parsed;
     try { parsed = new URL(url); } catch { fail('invalid source URL.'); }
     if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) fail('source URLs must be HTTP(S), without credentials.');
-    if (seen.has(parsed.href)) fail('source URLs must be distinct.');
-    seen.add(parsed.href);
     const publishedAt = s.publishedAt == null ? null : text(s.publishedAt, 10, 'publication date');
     if (publishedAt && (!/^\d{4}-\d{2}-\d{2}$/.test(publishedAt) || !Number.isFinite(Date.parse(publishedAt)) || new Date(publishedAt).toISOString().slice(0, 10) !== publishedAt)) fail('invalid publication date.');
-    return { id: `S${i + 1}`, url: parsed.href, title: text(s.title, 200, 'source title'), excerpt: text(s.excerpt, 1200, 'source excerpt'), publishedAt, gatheredAt };
-  });
+    // Validate every record before deduplicating: an invalid duplicate must not bypass checks.
+    const source = { id: `S${seen.size + 1}`, url: parsed.href, title: text(s.title, 200, 'source title'), excerpt: text(s.excerpt, 1200, 'source excerpt'), publishedAt, gatheredAt };
+    const prior = seen.get(source.url);
+    if (!prior) seen.set(source.url, source);
+    else {
+      // Models sometimes cite one page for several facts. Keep its first metadata and append
+      // new evidence only when the complete excerpt fits; never truncate or fabricate a quote.
+      const combined = `${prior.excerpt}\n\n${source.excerpt}`;
+      if (!prior.excerpt.includes(source.excerpt) && combined.length <= 1200) prior.excerpt = combined;
+    }
+  }
+  return [...seen.values()];
 }
 
 // Counts the searches one call reports, each operation ID once (a CLI can repeat one across

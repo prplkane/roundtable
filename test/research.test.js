@@ -116,7 +116,8 @@ test('source records validate URLs, dates and bounds while keeping excerpts as q
   for (const s of [{ ...sources[0], url: 'javascript:alert(1)' }, { ...sources[0], url: 'https://user:secret@example.com/' },
     { ...sources[0], publishedAt: '2026-02-30' }, { ...sources[0], excerpt: 'x'.repeat(1201) }])
     assert.throws(() => researchSources(JSON.stringify({ sources: [s] })), /Research/);
-  for (const raw of ['not JSON', '{"sources":[]}', JSON.stringify({ sources: [sources[0], sources[0]] })]) assert.throws(() => researchSources(raw), /Research/);
+  for (const raw of ['not JSON', '{"sources":[]}']) assert.throws(() => researchSources(raw), /Research/);
+  assert.deepEqual(researchSources(JSON.stringify({ sources: [sources[0], sources[0]] }), good[0].gatheredAt), good);
   // one fenced block, as Claude answers, is the JSON; anything around the fence is not
   assert.equal(researchSources('```json\n' + JSON.stringify({ sources }, null, 2) + '\n```\n')[0].url, sources[0].url);
   for (const raw of ['Here you go:\n```json\n' + sourceText + '\n```', '```json\n' + sourceText + '\n```\nDone.', '```json\n' + sourceText + '\n```\n```json\n{}\n```'])
@@ -127,6 +128,48 @@ test('source records validate URLs, dates and bounds while keeping excerpts as q
   assert.equal(observer.accept({ type: 'item.started', item: { id: 'tool', type: 'command_execution' } }), false);
   observer.report(0); assert.equal(observer.searches, 1, 'a CLI count only raises the figure');
   observer.report(2); assert.equal(observer.searches, 2);
+});
+
+test('repeated source URLs keep one citation and combine bounded evidence without losing distinct URLs', () => {
+  const first = { ...sources[0], url: 'https://EXAMPLE.com:443/evidence', excerpt: 'The pilot reduces rollout risk.' };
+  const duplicate = { ...sources[0], title: 'Another title for the same page', excerpt: 'The pilot also delays full adoption.', publishedAt: null };
+  const other = { ...sources[0], url: 'https://example.com/evidence?edition=2' };
+  const fragment = { ...sources[0], url: 'https://example.com/evidence#limitations' };
+  const result = researchSources(JSON.stringify({ sources: [first, duplicate, duplicate, other, fragment] }));
+  assert.deepEqual(result.map(s => s.id), ['S1', 'S2', 'S3']);
+  assert.deepEqual(result.map(s => s.url), [sources[0].url, other.url, fragment.url]);
+  assert.equal(result[0].title, first.title);
+  assert.equal(result[0].publishedAt, first.publishedAt);
+  assert.equal(result[0].excerpt, first.excerpt + '\n\n' + duplicate.excerpt);
+  assert.deepEqual(researchSources(JSON.stringify({ sources: result }), result[0].gatheredAt), result, 'saved bundles stay stable on reload');
+
+  const full = { ...first, excerpt: 'x'.repeat(1200) };
+  const bounded = researchSources(JSON.stringify({ sources: [full, duplicate] }));
+  assert.equal(bounded[0].excerpt, full.excerpt, 'keep the first complete excerpt when another will not fit');
+  for (const invalid of [{ ...duplicate, title: '' }, { ...duplicate, excerpt: 'x'.repeat(1201) }, { ...duplicate, publishedAt: '2026-02-30' }])
+    assert.throws(() => researchSources(JSON.stringify({ sources: [first, invalid] })), /Research/, 'duplicates must still pass every field check');
+  assert.throws(() => researchSources(JSON.stringify({ sources: Array(9).fill(first) })), /expected 1–8 sources/, 'the raw record limit still applies');
+});
+
+test('duplicate citations from either searcher reach discussion, verdict and replay without another search', async () => {
+  for (const vendor of ['agy', 'codex']) {
+    const rows = [], calls = [], base = scripted(calls);
+    const duplicateText = JSON.stringify({ sources: [sources[0], { ...sources[0], excerpt: 'A wider rollout reveals different risks.' }] });
+    const state = await createDebate({ fieldNotes, seats, chairman: { vendor: 'claude' },
+      options: { research: { ...settings, vendor }, critiqueRounds: 0, unattended: true, allowLimitedIsolation: true },
+      store: { append: r => rows.push(r) }, runner: async (...args) => {
+        const result = await base(...args);
+        return args[3].research ? { ...result, text: duplicateText } : result;
+      } }).run();
+    assert.equal(state.research.status, 'done');
+    assert.equal(state.research.sources.length, 1);
+    assert.equal(calls.filter(c => c.opts.research).length, 1);
+    assert.equal(calls.length, 4, 'one search, two seats and one chairman; no repair call');
+    for (const c of calls.filter(c => !c.opts.research)) assert.match(c.prompt, /A wider rollout reveals different risks/);
+    assert.deepEqual(rebuildDebate(rows).research.sources, state.research.sources);
+    assert.deepEqual(snapshot(state).research.sources, state.research.sources);
+    assert.match(decisionRecord(rows, 'synthetic-research').markdown, /A wider rollout reveals different risks/);
+  }
 });
 
 test('research CLI permits only reported web searches, enforces the count and keeps debate tools disabled', async () => {

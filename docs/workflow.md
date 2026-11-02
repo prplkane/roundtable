@@ -614,6 +614,13 @@ bundle, with tools disabled during discussion. The source panel, agent state, fi
 file and Markdown export include it. Its spending appears as the **searcher** row in Usage
 details and a **searcher** segment in the quota picture.
 
+If the searcher repeats a URL, Roundtable keeps one citation in first-seen order. The first
+title and publication date are kept; distinct excerpts are appended only when the complete
+combined text fits 1,200 characters. All entries must still pass validation, including
+duplicates, and the response must contain at most eight entries before deduplication.
+Different query strings and fragments remain distinct URLs. This cleanup is local and makes
+no extra model call; repeated sources do not discard an otherwise usable search result.
+
 Research failure or interruption ends the review before discussion. Check the details and
 provider usage before explicitly starting a new review. Resume never repeats unfinished
 research; completed bundles are reused without refetching pages.
