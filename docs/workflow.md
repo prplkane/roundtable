@@ -89,6 +89,18 @@ agy install
 Run `agy --version` to check that the command is available. Roundtable uses `agy` for the
 Google seat.
 
+Roundtable reads Antigravity's remaining quota with `agy -p /usage`, which the CLI answers
+itself, with no model call and no conversation (agy 1.1.11 or later). It reads when the server
+starts, on **Refresh status**, after each Antigravity reply and when a debate ends. A read that
+gives no answer within 30 seconds counts as a timeout. The limits come per model group (Gemini;
+Claude and GPT; Gemini 4 Argon on some plans), each with a weekly window and usually a 5-hour
+one, and a seat counts only the group its model draws on. A seat on the default model counts
+every group. If an answer ever shows a turn, tokens or a conversation, or the read times out,
+Roundtable stops reading Antigravity quota until the server restarts and says so on the console.
+The same groups decide who sits out when a call reports a used-up quota during a debate: only
+the seats whose model draws on that group are skipped, and the others keep answering. A seat
+on the default model, or a CLI that is logged out, takes the whole Antigravity login out.
+
 ### Check what this machine can seat
 
 ```bash
@@ -294,8 +306,10 @@ custom text.
 The **Quota picture** under the seats starts folded; its title lists each account's projected
 tokens. Open it for one card per vendor account: what each seat is likely to draw in this
 debate as one bar segment per seat (seats of one vendor in steps of its colour, the chairman
-hatched), the vendor's live windows where it reports them, and an optional cap. Antigravity
-reports no remaining credits, so you can track the figure from its credits page in its card.
+hatched), the vendor's live windows where it reports them, and an optional cap. Antigravity's
+windows are named by group ("Gemini 5h", "Claude and GPT 7d"), and its card shows the groups its
+seats' models draw on. When it reports no window, you can track the figure from its credits
+page in its card.
 
 On the running board, usage starts collapsed. Each account shows its lowest reported percentage
 remaining and a small bar, with the window and reading age. Missing figures say **not reported**.
@@ -842,7 +856,7 @@ there is no current snapshot. Refresh with an authenticated JSON `POST /api/pref
 | `doctor` says a CLI is not found | Install it (step 2) or fix your PATH; for `agy`, run `agy install`. |
 | An API seat's lamp is red: "… is not set in the environment" | Set that variable in the shell you start roundtable from (`set DEEPSEEK_API_KEY=…` on Windows, `export …` elsewhere) and start it again. The board cannot read it for you. |
 | An API seat shows "could not reach" or an HTTP status | Nothing listens at that URL (start the local server, check the port and the `/v1` suffix), or the endpoint refused the call (`401` a wrong key, `402` no credit, `429` a quota or a rate limit that one short wait did not lift, `404` a model id the server does not know). The seat's card quotes the server's own words. |
-| A red "out" banner on the board | A vendor ran out of quota or lost its login mid-debate. Its seats are skipped from then on (no call, no tokens). If fewer than two seats are left, the debate stops and the chairman writes from what was said. |
+| A red "out" banner on the board | A vendor ran out of quota or lost its login mid-debate. Its seats are skipped from then on (no call, no tokens). For Antigravity the banner can name one model group ("Antigravity · Gemini 4 Argon out"): only seats on that group's models are skipped. If fewer than two seats are left, the debate stops and the chairman writes from what was said. |
 | A seat shows "no reply" in red | Its call failed this round; the card gives a next step, with the CLI's own words under "details". Network failures may retry once if the budget and time limit allow it. The others carry on. |
 | The verdict failed, or was not written | **Write the verdict with** a vendor of your choice, under the bar. If the chairman's vendor ran out, another one is preselected. |
 | "reconnecting" banner | The board lost the server. The debate keeps running there; the board catches up when the connection is back. The banner clears even while waiting for input with no new events. |
@@ -850,7 +864,7 @@ there is no current snapshot. Refresh with an authenticated JSON `POST /api/pref
 | A seat is "reconnected ×1" | Its provider connection went silent for the idle limit and the CLI started the answer again. The reply is complete; the interrupted attempt may have been charged without appearing in usage. Repeated marks on one vendor point at the provider, not at the seat. |
 | "address already in use" | Another server is on that port. Stop it, or start with a different `PORT`. |
 | The board says the debate is unknown | The server was restarted. Reopen the address; the board replays from disk and offers Resume. |
-| A vendor's remaining quota shows nothing | Antigravity never reports it; type the figure from its credits page. Codex shows only a weekly window on some plans. |
+| A vendor's remaining quota shows nothing | Antigravity's read needs agy 1.1.11 or later and a sign-in; check `agy -p /usage` in a plain terminal (not a shell opened by another agent CLI: with Claude Code's variables in the environment, agy sends the text to a model instead of answering it), or type the figure from its credits page. If the console says Antigravity quota reads are off, restart the server once the CLI answers `/usage` without a turn again. Codex shows only a weekly window on some plans. |
 
 ## Where things live
 

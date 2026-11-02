@@ -4,6 +4,7 @@
 // Baselines come from this machine's own transcripts (tokens per call, fresh round-0 calls and
 // resumed later calls separately). Effort multipliers are guesses until measured deltas replace
 // them; they live here and nowhere else.
+import { quotaGroup } from './adapters/models.js';
 
 export const EFFORT_MULTIPLIER = { low: 0.7, medium: 1, high: 1.4, xhigh: 1.8, ultra: 2.2, max: 2.6 };
 
@@ -163,6 +164,22 @@ export function windowDeltas(prev, next) {
     const delta = w.used - p.used;
     return { label: w.label, delta, valid: sameWindow && delta >= 0 };
   });
+}
+
+// What one round of one pool can measure: its window deltas and the calibration keys they feed,
+// the pool's and, when the round ran one model, `pool:model`. models: the Set of models it ran.
+// A quota in groups (agy) moves only the windows of the group a model draws on, and the other
+// groups standing still says nothing about these tokens. So only a one-model round is measured
+// there, only on that model's group, and only under the model's key: a pool-wide rate would be
+// projected onto every group.
+export function roundDeltas(prev, next, pool, models) {
+  const deltas = windowDeltas(prev, next);
+  const model = models?.size === 1 ? [...models][0] : null;
+  if (!next?.groups?.length) return { deltas, keys: model ? [pool, `${pool}:${model}`] : [pool] };
+  const group = model && quotaGroup(next.groups, model);
+  if (!group) return { deltas: [], keys: [] };
+  const own = new Set(next.windows.filter((w) => w.group === group).map((w) => w.label));
+  return { deltas: deltas.filter((d) => own.has(d.label)), keys: [`${pool}:${model}`] };
 }
 
 // Vendors report window usage in whole percentage points and, at least for Claude, with a lag:

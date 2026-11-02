@@ -57,13 +57,17 @@ const EMPTY_USAGE = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, thinking
 // provenance: extra fields for the head row ({ fake: true } from a server with scripted seats).
 // cancel(reason): stop this review's calls on Stop or when its wall clock runs out.
 // synthesisOnly: with resume, skip the rounds and write the verdict (POST .../synthesize).
-export function createDebate({ fieldNotes, seats, chairman, options = {}, runner, gate, store, emit = () => {}, now = Date.now, resume = null, baselines = {}, provenance = {}, cancel = () => {}, synthesisOnly = false }) {
+// limitGroup(seat): for a login whose limits differ by model group (agy), the group the seat's
+// model draws on, from the server's quota read; null for one set of limits or an unknown group.
+export function createDebate({ fieldNotes, seats, chairman, options = {}, runner, gate, store, emit = () => {}, now = Date.now, resume = null, baselines = {}, provenance = {}, cancel = () => {}, synthesisOnly = false, limitGroup = () => null }) {
   const opts = { ...DEFAULTS, ...options, strictTools: true };
   if (opts.research) opts.research = researchSettings(opts.research);
   const maxRound = opts.critiqueRounds;
   const state = {
     status: 'idle', round: -1, rounds: [], humanNotes: [], initialNotes: [...(resume?.initialNotes || [])], stopReason: null, verdict: null,
-    down: {}, // vendor@account -> { kind, message, resetsAt }: a login that cannot take calls this debate
+    // vendor@account, or vendor@account#group -> { kind, message, resetsAt, group? }: a login, or
+    // one limit group of it, that cannot take calls this debate
+    down: {},
     seats: seats.map((s, i) => {
       const seat = { ...s, id: s.id || `seat-${i}`, index: i, sessionId: null, mood: s.mood || { preset: 'grill' } };
       // Recorded provider threads can have advanced beyond the saved review, even without a
@@ -161,11 +165,19 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
   // provider announced as short, lifting at resetsAt) when the limit lifts before the wall clock
   // runs out. A throttled call not waited out is a quota failure. Anything else fails the seat
   // for the round.
-  const downKey = (seat) => `${seat.vendor}@${seat.account || ''}`;
+  // Where a login's limits come per model group (agy), a used-up quota takes out only the group
+  // the failing seat's model draws on; the other groups still answer. A quota failure whose group
+  // cannot be told, and a missing login, still take out the whole login.
+  const loginKey = (seat) => `${seat.vendor}@${seat.account || ''}`;
+  const downOf = (seat) => {
+    const group = limitGroup(seat);
+    return state.down[loginKey(seat)] || (group && state.down[`${loginKey(seat)}#${group}`]) || null;
+  };
   function markDown(seat, res) {
-    const key = downKey(seat);
+    const group = res.kind === 'quota' ? limitGroup(seat) : null;
+    const key = group ? `${loginKey(seat)}#${group}` : loginKey(seat);
     if (state.down[key]) return;
-    state.down[key] = { vendor: seat.vendor, account: seat.account || null, kind: res.kind, message: res.error, resetsAt: res.resetsAt || null };
+    state.down[key] = { vendor: seat.vendor, account: seat.account || null, ...(group ? { group } : {}), kind: res.kind, message: res.error, resetsAt: res.resetsAt || null };
     record({ type: 'pool-down', key, ...state.down[key] });
     fire('pool-down', { key, ...state.down[key] });
   }
@@ -175,7 +187,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     let retrying = null; // what a second attempt is called: 'network retry' or 'rate-limit retry'
     for (let attemptNo = 1; ; attemptNo++) {
       // checked before a retry too: another seat may have benched this login during the pause
-      const down = state.down[downKey(seat)];
+      const down = downOf(seat);
       if (down) return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false, error: `skipped: ${down.message}`, kind: down.kind, resetsAt: down.resetsAt, skipped: true, fresh: true, attemptId: null };
       checkInterrupted();
       if (state.status === 'error') return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false, error: 'the review stopped after an error', kind: 'killed', fresh: true, attemptId: null };
@@ -403,7 +415,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     // A seat whose login is out for the whole debate (quota, login, missing CLI) has left the table:
     // waiting for it would block consensus forever and spend every remaining round. Fewer than two
     // seats left is no debate: stop and let the chairman write from what was said.
-    const out = (r) => r.failed && (state.down[downKey(r.seat)] || policyBlocked(r.seat));
+    const out = (r) => r.failed && (downOf(r.seat) || policyBlocked(r.seat));
     const replies = all.filter((r) => !out(r));
     if (replies.length < 2) return 'seats-down';
     // PASS and consensus need every remaining seat present: a seat whose call failed this round
@@ -485,7 +497,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
   // effort, once. The board is told which and why; the record keeps the fallback chairman.
   function fallbackChairman(from) {
     const tried = new Set([`${from.vendor}@${from.account || ''}`]);
-    const seat = state.seats.find((s) => !tried.has(`${s.vendor}@${s.account || ''}`) && !state.down[downKey(s)] && !policyBlocked(s) && s.vendor !== from.vendor);
+    const seat = state.seats.find((s) => !tried.has(`${s.vendor}@${s.account || ''}`) && !downOf(s) && !policyBlocked(s) && s.vendor !== from.vendor);
     return seat ? { vendor: seat.vendor, account: seat.account, colour: seat.colour, model: seat.endpoint ? seat.model : undefined, effort: undefined, ...(seat.endpoint ? { endpoint: seat.endpoint, keyEnv: seat.keyEnv } : {}) } : null;
   }
 
@@ -495,9 +507,9 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     if (finishRequested && controller.signal.aborted && !expired()) controller = new AbortController();
     writingVerdict = true;
     const seat = { id: 'chairman', vendor: chair.vendor, lens: 'chairman', colour: chair.colour || 'ink', index: -1, sessionId: null, model: chair.model, effort: chair.effort, account: chair.account, ...(chair.endpoint ? { endpoint: chair.endpoint, keyEnv: chair.keyEnv } : {}) };
-    if (state.down[downKey(seat)] && !fallenFrom) {
+    if (downOf(seat) && !fallenFrom) {
       const next = fallbackChairman(seat);
-      if (next) { record({ type: 'chairman-fallback', from: pub(seat), to: next.vendor, reason: state.down[downKey(seat)].message }); fire('chairman-fallback', { from: pub(seat), to: next.vendor, reason: state.down[downKey(seat)].message }); return verdict(next, { fallenFrom: seat }); }
+      if (next) { record({ type: 'chairman-fallback', from: pub(seat), to: next.vendor, reason: downOf(seat).message }); fire('chairman-fallback', { from: pub(seat), to: next.vendor, reason: downOf(seat).message }); return verdict(next, { fallenFrom: seat }); }
     }
     fire('chairman-start', { seat: pub(seat) });
     const prompt = chairmanPrompt({

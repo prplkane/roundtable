@@ -8,6 +8,20 @@
   citation, with distinct excerpts combined when they fit the existing limit. Every record
   still passes URL, date and length checks; no extra model call is made to repair duplicates.
 
+### Security and usage
+
+- Read Antigravity's remaining quota with `agy -p /usage`, which the CLI answers itself with no
+  model call. Its limits come per model group (Gemini; Claude and GPT; Gemini 4 Argon on some
+  plans), and the seat lamps, the quota line and the quota picture show the windows of the
+  group each seat's model draws on, with the used share and the reset time. An answer that
+  shows a turn, tokens or a conversation, or a read that times out, stops further reads until
+  the server restarts, so a CLI change can cost one call, never one per reply. Measured quota
+  rates for Antigravity are kept per model and only against that model's group.
+- Bench only the used-up Antigravity model group, not the whole login: when an Argon seat
+  reports a used-up quota, the Gemini and Claude seats on the same login keep answering. A
+  seat on the default model, whose group cannot be told, and a logged-out CLI still take the
+  whole login out, as for every other vendor.
+
 ### Local operation and interface
 
 - Stream Codex replies over SSE with an idle limit that fits inside the call limit and two

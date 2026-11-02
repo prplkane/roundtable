@@ -8,6 +8,7 @@
 //           gpt-6-luna on every plan; gpt-6-astra powers "GPT-6 Pro" on Pro and Business; retired
 //           ids below)
 //   agy     `agy models` already lists what the signed-in account can use; nothing to add here.
+//           Its quota groups (which limits a model counts against) are matched below.
 
 // Plan names as the CLIs report them (claude: `claude auth status` subscriptionType; codex: the
 // app-server's planType), ranked so "from Plus up" can be compared.
@@ -74,4 +75,36 @@ export function agyFamilies(models = []) {
   }
   const order = ['low', 'medium', 'high'];
   return [...fam.values()].map((f) => ({ ...f, levels: f.levels.sort((a, b) => order.indexOf(a) - order.indexOf(b)) }));
+}
+
+// agy's quota comes in groups, each with its own windows (quota.js agyQuota). Which group a model
+// draws on is read from the CLI's own words: every word of the group's name, or of a model the
+// group lists ("Gemini Flash", "GPT-OSS"), is in the id. The longest such name wins. A model none
+// of them names goes to the one group of its family, if there is only one: an Argon model on a
+// plan without a separate Argon group counts against the Gemini group. null: no group can be
+// told, and every window applies.
+const words = (s) => String(s || '').toLowerCase().split(/[^a-z0-9.]+/).filter(Boolean);
+export function quotaGroup(groups, model) {
+  const id = words(model);
+  if (!id.length || !Array.isArray(groups)) return null;
+  const names = (g) => [g.name, ...(g.models || [])].map(words);
+  let best = null, score = 0;
+  for (const g of groups) for (const w of names(g)) if (w.length > score && w.every((x) => id.includes(x))) { best = g.name; score = w.length; }
+  if (best) return best;
+  const family = groups.filter((g) => names(g).some((w) => w[0] === id[0]));
+  return family.length === 1 ? family[0].name : null;
+}
+
+// The windows that apply to these models: their groups' when each model's group is known, else
+// every window (a quota without groups, a default model, an id no group names).
+export function quotaWindows(quota, models = []) {
+  const windows = quota?.windows || [];
+  if (!quota?.groups?.length) return windows;
+  const groups = new Set();
+  for (const m of [].concat(models)) {
+    const g = quotaGroup(quota.groups, m);
+    if (!g) return windows;
+    groups.add(g);
+  }
+  return groups.size ? windows.filter((w) => groups.has(w.group)) : windows;
 }

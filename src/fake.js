@@ -12,8 +12,16 @@ const pick = (arr, i) => arr[i % arr.length];
 // Reset times are fixed at load so snapshots compare as the same window (a moved reset time
 // marks a rolled-over window and voids the delta; see estimate.js windowDeltas).
 const BOOT = Math.floor(Date.now() / 1000);
-let codexCalls = 0;
-export function fakeQuota(vendor, n = vendor === 'codex' ? codexCalls++ : 0) {
+let codexCalls = 0, agyCalls = 0;
+// agy's comes in groups of windows per model family, as `agy -p /usage` reports it (quota.js).
+const AGY_GROUPS = [['Gemini Models', 'Gemini', ['Gemini Flash', 'Gemini Pro'], [0.03, 0.02]], ['Claude and GPT models', 'Claude and GPT', ['Claude Opus', 'Claude Sonnet', 'GPT-OSS'], [0.01, 0]], ['Gemini 4 Argon', 'Gemini 4 Argon', [], [0.41]]];
+export function fakeQuota(vendor, n = vendor === 'codex' ? codexCalls++ : vendor === 'agy' ? agyCalls++ : 0) {
+  if (vendor === 'agy') return {
+    windows: AGY_GROUPS.flatMap(([group, tag, , used]) => used.map((u, i) => ({ label: `${tag} ${i ? '5h' : '7d'}`, used: Math.min(0.95, u + n * 0.01 * (i + 1)), resetsAt: BOOT + (i ? 4 * 3600 : 3 * 86400), group }))),
+    groups: AGY_GROUPS.map(([name, , models]) => ({ name, models })),
+    plan: null,
+    at: Date.now(),
+  };
   return {
     windows: [
       { label: '5h', used: Math.min(0.95, 0.12 + n * 0.07), resetsAt: BOOT + 3 * 3600 + 600 },

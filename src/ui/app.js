@@ -2,9 +2,9 @@ import { rollup, hasUsableRound, positions } from '/src/engine.js';
 import { optionLabel } from '/src/contract.js';
 import { poolKey, poolVendor, poolAccount, hostKey, seatKind, initialSeatVendors, nextSeatLens, fillMissingSeatLenses, seatSetupIssue, hiddenMood, lightestModel, keyEnvName, HIDDEN_MOODS } from '/src/seats.js';
 import { avatar } from '/ui/avatars.js';
-import { modelsForPlan, retired } from '/src/adapters/models.js';
+import { modelsForPlan, retired, quotaWindows, quotaGroup } from '/src/adapters/models.js';
 import { project, projectedWindows, unknownUsageMessage } from '/src/estimate.js';
-import { PREFLIGHT_TTL_MS } from '/src/preflight.js';
+import { PREFLIGHT_TTL_MS, lamp as preflightLamp } from '/src/preflight.js';
 import { createBrowserDiagnostics, requestAction } from '/ui/diagnostics.js';
 import { installHelp, revealText, MOOD_HELP } from '/ui/help.js';
 import { installCeremony } from '/ui/ceremony.js';
@@ -291,6 +291,7 @@ async function setup() {
   for (const id of ['chairman-endpoint', 'chairman-keyenv']) $(id).addEventListener('input', () => { renderChair(); requestPreflight(); });
   renderChair();
   for (const id of ['chairman-model', 'chairman-effort', 'critique-rounds', 'memory']) $(id).addEventListener('input', renderProjection);
+  for (const id of ['chairman-model', 'searcher-model']) $(id).addEventListener('input', () => updateLamps()); // agy: the lamp follows the model's quota group
   $('add-searcher').addEventListener('click', () => { setSearcher(true); $('research-query').focus(); });
   $('remove-searcher').addEventListener('click', () => { setSearcher(false); $('add-searcher').focus(); });
   // another vendor: its own lightest model and login, not the last vendor's
@@ -408,20 +409,25 @@ function pipsHtml(vendor, chosen, model = '') {
 }
 
 // The lamp: the pre-flight answer for the seat's pool when there is one (installed, logged in,
-// quota; authenticated POST /api/preflight), else what the quota alone says.
-function poolLamp(vendor, account) {
+// quota; authenticated POST /api/preflight), else what the quota alone says. model: the seat's,
+// for a quota in groups (agy), where only its group's windows count. The server's answer is for
+// the whole pool, so its quota part is redone here for this model.
+function poolLamp(vendor, account, model = '') {
   const key = poolKey(vendor, account, !!VENDOR_META[vendor]?.profiles);
   const pf = S.preflight[key];
+  const q = S.quota[key];
   if (S.preflighting) return { cls: 'idle', note: 'checking…' };
   if (pf) {
+    const own = q?.groups && pf.installed && pf.loggedIn !== false ? preflightLamp({ vendor, installed: true, loggedIn: pf.loggedIn, quota: q, account, model }) : null;
+    const at = own ? { ...pf, ...own } : pf;
     const stale = pf.stale || pf.checkedAt != null && Date.now() - pf.checkedAt >= PREFLIGHT_TTL_MS;
-    return { cls: stale && pf.state === 'ok' ? 'warn' : pf.state,
-      note: pf.note + (stale && pf.checkedAt != null ? ' · last check is old; use Refresh status' : ''), kind: pf.kind };
+    return { cls: stale && at.state === 'ok' ? 'warn' : at.state,
+      note: at.note + (stale && pf.checkedAt != null ? ' · last check is old; use Refresh status' : ''), kind: at.kind };
   }
-  const q = S.quota[key];
-  if (!q?.windows?.length) return { cls: 'idle', note: vendor === 'agy' ? 'quota not reported by this CLI' : 'not checked yet' };
-  const worst = q.windows.reduce((a, w) => (w.used > a.used ? w : a));
-  const text = q.windows.map((w) => `${w.label} ${pct(w.used)}`).join(' · ');
+  const windows = quotaWindows(q, [model]);
+  if (!windows.length) return { cls: 'idle', note: 'not checked yet' };
+  const worst = windows.reduce((a, w) => (w.used > a.used ? w : a));
+  const text = windows.map((w) => `${w.label} ${pct(w.used)}`).join(' · ');
   if (worst.used >= 1) return { cls: 'danger', note: `quota used up (${worst.label})${worst.resetsAt ? `, resets ${untilText(worst.resetsAt * 1000)}` : ''}` };
   if (worst.used >= 0.9) return { cls: 'warn', note: `quota nearly used: ${text}` };
   return { cls: 'ok', note: `ready · ${text}` };
@@ -442,7 +448,7 @@ function seatRow(s, i) {
   const api = isApi(s.vendor);
   const same = S.draft.filter((x) => x.vendor === s.vendor);
   const n = same.length > 1 ? ` ${same.indexOf(s) + 1}` : '';
-  const lamp = poolLamp(s.vendor, seatAccount(s));
+  const lamp = poolLamp(s.vendor, seatAccount(s), s.model);
   // an endpoint seat has no catalogue: the model id is typed, and the card says it is required
   const picker = api ? { html: '', other: true } : modelPicker(s.vendor, s.account, s.model || '');
   const gone = retired(s.vendor, (s.model || '').trim());
@@ -531,15 +537,15 @@ function updateLamps() {
   $('refresh-status').textContent = S.preflighting ? 'Checking…' : 'Refresh status';
   $('preflight-status').textContent = S.preflighting ? 'Checking provider status…' : S.preflightError ||
     (S.preflightCheckedAt != null ? `Last check ${new Date(S.preflightCheckedAt).toLocaleTimeString()}` : '');
-  if (searcherOn()) { const lamp = poolLamp($('searcher-vendor').value, searcherAccount()); $('searcher-lamp').className = `lamp ${lamp.cls}`; $('searcher-lamp').title = lamp.note; }
+  if (searcherOn()) { const lamp = poolLamp($('searcher-vendor').value, searcherAccount(), $('searcher-model').value.trim()); $('searcher-lamp').className = `lamp ${lamp.cls}`; $('searcher-lamp').title = lamp.note; }
   $('seats').querySelectorAll('.seat').forEach((card) => {
     const s = S.draft[Number(card.dataset.i)]; if (!s) return;
-    const l = poolLamp(s.vendor, seatAccount(s));
+    const l = poolLamp(s.vendor, seatAccount(s), s.model);
     const lampEl = card.querySelector('.lamp'); lampEl.className = `lamp ${l.cls}`; lampEl.title = l.note;
     const note = card.querySelector('.lamp-note');
     if (note) { note.textContent = l.note; note.className = `seat-note lamp-note ${l.cls === 'danger' || l.cls === 'warn' ? l.cls : ''}`; }
   });
-  const c = poolLamp($('chairman').value, chairAccount());
+  const c = poolLamp($('chairman').value, chairAccount(), $('chairman-model').value.trim());
   $('chair-lamp').className = `lamp ${c.cls}`; $('chair-lamp').title = c.note;
   $('chair-note').textContent = c.note; $('chair-note').className = `seat-note ${c.cls === 'danger' || c.cls === 'warn' ? c.cls : ''}`;
   S.startConfirm = null; $('start').disabled = !!S.startPending; $('start').textContent = S.startPending ? 'Opening…' : 'Open the table';
@@ -607,7 +613,7 @@ function renderSearcher() {
   $('searcher-model').hidden = !picker.other;
   $('searcher-model').setAttribute('list', `models-${v}`);
   $('searcher-pips').innerHTML = pipsHtml(v, $('searcher-effort').value, $('searcher-model').value.trim());
-  const lamp = poolLamp(v, searcherAccount());
+  const lamp = poolLamp(v, searcherAccount(), $('searcher-model').value.trim());
   $('searcher-lamp').className = `lamp ${lamp.cls}`; $('searcher-lamp').title = lamp.note;
   $('searcher-iso').innerHTML = isoNote(v);
   restoreFocus();
@@ -710,6 +716,7 @@ function onSeatEdit(ev) {
   if (['account', 'endpoint', 'keyenv'].some((c) => ev.target.classList.contains(c))) requestPreflight();
   if (ev.type === 'change' && ['mood', 'account', 'endpoint', 'keyenv'].some((c) => ev.target.classList.contains(c))) { renderSeats(); if (s.mood === 'custom') $('seats').querySelectorAll('.seat')[S.draft.indexOf(s)]?.querySelector('.mood-text')?.focus(); return; }
   row.querySelector('.mood-text').hidden = s.mood !== 'custom';
+  if (ev.target.classList.contains('model')) updateLamps(); // agy: the lamp follows the model's quota group
   renderProjection();
 }
 
@@ -790,6 +797,10 @@ function readouts(vendor, windows) {
 
 // key: a vendor or a pool key (seats.poolKey); a named profile shows as "Codex (work)"
 const seatPool = (s) => poolKey(s.vendor, s.account, !!VENDOR_META[s.vendor]?.profiles);
+// Out for this debate (pool-down events): the seat's whole login, or the limit group its model
+// draws on (agy), told the way the server tells it (models.js quotaGroup on the quota read).
+const seatDown = (s) => Object.values(S.down).find((x) => x.vendor === s.vendor && (x.account || '') === (s.account || '')
+  && (!x.group || x.group === quotaGroup(S.quota[seatPool(s)]?.groups, s.model))) || null;
 const poolId = (key) => { const vendor = poolVendor(key), account = poolAccount(key); return `<div class="pool-id"><b>${esc(VENDOR_LABEL[vendor] || vendor)}${account ? ` (${esc(account)})` : ''}</b><span title="${esc(VENDOR_META[vendor]?.pool || '')}">${esc(VENDOR_META[vendor]?.pool || '')}</span></div>`; };
 const usageLink = (key) => { const m = VENDOR_META[poolVendor(key)]; return m?.usageUrl ? `<a href="${esc(m.usageUrl)}" target="_blank" rel="noopener">usage page &#8599;</a>` : ''; };
 
@@ -804,17 +815,18 @@ function renderProjection() {
   const colourOf = (id) => (id === 'chairman' ? vendorColour(chairman.vendor) : id === 'research' ? vendorColour(researcher.vendor) : seats[Number(id.slice(5))]?.colour || 'ink');
   $('projection').innerHTML = Object.values(p.byVendor).map((v) => {
     // the vendor's seats all on one account: that account's pool; mixed: the default one
-    const keys = new Set(v.seats.map((id) => seatPool(id === 'chairman' ? chairman : id === 'research' ? researcher : seats[Number(id.slice(5))])));
+    const seatOf = (id) => (id === 'chairman' ? chairman : id === 'research' ? researcher : seats[Number(id.slice(5))]);
+    const keys = new Set(v.seats.map((id) => seatPool(seatOf(id))));
     const pool = keys.size === 1 ? [...keys][0] : v.vendor;
     const q = S.quota[pool];
     const pw = projectedWindows(S.calib, pool, v.seats.map((id) => p.bySeat[id])) || [];
     // Live windows carry this debate's projected draw; without a live figure the projection is
-    // all there is, so it stays a sentence.
-    const windows = q ? q.windows.map((w) => { const x = pw.find((y) => y.label === w.label); return { ...w, adds: x ? x.pct : null, upper: !!x?.upperBound }; }) : [];
+    // all there is, so it stays a sentence. A quota in groups (agy) shows the seated models' groups.
+    const windows = q ? quotaWindows(q, v.seats.map((id) => seatOf(id)?.model || '')).map((w) => { const x = pw.find((y) => y.label === w.label); return { ...w, adds: x ? x.pct : null, upper: !!x?.upperBound }; }) : [];
     const projected = q ? '' : pw.length ? pw.map((w) => (w.upperBound
       ? `No movement of the ${esc(w.label)} window seen over ${k(w.pending)} tokens yet.`
       : `About +${pct(w.pct)} of the ${esc(w.label)} window (${w.samples} measured move${w.samples === 1 ? '' : 's'}).`)).join(' ')
-      : (v.vendor === 'agy' ? 'This CLI reports no live quota.' : 'Window share is unmeasured until a debate runs.');
+      : 'Window share is unmeasured until a debate runs.';
     const cap = S.budget[v.vendor];
     // Seats of one vendor share its colour, so each segment of the bar gets its own shade and the
     // chairman a hatch; the legend beside each seat uses the same fill, so the split reads.
@@ -891,9 +903,9 @@ async function start() {
     return;
   }
   // Confirm a known unavailable provider only after the form itself is valid.
-  const red = [...S.draft.map((s) => ({ name: `${VENDOR_LABEL[s.vendor]} (${s.lens})`, l: poolLamp(s.vendor, seatAccount(s)) })),
-    { name: `the chairman (${VENDOR_LABEL[$('chairman').value]})`, l: poolLamp($('chairman').value, chairAccount()) },
-    ...(searcherOn() ? [{ name: `the searcher (${VENDOR_LABEL[$('searcher-vendor').value]})`, l: poolLamp($('searcher-vendor').value, searcherAccount()) }] : [])].filter((x) => x.l.cls === 'danger');
+  const red = [...S.draft.map((s) => ({ name: `${VENDOR_LABEL[s.vendor]} (${s.lens})`, l: poolLamp(s.vendor, seatAccount(s), s.model) })),
+    { name: `the chairman (${VENDOR_LABEL[$('chairman').value]})`, l: poolLamp($('chairman').value, chairAccount(), $('chairman-model').value.trim()) },
+    ...(searcherOn() ? [{ name: `the searcher (${VENDOR_LABEL[$('searcher-vendor').value]})`, l: poolLamp($('searcher-vendor').value, searcherAccount(), $('searcher-model').value.trim()) }] : [])].filter((x) => x.l.cls === 'danger');
   const sig = red.map((x) => `${x.name}:${x.l.note}`).join('|');
   if (red.length && S.startConfirm !== sig) {
     S.startConfirm = sig;
@@ -1214,9 +1226,11 @@ function renderUsage() {
   // says whether rounds stay flat (stateless) or grow (resume)
   const row = (name, x, cls = '', last = null, position = null) => `<tr class="${cls}" data-position="${esc(position || 'none')}"><td>${name}</td><td class="data num">${tokens(x.input, x)}</td><td class="data num">${tokens(x.cacheRead + x.cacheWrite, x)}</td><td class="data num">${tokens(x.output, x)}</td><td class="data num">${cost(x.cost, x)}</td><td class="data num">${secs(x.ms)}</td><td class="data num">${last ? `<span title="Round ${esc(last.round)}">${tokens(last.usage.input + last.usage.cacheRead + last.usage.cacheWrite, last.usage)}</span>` : ''}</td></tr>`;
   const pools = [...new Set([...S.seats.map(seatPool), ...(S.chairman ? [seatPool(S.chairman)] : []), ...(u.bySeat.research ? [seatPool(u.bySeat.research.seat)] : [])])];
+  // the models this debate runs on a pool: a quota in groups (agy) shows only their groups
+  const seatedModels = (key) => [...S.seats, S.chairman || S.configuredChairman, u.bySeat.research?.seat].filter((s) => s && seatPool(s) === key).map((s) => s.model || '');
   const rows = [];
   for (const pool of pools) {
-    rows.push(`<tr class="pool-row"><td colspan="7">${poolLine(pool)}</td></tr>`);
+    rows.push(`<tr class="pool-row"><td colspan="7">${poolLine(pool, seatedModels(pool))}</td></tr>`);
     if (u.bySeat.research && seatPool(u.bySeat.research.seat) === pool) { const rs = u.bySeat.research.seat; rows.push(row(`<span class="seat-cell" style="--seat: var(--seat-${esc(vendorColour(rs.vendor))})"><span class="seat-dot"></span><span><span class="seat-lens">searcher</span><span class="seat-meta">${esc([VENDOR_LABEL[rs.vendor] || rs.vendor, seatMeta(rs)].filter(Boolean).join(' · '))}</span></span></span>`, u.bySeat.research.usage)); }
     const seated = [...S.seats.filter((s) => seatPool(s) === pool), ...(S.chairman && seatPool(S.chairman) === pool ? [S.chairman] : [])];
     for (const seat of seated) {
@@ -1228,7 +1242,7 @@ function renderUsage() {
       const position = isChair ? null : S.positions[S.rounds.length - 1]?.[seat.id] || null;
       // the lens reads first; who runs it and on what sits beneath in the data face
       const name = `<span class="seat-cell" style="--seat: var(--seat-${esc(seat.colour)})"><span class="seat-dot"></span><span><span class="seat-lens">${esc(seat.lens)}${isChair ? '' : led(S.conn[seat.id] || 'idle')}</span><span class="seat-meta">${esc([seatName(seat), seatMeta(seat)].filter(Boolean).join(' · '))}</span></span></span>`;
-      const out = S.down[`${seat.vendor}@${seat.account || ''}`];
+      const out = seatDown(seat);
       rows.push(x ? row(name, x, '', last, position) : `<tr data-position="none"><td>${name}</td><td class="data ${out ? 'danger' : 'muted'}" colspan="6">${out ? `out: ${esc(ERROR_LINE[out.kind] || out.kind)} no tokens charged` : 'no call yet'}</td></tr>`);
     }
   }
@@ -1238,7 +1252,8 @@ function renderUsage() {
   $('usage').querySelector('tbody').innerHTML = rows.join('');
   const keys = [...new Set([...S.seats, ...(S.chairman || S.configuredChairman ? [S.chairman || S.configuredChairman] : [])].map((seat) => poolKey(seat.vendor, seat.account, !!VENDOR_META[seat.vendor]?.profiles)))];
   $('usage-summary').innerHTML = keys.map((key) => {
-    const window = remainingWindow(S.quota[key]);
+    const q = S.quota[key];
+    const window = remainingWindow(q && { ...q, windows: quotaWindows(q, seatedModels(key)) });
     const name = `${VENDOR_LABEL[poolVendor(key)] || poolVendor(key)}${poolAccount(key) ? ` · ${poolAccount(key)}` : ''}`;
     const remaining = window && Math.floor(window.remaining);
     const manual = S.pools[poolVendor(key)];
@@ -1253,11 +1268,12 @@ function renderUsage() {
 // The pool row on the board: name, one readout per live window, then freshness and the usage link.
 // One line per pool in the usage table: who and on what plan, each live window as "used share
 // and window" with a short track, then the usage page. Resets and the read time are the title.
-function poolLine(key) {
+// models: those seated on the pool, so a quota in groups (agy) shows the groups they draw on.
+function poolLine(key, models = []) {
   const q = S.quota[key];
   const pl = S.pools[poolVendor(key)];
   const vendor = poolVendor(key), account = poolAccount(key);
-  const windows = q?.windows || [];
+  const windows = quotaWindows(q, models);
   const figure = windows.length
     ? windows.map((w) => `<span class="pool-window ${level(w.used) ? level(w.used) : ''}" title="${esc([w.resetsAt ? `resets ${untilText(w.resetsAt * 1000)}` : '', `read ${agoText(q.at)}`].filter(Boolean).join(' · '))}"><span class="quota-track"><span style="width:${width(w.used)}%"></span></span>${pct(w.used)} of ${esc(w.label)} used</span>`).join('')
     : pl ? `<span class="pool-window">${esc(pl.remaining.toLocaleString())} ${esc(pl.unit)} left · entered ${agoText(pl.at)}</span>`
@@ -1377,11 +1393,11 @@ function renderGate() {
   if (!g) {
     // a verdict skipped, failed or never written: write it, with this chairman or another vendor
     // (the first one out of quota or logged out is not offered first)
-    const chairDown = S.verdict?.seat && S.down[`${S.verdict.seat.vendor}@${S.verdict.seat.account || ''}`];
+    const chairDown = S.verdict?.seat && seatDown(S.verdict.seat);
     // the CLI vendors by name; an endpoint only as a seat already at this table (its URL, key
     // variable and model are the seat's), since the endpoint vendor alone names no server
-    const pickable = Object.keys(VENDOR_LABEL).filter((v) => !isApi(v) && !Object.values(S.down).some((x) => x.vendor === v && !x.account));
-    const apiSeats = S.seats.filter((s) => s.endpoint && !S.down[`${s.vendor}@${s.account || ''}`]).map((s) => ({ value: `seat:${s.id}`, label: `${s.label} (${s.model})` }));
+    const pickable = Object.keys(VENDOR_LABEL).filter((v) => !isApi(v) && !Object.values(S.down).some((x) => x.vendor === v && !x.account && !x.group));
+    const apiSeats = S.seats.filter((s) => s.endpoint && !seatDown(s)).map((s) => ({ value: `seat:${s.id}`, label: `${s.label} (${s.model})` }));
     const savedChair = S.configuredChairman || S.chairman;
     const first = chairDown || ['quota', 'auth', 'missing'].includes(S.verdict?.errorKind) ? pickable.find((v) => v !== S.verdict?.seat?.vendor) || pickable[0] : (savedChair?.vendor || pickable[0]);
     const synth = S.status === 'done' && S.synthesis && S.synthesis !== 'done' && canFinish
@@ -1479,10 +1495,10 @@ function budgetLine() {
   return `<span class="status danger">budget</span> ${name} would cross its cap at the ${esc(b.what)}: ${figures}. `;
 }
 
-// Above the board: a login that is out for this debate (quota, login, missing CLI), and a lost
-// connection to the server. Each says what happened and what happens next.
+// Above the board: a login that is out for this debate (quota, login, missing CLI), or one limit
+// group of it (agy), and a lost connection to the server. Each says what happened and what next.
 function renderBanners() {
-  const items = Object.values(S.down).map((x) => `<div class="banner danger"><span class="status danger">${esc(VENDOR_LABEL[x.vendor] || x.vendor)}${x.account ? ` (${esc(x.account)})` : ''} out</span> ${esc(x.message)} Its seats are skipped for the rest of this debate${S.verdict || S.status === 'done' ? '' : '; continue without them or stop'}.</div>`);
+  const items = Object.values(S.down).map((x) => `<div class="banner danger"><span class="status danger">${esc(VENDOR_LABEL[x.vendor] || x.vendor)}${x.account ? ` (${esc(x.account)})` : ''}${x.group ? ` · ${esc(x.group)}` : ''} out</span> ${esc(x.message)} ${x.group ? 'Seats on these models are' : 'Its seats are'} skipped for the rest of this debate${S.verdict || S.status === 'done' ? '' : '; continue without them or stop'}.</div>`);
   items.unshift(...S.initialNotes.map((note) => `<div class="human-note"><b>${noteLabel(note)} before round 0</b>${esc(noteRecord(note).text)}</div>`));
   const unknown = rollup(S.rows).unknownAttempts;
   if (unknown) items.push(`<div class="banner warn usage-warning"><span class="status warn">usage unknown</span> ${unknown} call${unknown === 1 ? ' did' : 's did'} not report usable token counts. Totals include reported figures only.</div>`);

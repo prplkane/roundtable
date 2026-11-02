@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { createDebate, rollup, positions } from '../src/engine.js';
 import { classifyError } from '../src/adapters/errors.js';
 import { httpErrorKind } from '../src/adapters/endpoint.js';
+import { agyQuota } from '../src/adapters/quota.js';
+import { quotaGroup } from '../src/adapters/models.js';
+import { AGY_USAGE } from './fixtures/agy-usage.mjs';
 
 const FIELD_NOTES = { decision: 'Ship the new checkout?', options: ['Ship now', 'Wait a sprint'], constraints: 'two devs' };
 const SEATS = [
@@ -961,6 +964,52 @@ test('a login out of quota is down for the debate: its seat is skipped without a
   assert.equal(codex[0].state, 'down');
   assert.ok(codex.slice(1).every((x) => x.skipped && x.failed), 'skipped in later rounds');
   assert.ok(s.verdict.text && !s.verdict.failed, 'the debate goes on with the other seats');
+});
+
+test('a used-up limit group (agy) benches only the seats whose model draws on it; logged out, or a group nobody can tell, benches the whole login', async () => {
+  const { groups } = agyQuota(JSON.parse(AGY_USAGE));
+  const limitGroup = (seat) => (seat.vendor === 'agy' ? quotaGroup(groups, seat.model) : null);
+  const seats = [
+    { vendor: 'claude', lens: 'risk', colour: 'rust' },
+    { vendor: 'agy', lens: 'customer', colour: 'teal', model: 'gemini-4-argon-high' },
+    { vendor: 'agy', lens: 'growth', colour: 'teal', model: 'gemini-4-argon-low' },
+    { vendor: 'agy', lens: 'ops', colour: 'teal', model: 'gemini-3.8-flash-high' },
+  ];
+  const run = async (fails, seatList = seats) => {
+    const fr = fakeRunner(disagreeForever);
+    const calls = [];
+    const runner = async (vendor, prompt, sid, o) => {
+      const round = Number((prompt.match(/^Round (\d+) of/m) || [])[1] ?? 0); // round 0 has no round line
+      calls.push({ lens: o.seat?.lens, round });
+      const err = fails(o.seat || {});
+      if (err) throw Object.assign(new Error(err.message), err);
+      return fr.runner(vendor, prompt, sid, o);
+    };
+    const events = [];
+    const s = await createDebate({ fieldNotes: FIELD_NOTES, seats: seatList, runner, gate: autoGate, store: stub(), emit: (t, p) => events.push(p), options: { critiqueRounds: 2 }, limitGroup }).run();
+    return { s, calls, downs: events.filter((e) => e.type === 'pool-down') };
+  };
+  const quota = { kind: 'quota', message: 'Antigravity: usage limit reached.' };
+
+  // the Argon week is used up: both Argon seats sit out, the Flash seat keeps answering
+  const argon = await run((seat) => (/argon/.test(seat.model || '') ? quota : null));
+  assert.equal(argon.downs.length, 1, 'the board is told once');
+  assert.deepEqual([argon.downs[0].key, argon.downs[0].group, argon.downs[0].kind], ['agy@#Gemini 4 Argon', 'Gemini 4 Argon', 'quota']);
+  assert.ok(argon.calls.filter((c) => ['customer', 'growth'].includes(c.lens)).every((c) => c.round === 0), 'no Argon call after the bench');
+  assert.equal(argon.calls.filter((c) => c.lens === 'ops').length, 3, 'the Flash seat answers every round');
+  assert.ok(argon.s.rounds.every((r) => r.find((x) => x.seat.lens === 'ops').valid));
+  assert.ok(argon.s.rounds.slice(1).every((r) => r.filter((x) => x.seat.vendor === 'agy' && /argon/.test(x.seat.model)).every((x) => x.skipped)));
+
+  // logged out is the whole login, whatever the group
+  const auth = await run((seat) => (seat.lens === 'ops' ? { kind: 'auth', message: 'Antigravity: not logged in.' } : null));
+  assert.deepEqual(auth.downs.map((x) => [x.key, x.group]), [['agy@', undefined]]);
+  assert.ok(auth.calls.filter((c) => ['customer', 'growth', 'ops'].includes(c.lens)).every((c) => c.round === 0), 'every agy seat sits out after round 0');
+
+  // a seat on the default model has no known group: its quota failure benches the whole login
+  const plain = seats.map((s) => (s.lens === 'customer' ? { ...s, model: undefined } : s));
+  const unknown = await run((seat) => (seat.lens === 'customer' ? quota : null), plain);
+  assert.deepEqual(unknown.downs.map((x) => x.key), ['agy@']);
+  assert.ok(unknown.calls.filter((c) => c.lens === 'ops').every((c) => c.round === 0), 'unsure: careful, as before');
 });
 
 test('a network failure with reported usage gets one retry, and a second fails the seat for the round only', async () => {

@@ -9,14 +9,14 @@ import { fileURLToPath } from 'node:url';
 import { adapters, ADAPTERS, quotaReaders, poolsByAccount } from './adapters/index.js';
 import { profileHome, killAll, liveChildren, resolveBinary, runProcess, cleanEnv } from './adapters/spawn.js';
 import { checkPool, STATUS, endpointLamp, createPreflightCache } from './preflight.js';
-import { retired } from './adapters/models.js';
+import { retired, quotaGroup } from './adapters/models.js';
 import { vendorCatalogue } from './adapters/catalogue.js';
 import { createDebate, DEFAULTS } from './engine.js';
 import { normaliseSeats, normaliseChairman, MOODS, COLOURS, poolKey, poolVendor, poolAccount, lightestModel } from './seats.js';
 import { slugFor, openDebateDir, rebuildDebate } from './store.js';
 import { exportDebate, validateTarget, decisionRecord } from './export.js';
 import { rollup, hasUsableRound } from './engine.js';
-import { windowDeltas, updateCalibration, migrateCalibration, CALIBRATION_VERSION, project } from './estimate.js';
+import { roundDeltas, updateCalibration, migrateCalibration, CALIBRATION_VERSION, project } from './estimate.js';
 import { readFileSync, existsSync } from 'node:fs';
 import { fakeRunner, fakeQuota } from './fake.js';
 import { validateDebateRequest, validateMessage, validateAccept, BODY_LIMIT } from './validate.js';
@@ -90,8 +90,8 @@ try {
 } catch { /* none yet */ }
 const snapshotQuota = () => JSON.parse(JSON.stringify(quota));
 
-// A remaining-pool figure the user types in for a vendor whose CLI reports nothing (agy: the
-// "AI credits" page is browser-only). Kept with its time so the strip can say how old it is, and
+// A remaining-pool figure the user types in for a vendor whose CLI reports no live window (agy
+// when its /usage read gives nothing). Kept with its time so the strip can say how old it is, and
 // decremented on the board by each debate's weighted tokens at the user's own rate when given.
 const POOLS_FILE = path.join(DEBATES_DIR, FAKE ? '_pools.fake.json' : '_pools.json');
 const poolStore = createSettingsStore(POOLS_FILE, { onError: (e) => {
@@ -133,19 +133,17 @@ function settleRound(d, r) {
   let changed = false;
   for (const [pool, t] of Object.entries(tokens)) {
     if (unknown.has(pool)) continue; // a partial token count cannot calibrate the window's move
-    const deltas = windowDeltas(prev[pool], next[pool]);
+    const { deltas, keys } = roundDeltas(prev[pool], next[pool], pool, models[pool]);
     if (!deltas.length) continue;
-    calibration = updateCalibration(calibration, pool, deltas, t);
-    const keys = [pool];
-    if (models[pool].size === 1) { const key = `${pool}:${[...models[pool]][0]}`; calibration = updateCalibration(calibration, key, deltas, t); keys.push(key); }
+    for (const key of keys) calibration = updateCalibration(calibration, key, deltas, t);
     changed = true;
     for (const key of keys) for (const x of debates.values()) if (activeDebate(x) || x.clients.size) push(x, { type: 'calibration', vendor: pool, key, windows: calibration[key], round: r, tokens: t, deltas });
   }
   if (changed) saveCalibration();
 }
 
-// At the end of a debate the app-server vendors (codex) have usually not been re-read since
-// their last reply, so the last round is settled only after one fresh read of each such vendor.
+// At the end of a debate the separately read vendors (codex, agy) have usually not been re-read
+// since their last reply, so the last round is settled only after one fresh read of each such vendor.
 async function settleLast(d, r) {
   const pools = new Set(d.events.filter((e) => e.type === 'reply' && e.round === r).map((e) => keyOf(e.seat.vendor, e.seat.account)));
   await Promise.all([...pools].map((k) => refreshQuota(k)));
@@ -377,9 +375,9 @@ function synthesizeDebate(d, body = {}) {
 
 // Remaining quota is per account, not per debate: one snapshot per pool key (`codex`, or
 // `codex@work` for a named profile; seats.poolKey), shared by every board. claude's arrives with
-// each reply; codex is read separately (readers); agy has none.
-const quota = {}; // pool key -> { windows, plan, at }
-const readers = FAKE ? { codex: async () => fakeQuota('codex') } : quotaReaders;
+// each reply; codex and agy are read separately (readers), agy's in groups of windows per model.
+const quota = {}; // pool key -> { windows, plan, at, groups? }
+const readers = FAKE ? { codex: async () => fakeQuota('codex'), agy: async () => fakeQuota('agy') } : quotaReaders;
 const keyOf = (vendor, account) => poolKey(vendor, account, poolsByAccount(ADAPTERS[vendor]));
 
 function setQuota(key, q) {
@@ -392,9 +390,10 @@ function setQuota(key, q) {
 const reading = new Map();
 function refreshQuota(key) {
   const vendor = poolVendor(key), account = poolAccount(key);
-  if (!readers[vendor]) return Promise.resolve();
+  // a reader that stopped itself (agy's latch, quota.js) said why once; no read, no repeat
+  if (!readers[vendor] || readers[vendor].stopped?.()) return Promise.resolve();
   if (reading.has(key)) return reading.get(key);
-  // readCodexQuota resolves null on every failure (timeout, spawn error, no result) rather than
+  // The readers resolve null on every failure (timeout, spawn error, no result) rather than
   // throwing, so say so here or a dead read is invisible on the console.
   const p = (async () => {
     try {
@@ -531,6 +530,9 @@ function attachEngine(d, { fieldNotes, seats, chairman, options, resume = null, 
 
   d.debate = createDebate({
     fieldNotes, seats, chairman, options, runner, gate, store, resume, baselines, provenance: FAKE ? { fake: true } : {}, synthesisOnly,
+    // agy: the limit group a seat's model draws on, from the latest quota read, so a used-up
+    // group benches only its own seats; null for a vendor with one set of limits
+    limitGroup: (seat) => quotaGroup(quota[keyOf(seat.vendor, seat.account)]?.groups, seat.model),
     cancel: (reason) => { const n = killAll(d.slug); if (n) console.log(`[${d.slug}] ${reason === 'human' ? 'stop' : reason === 'finish' ? 'finish discussion' : reason === 'interrupted' ? 'server shutdown' : reason === 'error' ? 'engine error' : 'wall clock'}: cancelled ${n} call${n === 1 ? '' : 's'}`); },
     emit: (type, payload) => {
       // run() rejects with the original Error after emitting this. Its catch below logs a
@@ -817,4 +819,4 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('uncaughtException', (e) => { diagnostics.write({ code: 'server-crash', action: 'unknown' }, e); console.error('[server] uncaught:', e); shutdown('uncaught error', 1); });
 process.on('unhandledRejection', (e) => { diagnostics.write({ code: 'server-crash', action: 'unknown' }, e); console.error('[server] unhandled rejection:', e); });
-for (const vendor of Object.keys(readers)) refreshQuota(vendor); // codex: one app-server read at start
+for (const vendor of Object.keys(readers)) refreshQuota(vendor); // one read each at start: the codex app-server, agy -p /usage

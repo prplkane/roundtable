@@ -26,7 +26,8 @@
 //              already includes cached input), 'additive' (input is the uncached part only), or
 //              'unknown'. Roundtable's `usage.input` always means uncached input (common.js
 //              normaliseUsage), so a 'subset' vendor has cacheRead taken off.
-//  quota       'per-call' (rides on each reply) | 'app-server' (separate read) | null
+//  quota       'per-call' (rides on each reply) | 'app-server' | 'command' (separate read, no
+//              model call: an app-server request, or a print-mode command the CLI answers itself) | null
 //  usageUrl    the vendor's own usage page, shown in the strip when no live figure exists
 //  colour      seat colour name from the signature-design accent table
 //  readOnly    the flag that keeps the agent from touching files (for the README)
@@ -290,10 +291,15 @@ export const ADAPTERS = {
     resume: (id, base) => [...base, '--conversation', id],
     model: (m) => ['--model', m],
     effort: (e) => ['--effort', e],
-    effortLevels: ['low', 'medium', 'high'], // `agy --help`: "--effort (low|medium|high)"
+    // `agy --help` (1.4.12) lists low|medium|high|xhigh|max, but a model takes only its own levels
+    // and every model `agy models` lists refuses xhigh and max before any turn ("gemini-4-argon
+    // has no "xhigh" effort (available: low, medium, high)"). A family's levels come from its ids.
+    effortLevels: ['low', 'medium', 'high'],
     effortInModel: /-(low|medium|high)$/,    // `agy models` ids end in the level: gemini-4-argon-high
     modelHints: [], // filled from `agy models` (catalogue.js)
-    pool: 'Google AI credits (every id in the agy catalogue, Claude and GPT-OSS included, draws from it)',
+    // `/usage`: limits per model group (Gemini; Claude and GPT; Gemini 4 Argon on some plans),
+    // each with a weekly and usually a 5-hour window; AI credits, when enabled, take over after.
+    pool: 'Google AI plan: weekly and 5-hour limits per model group, then AI credits',
     // Always stream stdin: prompt text stays off the process command line and intermediate
     // tool events are available even when the final result omits them.
     promptVia: 'stdin',
@@ -311,7 +317,7 @@ export const ADAPTERS = {
       output: 'usage.output_tokens',
       thinking: 'usage.thinking_tokens',
       cost: null, // not reported headless
-      quota: null, // /usage is an interactive panel only
+      quota: null, // not in a reply; `-p /usage` is read separately, see quota.js
     },
     costIsCumulative: false,
     cacheSemantics: 'unknown', // two identical 12k prompts reported no cache read
@@ -327,7 +333,7 @@ export const ADAPTERS = {
       },
       foreignTool: (obj, events = []) => agyAttempts(obj) || events.some((e) => agyToolNames(e).some((n) => n !== AGY_SEARCH)),
     },
-    quota: null,
+    quota: 'command', // `agy -p /usage`, answered without a turn; see quota.js
     usageUrl: 'https://antigravity.google/g1-activity', // the CLI's own "AI credits activity" link
     colour: 'teal',
     readOnly: 'session deny rules for files, commands, URLs and MCP, plus the reported-tool guard (--mode plan is ignored while slash commands are off)',
