@@ -63,12 +63,48 @@ export function createHistoryIndex(root, { onWarning = () => {}, limit = 1000 } 
   };
 }
 
+// Windows keeps history in %USERPROFILE%\.roundtable, not AppData: Windows redirects AppData
+// writes of a program started from a packaged app (the Claude and Codex desktop apps, and every
+// terminal and agent shell they open) into that app's private copy, so each app saw its own
+// history and its own server lock. The user profile folder is the same for every program.
 export function dataDirectory({ fake = false, env = process.env, platform = process.platform, home = os.homedir() } = {}) {
   if (env.ROUNDTABLE_DEBATES_DIR) return path.resolve(env.ROUNDTABLE_DEBATES_DIR);
-  const base = platform === 'win32' ? path.join(env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), 'Roundtable')
+  const base = platform === 'win32' ? path.join(home, '.roundtable')
     : platform === 'darwin' ? path.join(home, 'Library', 'Application Support', 'Roundtable')
       : path.join(env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'roundtable');
   return path.resolve(base, fake ? 'demo' : 'live');
+}
+
+// Folders that may still hold reviews this data folder lacks: a checkout's `debates/` from before
+// the user-data folder, and on Windows the earlier %LOCALAPPDATA%\Roundtable default with the
+// private copies packaged apps kept of it (%LOCALAPPDATA%\Packages\<app>\LocalCache\Local). Only
+// a folder with a review the data folder does not have is reported, so a copy left behind after
+// its reviews were moved stays quiet. Read only: nothing is moved or merged.
+//   -> [{ dir, missing }]   missing: how many of its reviews the data folder lacks
+export function legacyHistory(dataDir, { root, fake = false, env = process.env, platform = process.platform } = {}) {
+  const mode = fake ? 'demo' : 'live';
+  const candidates = root ? [path.join(root, fake ? 'debates-fake' : 'debates')] : [];
+  if (platform === 'win32' && env.LOCALAPPDATA) {
+    candidates.push(path.join(env.LOCALAPPDATA, 'Roundtable', mode));
+    let apps = [];
+    try { apps = readdirSync(path.join(env.LOCALAPPDATA, 'Packages')); } catch { /* no packaged apps */ }
+    for (const app of apps) candidates.push(path.join(env.LOCALAPPDATA, 'Packages', app, 'LocalCache', 'Local', 'Roundtable', mode));
+  }
+  const same = (a, b) => (platform === 'win32' ? path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase() : path.resolve(a) === path.resolve(b));
+  // a folder that cannot be listed is not reported, and never stops the server starting
+  const ids = (dir) => { try { return historyIds(dir); } catch { return []; } };
+  const have = new Set(ids(dataDir));
+  const found = [];
+  for (const dir of candidates) {
+    if (same(dir, dataDir)) continue;
+    const missing = ids(dir).filter((id) => !have.has(id));
+    if (!missing.length) continue;
+    found.push({ dir, missing: missing.length });
+    // counted once: a packaged app's server sees its own copy both through %LOCALAPPDATA% and at
+    // its Packages path, and would otherwise name the same reviews twice
+    for (const id of missing) have.add(id);
+  }
+  return found;
 }
 
 // A single server owns a data folder. This also protects sessions opened on another port.

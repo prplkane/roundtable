@@ -52,6 +52,16 @@ claude
 
 Inside the program, type `/login`, finish the sign-in in the browser, then exit with `/exit`.
 
+Roundtable reads Claude's remaining quota with `claude -p /usage`, which the CLI answers itself,
+with no model call and no conversation. It reads when the server starts, on **Refresh status**,
+after each Claude reply and when a debate ends, from an empty folder with a seat's lockdown
+(no tools, no MCP servers, safe mode) but with slash commands on, which `/usage` needs. Only the session, weekly and per-model weekly limit lines are kept; the activity summary
+the same answer prints (requests, sessions, skills, MCP servers) is discarded and never saved.
+If the read gives nothing, the figure each Claude reply carries is shown instead; with API-key
+billing, where `/usage` shows no plan limits, reads stop after the first and replies supply it. If an answer
+ever shows a turn, tokens or a cost, or the read gets no answer within 30 seconds, Roundtable
+stops reading Claude quota until the server restarts and says so on the console.
+
 ### Codex (OpenAI)
 
 ```bash
@@ -66,12 +76,13 @@ A browser opens. Sign in with the ChatGPT account that holds your subscription.
 
 ### Antigravity (Google)
 
-Live Antigravity seats require **Allow limited isolation for Antigravity** in the review
-settings (`options.allowLimitedIsolation: true` in an agent request). The option and consent
-requirement are also in `roundtable agent --help`. Session rules deny documented tools, but
-the CLI cannot disable all shared customizations or MCP discovery.
-Use another provider if that limitation is unsuitable. Reported tool activity still stops
-the seat without a retry. Claude and Codex require their isolation flags to be supported;
+Antigravity cannot be fully sealed off: it still loads your shared Antigravity customizations
+and discovers your MCP servers, and its web search cannot be switched off. Roundtable denies
+its file, command, URL and MCP tools and stops the call, without a retry, at the first tool it
+reports. A seat, chairman or searcher card set to Antigravity says **Limited isolation** with
+this explanation as its tip; choosing Antigravity there accepts it. An agent request must send
+`options.allowLimitedIsolation: true` (also in `roundtable agent --help`), or the server
+refuses Antigravity. Use another provider if that is unsuitable. Claude and Codex require their isolation flags to be supported;
 an older CLI fails with an update instruction instead of a weaker fallback.
 Invalid, incomplete or oversized provider streams also stop that seat for the review;
 reported spending is retained, and the failed session is not reused.
@@ -87,6 +98,21 @@ agy install
 
 Run `agy --version` to check that the command is available. Roundtable uses `agy` for the
 Google seat.
+
+Roundtable reads Antigravity's remaining quota with `agy -p /usage`, which the CLI answers
+itself, with no model call and no conversation (agy 1.1.11 or later). It reads when the server
+starts, on **Refresh status**, after each Antigravity reply and when a debate ends. A read that
+gives no answer within 30 seconds counts as a timeout. The limits come per model group (Gemini;
+Claude and GPT; Gemini 4 Argon on some plans), each with a weekly window and usually a 5-hour
+one, and a seat counts only the group its model draws on. A seat on the default model counts
+every group. If an answer ever shows a turn, tokens or a conversation, or the read times out,
+Roundtable stops reading Antigravity quota until the server restarts and says so on the console.
+With a successful read it also asks `agy -p /credits`, at most every ten minutes, for the AI
+credits that take over once a group's limits are used up; the usage table shows them as
+"AI credits left". The same check and stop apply to that answer.
+The same groups decide who sits out when a call reports a used-up quota during a debate: only
+the seats whose model draws on that group are skipped, and the others keep answering. A seat
+on the default model, or a CLI that is logged out, takes the whole Antigravity login out.
 
 ### Check what this machine can seat
 
@@ -171,7 +197,7 @@ Fill in:
   an empty one to remove it. Each is numbered (opt-1, opt-2) as the seats will see it; a seat may
   still propose its own, written as "other: …".
 - **Constraints**: what any answer must live within.
-- **More context** (collapsed until you open it or fill it): evidence known, evidence assumed,
+- **More context** (folded; its title counts the fields you filled): evidence known, evidence assumed,
   reversibility, deadline, and **Export to**, a folder in your codebase where the decision record
   is written the moment the verdict is ready (see step 6). Seats see only these notes in round 0,
   so include the facts they need to assess the options.
@@ -235,6 +261,13 @@ custom text.
   labels from the prompts; each seat receives its own mood instructions.
 - Still shared: the CLI's own state folder (login, local history) unless the seat has a login
   profile, and whatever the vendor applies to every request from your account.
+- Codex ignores your user configuration, so a default model or effort in that file does not
+  control the seat. Choose both explicitly to reproduce a review. CLI resolution follows PATH
+  order across native binaries and npm installations, including on Windows.
+- Codex seats use a short decision-review base prompt instead of general coding instructions.
+  Parent Codex app routing/session variables are removed before starting CLIs or reading quota.
+  Login profiles and inherited network restrictions are preserved. This also applies when a
+  coding agent launches Roundtable as a background server.
 - Use different lenses to test different assumptions. Agreement between seats is not evidence
   that their shared assumptions are correct.
 
@@ -283,14 +316,25 @@ custom text.
 
 ### Read the quota picture
 
-The panel under the seats shows one block per vendor account. It lists what each seat is
-likely to draw in this debate, stacked in the seat's colour, the vendor's live remaining
-window where it reports one, and the measured share each seat would take. Antigravity reports
-no remaining credits, so you can type the figure from its credits page into its block.
+The **Quota picture** under the seats starts folded; its title lists each account's projected
+tokens. Open it for one card per vendor account: what each seat is likely to draw in this
+debate as one bar segment per seat (seats of one vendor in steps of its colour, the chairman
+hatched), the vendor's live windows where it reports them, and an optional cap. Antigravity's
+windows are named by group ("Gemini 5h", "Claude and GPT 7d"), and its card shows the groups its
+seats' models draw on. When it reports no window, you can track the figure from its credits
+page in its card.
 
 On the running board, usage starts collapsed. Each account shows its lowest reported percentage
 remaining and a small bar, with the window and reading age. Missing figures say **not reported**.
-Open **Usage details** for per-seat tokens, partial totals, costs, timing and other windows.
+Open **Usage details** for per-seat tokens, costs and timing, grouped by account with each
+account's live windows. A **+** after a total means some calls reported nothing; a dash means
+the CLI reports no cost. Rounds fold once a review finishes, so the conclusion leads.
+
+Codex reports cumulative tokens when resuming a thread. Roundtable charges only the increase
+since that seat's last reading and keeps the original totals under `usage.raw`. A missing or
+decreasing baseline is unknown spending, not zero. Recovering an interrupted review starts new
+provider threads and resets this baseline while retaining earlier spending. Older saved totals
+are not rewritten automatically.
 
 ### Open the table and take part
 
@@ -311,8 +355,9 @@ animation nor the sounds.
    always waits for you. This is the best moment to step in: correct a wrong assumption, add a
    fact, answer a seat's question. Type in the bar at the bottom and press **Continue**, or just
    press Continue.
-   **Compact** in the header folds every card to its seat and stance, so a round reads as who
-   chose what; click a card to open that reply. The browser remembers the choice.
+   Each reply card starts folded to its seat and position, including in the round still coming
+   in; click its head to read the reply, and again to fold it. A card you open stays open until
+   the review changes.
 2. **Critique rounds.** Each seat sees the others' replies under their lens names and argues.
    Between rounds the countdown runs; type to hold it.
 3. **Questions for you.** Answer in one area above the replies. Identical questions share a field
@@ -489,7 +534,7 @@ npm run doctor -- --profile work
 It prints the exact commands for each vendor, for example on Windows:
 
 ```
-set CODEX_HOME=C:\Users\<you>\AppData\Local\roundtable\homes\work\codex
+set CODEX_HOME=C:\Users\<you>\.roundtable\homes\work\codex
 codex login
 ```
 
@@ -535,6 +580,13 @@ What is different from a CLI seat:
 - **One pool per host.** Two seats on `localhost:11434` share a pool; a seat on DeepSeek has
   its own. A host that fails (wrong key, no credit, nothing listening) benches only its own seats.
   The token cap, though, is per vendor: one cap covers every endpoint seat at the table.
+- **A short rate limit is waited out once.** A `429` whose `Retry-After` asks for 30 seconds
+  or less (the delay past which `agy` stops waiting on its own server) is waited out, and the
+  call is sent once more, provided the wait ends before the review's wall clock does. Stop and
+  finish end the wait at once. A `429` with no `Retry-After`, with a longer one, or a second
+  `429` after the wait benches the host like no credit does, so a used-up quota is never called
+  round after round. A `429` counts as zero tokens, since the server refused the request before
+  the model ran. A CLI seat needs none of this: its CLI waits out such delays itself.
 - **No tools are offered** in the request. A reply that carries `tool_calls`, a legacy
   `function_call`, or a tool finish reason stops that seat for the review. Its answer is
   excluded from later discussion; its reported spending still counts.
@@ -548,13 +600,21 @@ names the endpoint on each seat's line (`API http://localhost:11434/v1`) and on 
 
 ## 8. Run a debate without the browser
 
-### Optional research before discussion
+### Optional searcher before discussion
 
-Enable **Research first with Codex** to gather web evidence before the blind replies. Enter
-a separate **Public search question** and review it for private details. Only this question
-goes into research; your field notes and discussion notes are sent later to the selected seats.
-The first Codex seat supplies the research model, effort and login profile; if there is none,
-a Codex chairman supplies them, otherwise the installed CLI uses its default model and login.
+The **searcher** gathers web evidence once, before the blind replies. It is not a seat: it
+never sees your field notes, never argues and never votes. Press **+ Add searcher** under the
+seats to add its card, next to the chairman's; its × removes it. Write its **Query**, the
+only text sent to the web, and review it for private details. The card has its own vendor,
+model, effort and login profile, like the chairman's. Pick the vendor whose pool has room:
+Claude, Codex or Antigravity. There is one searcher and one call, on that vendor only. A new
+searcher, or one moved to another vendor, starts on that vendor's lightest model at low
+effort, since finding and quoting sources needs little reasoning. Each CLI searches with every
+other tool kept off: Codex turns on only its web search, Claude gets WebSearch as its only
+tool, and Antigravity, whose web search is always on, keeps its other tools denied. An
+Antigravity searcher has the same limited isolation as an Antigravity seat, and its card says
+so. An API endpoint
+has no search tool and is not offered.
 This is one additional subscription call, included in the quota projection and vendor budget.
 The setup estimate also reserves 12,000 input tokens for shared evidence in each discussion
 and verdict call. After research, admission checks use the saved source bundle's UTF-8 size
@@ -562,16 +622,31 @@ divided by three as an additive token estimate, including resumed conversations 
 Measured dollar baselines are adjusted for that extra input. These are conservative planning
 allowances, not exact token counts or guaranteed spending limits.
 
-Set **Search limit** (1–8 reported operations) and **Time limit** (30–600 seconds). An operation
-can contain several queries or page visits, and can begin before Codex reports it. Roundtable
+Set its **Limits**: searches (1–8 reported operations) and time (30–600 seconds). An operation
+can contain several queries or page visits, and can begin before the CLI reports it. Roundtable
 stops the call when a reported operation exceeds the limit; it cannot undo upstream work or
-guarantee a provider billing ceiling. Local commands, files, MCP and delegation remain forbidden.
+guarantee a provider billing ceiling. Claude also reports how many searches it ran when the
+call ends, and a count over the limit fails the research. Claude runs each search on a small
+model of its own; those tokens are included in the searcher's usage. Claude's WebSearch returns
+titles, links and that model's summary without opening the pages (WebFetch stays off), so its
+excerpts are shorter than Codex's. Local commands, files, MCP and delegation remain forbidden.
+
+While the searcher works, the review state reads **Searcher at work** and the sources panel
+shows its eye moving down a column of results (still, with reduced motion).
 
 The board saves up to eight sources with URLs, excerpts, publication dates where reported,
-and the time the bundle was gathered. Citations and excerpts are supplied by Codex, not
+and the time the bundle was gathered. Citations and excerpts are supplied by the searcher's provider, not
 independently verified by Roundtable. Every seat and the chairman gets the identical saved
 bundle, with tools disabled during discussion. The source panel, agent state, field-notes
-file and Markdown export include it. Research spending appears as **Codex · shared research**.
+file and Markdown export include it. Its spending appears as the **searcher** row in Usage
+details and a **searcher** segment in the quota picture.
+
+If the searcher repeats a URL, Roundtable keeps one citation in first-seen order. The first
+title and publication date are kept; distinct excerpts are appended only when the complete
+combined text fits 1,200 characters. All entries must still pass validation, including
+duplicates, and the response must contain at most eight entries before deduplication.
+Different query strings and fragments remain distinct URLs. This cleanup is local and makes
+no extra model call; repeated sources do not discard an otherwise usable search result.
 
 Research failure or interruption ends the review before discussion. Check the details and
 provider usage before explicitly starting a new review. Resume never repeats unfinished
@@ -579,14 +654,20 @@ research; completed bundles are reused without refetching pages.
 The agent state reports a fixed failure description and safe progress fields; open the board
 for the original provider error details. Saved failures receive the same filtering.
 
-For the agent client, add this to the request's `options` (leave it out to keep research off):
+For the agent client, add this to the request's `options` (leave it out to keep research off).
+`vendor` (`codex`, `claude` or `agy`; Codex when left out), `model`, `effort` and `account` set
+the searcher; without the last three it runs that vendor's lightest model at low effort on your
+usual login:
 
 ```json
 {
   "research": {
+    "vendor": "codex",
     "query": "Public evidence for a staged release",
     "maxSearches": 4,
-    "timeoutMs": 120000
+    "timeoutMs": 120000,
+    "model": "gpt-6-luna",
+    "effort": "low"
   }
 }
 ```
@@ -719,6 +800,26 @@ it does not claim your records are gone. A setup-load failure offers **Reload**.
 
 ### Error logs
 
+Codex calls disable analytics and telemetry exports, shell snapshots and unlimited connection
+retries for that process only. After a complete answer and valid usage arrive, Roundtable gives
+the CLI one second to exit and then terminates a stuck process while preserving the result.
+It continues checking tool policy and stream validity during that grace period. A partial
+answer, missing usage or a failed turn cannot use this shortcut. Timeouts before completion
+remain failures with unknown spending where the provider reported none; they are not retried
+automatically. Search and reconnect stages in the error details help distinguish these from
+slow model replies. These controls do not guarantee the provider's availability.
+
+A Codex reply streams over SSE through a provider entry Roundtable names per call, pointing at
+the same ChatGPT backend with the same login. When the stream stays silent for the idle limit,
+(call limit − 15 s) ÷ 3 between 10 s and 300 s, so 95 s at the default five-minute call limit,
+the CLI reconnects and starts the answer again, at most twice; once those are used up the call
+fails as a stalled connection, before the call limit. The provider may charge the interrupted
+attempts' tokens without their appearing in usage. Raising the call limit lengthens the idle
+limit with it, so long silent reasoning at high effort is served by a longer call limit. Every
+reconnect the CLI reports is counted: a reply that came after one carries a
+**reconnected ×N** mark on its card, and the count is saved with the attempt, where failure
+details, error logs and the agent state show it. The markdown transcript does not carry it.
+
 Provider failure **Details** show whether output arrived, the last observed stage, elapsed
 and idle time, and the exit code when available. A timeout after reasoning is evidence that
 the call started; it does not identify why the provider stalled. Save the error log before
@@ -767,15 +868,16 @@ there is no current snapshot. Refresh with an authenticated JSON `POST /api/pref
 | A seat's lamp is red: "quota used up" | Wait for the reset it shows, use another vendor for that seat, or seat a second account (step 7). |
 | `doctor` says a CLI is not found | Install it (step 2) or fix your PATH; for `agy`, run `agy install`. |
 | An API seat's lamp is red: "… is not set in the environment" | Set that variable in the shell you start roundtable from (`set DEEPSEEK_API_KEY=…` on Windows, `export …` elsewhere) and start it again. The board cannot read it for you. |
-| An API seat shows "could not reach" or an HTTP status | Nothing listens at that URL (start the local server, check the port and the `/v1` suffix), or the endpoint refused the call (`401` a wrong key, `402`/`429` no credit or a limit, `404` a model id the server does not know). The seat's card quotes the server's own words. |
-| A red "out" banner on the board | A vendor ran out of quota or lost its login mid-debate. Its seats are skipped from then on (no call, no tokens). If fewer than two seats are left, the debate stops and the chairman writes from what was said. |
+| An API seat shows "could not reach" or an HTTP status | Nothing listens at that URL (start the local server, check the port and the `/v1` suffix), or the endpoint refused the call (`401` a wrong key, `402` no credit, `429` a quota or a rate limit that one short wait did not lift, `404` a model id the server does not know). The seat's card quotes the server's own words. |
+| A red "out" banner on the board | A vendor ran out of quota or lost its login mid-debate. Its seats are skipped from then on (no call, no tokens). For Antigravity the banner can name one model group ("Antigravity · Gemini 4 Argon out"): only seats on that group's models are skipped. If fewer than two seats are left, the debate stops and the chairman writes from what was said. |
 | A seat shows "no reply" in red | Its call failed this round; the card gives a next step, with the CLI's own words under "details". Network failures may retry once if the budget and time limit allow it. The others carry on. |
 | The verdict failed, or was not written | **Write the verdict with** a vendor of your choice, under the bar. If the chairman's vendor ran out, another one is preselected. |
 | "reconnecting" banner | The board lost the server. The debate keeps running there; the board catches up when the connection is back. The banner clears even while waiting for input with no new events. |
 | A seat is "re-prompted" | Its reply broke the format. It gets one format repair. Tool activity instead stops the seat without a retry. |
+| A seat is "reconnected ×1" | Its provider connection went silent for the idle limit and the CLI started the answer again. The reply is complete; the interrupted attempt may have been charged without appearing in usage. Repeated marks on one vendor point at the provider, not at the seat. |
 | "address already in use" | Another server is on that port. Stop it, or start with a different `PORT`. |
 | The board says the debate is unknown | The server was restarted. Reopen the address; the board replays from disk and offers Resume. |
-| A vendor's remaining quota shows nothing | Antigravity never reports it; type the figure from its credits page. Codex shows only a weekly window on some plans. |
+| A vendor's remaining quota shows nothing | Claude's read needs a subscription sign-in; with API-key billing, `/usage` has no limits to show and the figure appears after the first Claude reply. Antigravity's read needs agy 1.1.11 or later and a sign-in; check `agy -p /usage` in a plain terminal (not a shell opened by another agent CLI: with Claude Code's variables in the environment, agy sends the text to a model instead of answering it), or type the figure from its credits page. If the console says Antigravity quota reads are off, restart the server once the CLI answers `/usage` without a turn again. Codex shows only a weekly window on some plans. |
 
 ## Where things live
 
@@ -786,13 +888,15 @@ there is no current snapshot. Refresh with an authenticated JSON `POST /api/pref
 | Retained usage statistics | `_usage.json` in the data folder; counters and model IDs, without review text |
 | Measured quota rates and entered pool figures | `_calibration.json` and `_pools.json` in the live data folder; demo names include `.fake` |
 | Saved setup preferences | browser local storage, separate for each host and port |
-| Account profiles | `%LOCALAPPDATA%\roundtable\homes` on Windows, `~/Library/Application Support/roundtable/homes` on macOS, `~/.local/share/roundtable/homes` on Linux |
+| Account profiles | `%USERPROFILE%\.roundtable\homes` on Windows, `~/Library/Application Support/roundtable/homes` on macOS, `~/.local/share/roundtable/homes` on Linux |
 | Decision records you exported | the folder you chose |
 
-The user-data folder is `%LOCALAPPDATA%\Roundtable` on Windows,
+The user-data folder is `%USERPROFILE%\.roundtable` on Windows,
 `~/Library/Application Support/Roundtable` on macOS, and `$XDG_DATA_HOME/roundtable` on Linux
 (or `~/.local/share/roundtable` when XDG_DATA_HOME is unset). It stays the same across checkout
-changes. An absolute `ROUNDTABLE_DEBATES_DIR` selects another location; use distinct paths for
+changes. On Windows it is not under AppData: Windows redirects the AppData writes of anything
+started from a packaged app, such as the Claude or Codex desktop app and the terminals they
+open, into a private copy for that app, so each app would see its own history. An absolute `ROUNDTABLE_DEBATES_DIR` selects another location; use distinct paths for
 demo and live data. Only one server can use a data folder at a time, even on different ports.
 
 The live diagnostic check (`doctor --live`) keeps its working files under `_doctor/` in the
@@ -812,15 +916,24 @@ recorded calls after cleanup and restart. A statistics-write failure prevents de
 tabs showing a deleted session return to the list. Corrupt records must be repaired first so
 their reported usage can be retained. Browser preferences and provider histories are separate.
 
-### Move older history out of a checkout
+### Move older history
 
-Stop every server using the old data folder. Before starting this version, move the entire
-old `debates/` folder to the user-data folder's `live/` directory, and `debates-fake/` to `demo/`
-if needed. Preserve all contents, including calibration, pools, diagnostics and recovery files.
-Verify that the destination is unused and outside the checkout; do not overwrite an existing
-history folder. You can instead move to a new folder and select it with `ROUNDTABLE_DEBATES_DIR`.
-Start the server and check **Local data and backups** and the saved-session count. Existing
-checkout history is reported when detected; it is never silently merged or deleted at startup.
+Older versions kept history in a checkout's `debates/` folder, and on Windows in
+`%LOCALAPPDATA%\Roundtable`. A server started from a packaged app wrote that AppData folder into
+the app's private copy instead, under `%LOCALAPPDATA%\Packages\<app>\LocalCache\Local\Roundtable`,
+so one machine can hold several copies with different reviews. At startup Roundtable lists every
+such folder that holds a review the current data folder lacks, in the terminal and under
+**Local data and backups**. It never moves, merges or deletes them itself.
+
+To move them, stop every server using an old folder. Move each review folder (the dated ones
+with a `transcript.jsonl`) into `live/`, or into `demo/` for `debates-fake/` and the old `demo/`
+folders. If a folder with the same name is already in the destination, do not replace it: leave
+the old one where it is and compare the two. When the destination has no
+`_calibration.json`, `_usage.json` or `_pools.json` yet, move the old one too; otherwise keep the
+destination's. Usage is recounted from the moved reviews at startup, and quota rates relearn as
+debates run. Start the server and check that the old folders are no longer listed and the
+saved-session count is right. A folder whose reviews have all been moved is not listed again.
+You can instead move everything to a new folder and select it with `ROUNDTABLE_DEBATES_DIR`.
 
 ### Back up and restore
 

@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { loginInstructions } from '../src/doctor.js';
 
 test('loginInstructions name the profile directory and the login command per vendor and platform', () => {
-  const win = loginInstructions('claude', 'work', { platform: 'win32', env: { LOCALAPPDATA: 'C:\\Users\\u\\AppData\\Local' }, homedir: 'C:\\Users\\u' });
-  assert.match(win[0], /profile "work" lives in C:\\Users\\u\\AppData\\Local\\roundtable\\homes\\work\\claude/);
+  const win = loginInstructions('claude', 'work', { platform: 'win32', env: { LOCALAPPDATA: 'C:\\Users\\u\\AppData\\Local' }, homedir: 'C:\\Users\\u', exists: () => false });
+  assert.match(win[0], /profile "work" lives in C:\\Users\\u\\\.roundtable\\homes\\work\\claude/);
   assert.match(win[1], /^\s+set CLAUDE_CONFIG_DIR=/);
   assert.match(win[2], /claude \/login/);
   const nix = loginInstructions('codex', 'alt', { platform: 'linux', env: {}, homedir: '/home/u' });

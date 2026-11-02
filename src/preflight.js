@@ -7,6 +7,7 @@
 //   endpointLamp({ url, keyEnv, keySet }) -> the same shape for an API endpoint seat   (pure)
 //
 import { checkEndpointUrl, privateHost, KEY_ENV_RE } from './seats.js';
+import { quotaWindows } from './adapters/models.js';
 
 export const PREFLIGHT_TTL_MS = 60_000;
 
@@ -79,11 +80,12 @@ function untilText(ms, now) {
   return `in ${Math.floor(s / 86400)}d ${Math.round((s % 86400) / 3600)}h`;
 }
 
-// What the lamp shows, from what the checks found. Pure.
-export function lamp({ vendor, installed, loggedIn, quota, account = null }, now = Date.now()) {
+// What the lamp shows, from what the checks found. Pure. model: the seat's, for a quota whose
+// limits differ by model (agy): only its group's windows count. Without one, every window does.
+export function lamp({ vendor, installed, loggedIn, quota, account = null, model = null }, now = Date.now()) {
   if (!installed) return { state: 'danger', kind: 'missing', note: `${vendor} CLI not found on this machine` };
   if (loggedIn === false) return { state: 'danger', kind: 'auth', note: `not logged in${account ? ` (profile ${account})` : ''}: run ${LOGIN[vendor] || 'its login'}` };
-  const windows = quota?.windows || [];
+  const windows = quotaWindows(quota, model ? [model] : []);
   if (windows.length) {
     const worst = windows.reduce((a, w) => (w.used > a.used ? w : a));
     const text = windows.map((w) => `${w.label} ${Math.round(w.used * 100)}%`).join(' · ');
@@ -93,7 +95,7 @@ export function lamp({ vendor, installed, loggedIn, quota, account = null }, now
     return { state: 'ok', kind: null, note: `ready · ${text}` };
   }
   if (loggedIn === null) return { state: 'warn', kind: 'unknown', note: 'login not checked: this CLI has no status command' };
-  return { state: 'ok', kind: null, note: vendor === 'agy' ? 'logged in · quota not reported by this CLI' : 'logged in · quota shows after the first call' };
+  return { state: 'ok', kind: null, note: 'logged in · quota shows after the first call' };
 }
 
 export async function checkPool({ vendor, account = null, key }, { resolve, status, quota, now = Date.now() }) {

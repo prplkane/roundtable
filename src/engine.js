@@ -57,18 +57,23 @@ const EMPTY_USAGE = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, thinking
 // provenance: extra fields for the head row ({ fake: true } from a server with scripted seats).
 // cancel(reason): stop this review's calls on Stop or when its wall clock runs out.
 // synthesisOnly: with resume, skip the rounds and write the verdict (POST .../synthesize).
-export function createDebate({ fieldNotes, seats, chairman, options = {}, runner, gate, store, emit = () => {}, now = Date.now, resume = null, baselines = {}, provenance = {}, cancel = () => {}, synthesisOnly = false }) {
+// limitGroup(seat): for a login whose limits differ by model group (agy), the group the seat's
+// model draws on, from the server's quota read; null for one set of limits or an unknown group.
+export function createDebate({ fieldNotes, seats, chairman, options = {}, runner, gate, store, emit = () => {}, now = Date.now, resume = null, baselines = {}, provenance = {}, cancel = () => {}, synthesisOnly = false, limitGroup = () => null }) {
   const opts = { ...DEFAULTS, ...options, strictTools: true };
   if (opts.research) opts.research = researchSettings(opts.research);
   const maxRound = opts.critiqueRounds;
   const state = {
     status: 'idle', round: -1, rounds: [], humanNotes: [], initialNotes: [...(resume?.initialNotes || [])], stopReason: null, verdict: null,
-    down: {}, // vendor@account -> { kind, message, resetsAt }: a login that cannot take calls this debate
+    // vendor@account, or vendor@account#group -> { kind, message, resetsAt, group? }: a login, or
+    // one limit group of it, that cannot take calls this debate
+    down: {},
     seats: seats.map((s, i) => {
       const seat = { ...s, id: s.id || `seat-${i}`, index: i, sessionId: null, mood: s.mood || { preset: 'grill' } };
       // Recorded provider threads can have advanced beyond the saved review, even without a
       // partial reply row. Recover with new threads; keep all prior spend in the ledger.
       delete seat.lastRawCost;
+      delete seat.lastRawUsage;
       return seat;
     }),
     chairman: chairman || { vendor: seats[0].vendor },
@@ -156,21 +161,34 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
   // while the call runs. A call that ends without a usage report is `unknown`, not zero.
   // A login whose quota is used up, or that is logged out or missing, is down for the rest of the
   // debate: its seats are skipped without a call (they would only fail again), and the board is
-  // told once. A network failure gets one retry; anything else fails the seat for the round.
-  const downKey = (seat) => `${seat.vendor}@${seat.account || ''}`;
+  // told once. A network failure gets one retry; so does a `throttled` call (a rate limit its
+  // provider announced as short, lifting at resetsAt) when the limit lifts before the wall clock
+  // runs out. A throttled call not waited out is a quota failure. Anything else fails the seat
+  // for the round.
+  // Where a login's limits come per model group (agy), a used-up quota takes out only the group
+  // the failing seat's model draws on; the other groups still answer. A quota failure whose group
+  // cannot be told, and a missing login, still take out the whole login.
+  const loginKey = (seat) => `${seat.vendor}@${seat.account || ''}`;
+  const downOf = (seat) => {
+    const group = limitGroup(seat);
+    return state.down[loginKey(seat)] || (group && state.down[`${loginKey(seat)}#${group}`]) || null;
+  };
   function markDown(seat, res) {
-    const key = downKey(seat);
+    const group = res.kind === 'quota' ? limitGroup(seat) : null;
+    const key = group ? `${loginKey(seat)}#${group}` : loginKey(seat);
     if (state.down[key]) return;
-    state.down[key] = { vendor: seat.vendor, account: seat.account || null, kind: res.kind, message: res.error, resetsAt: res.resetsAt || null };
+    state.down[key] = { vendor: seat.vendor, account: seat.account || null, ...(group ? { group } : {}), kind: res.kind, message: res.error, resetsAt: res.resetsAt || null };
     record({ type: 'pool-down', key, ...state.down[key] });
     fire('pool-down', { key, ...state.down[key] });
   }
 
   async function callSeat(seat, prompt, round, kind, projection = {}, { isChairman = false } = {}) {
     if (policyBlocked(seat)) return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false, error: 'This seat is stopped after a provider-policy failure. Check its earlier failure details.', kind: 'policy', skipped: true, fresh: true, attemptId: null };
-    const down = state.down[downKey(seat)];
-    if (down) return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false, error: `skipped: ${down.message}`, kind: down.kind, resetsAt: down.resetsAt, skipped: true, fresh: true, attemptId: null };
+    let retrying = null; // what a second attempt is called: 'network retry' or 'rate-limit retry'
     for (let attemptNo = 1; ; attemptNo++) {
+      // checked before a retry too: another seat may have benched this login during the pause
+      const down = downOf(seat);
+      if (down) return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false, error: `skipped: ${down.message}`, kind: down.kind, resetsAt: down.resetsAt, skipped: true, fresh: true, attemptId: null };
       checkInterrupted();
       if (state.status === 'error') return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false, error: 'the review stopped after an error', kind: 'killed', fresh: true, attemptId: null };
       if (stopRequested || finishRequested && !isChairman) return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false,
@@ -179,7 +197,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       // earlier calls. Never dispatch a new call after that one-time cancellation sweep.
       if (expired()) return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false,
         error: 'the wall clock ran out before the call', kind: 'killed', cancelReason: 'wall-clock', fresh: !resumes || seat.sessionId == null, attemptId: null };
-      const action = attemptNo > 1 ? 'network retry' : kind === 'reprompt' ? 're-prompt' : kind;
+      const action = retrying || (kind === 'reprompt' ? 're-prompt' : kind);
       const what = ['verdict', 'research'].includes(action) ? action : `${action} of ${isChairman ? 'the chairman' : seat.lens}`;
       if (!isChairman) projection = oneCall(seat, round);
       // Check and reserve synchronously at the dispatch boundary. A retry sees the failed
@@ -204,7 +222,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       const attemptId = newId();
       reserved.set(attemptId, projection);
       record({ type: 'attempt-start', attemptId, round, kind, seat: pub(seat), fresh: !resumes || seat.sessionId == null });
-      const res = await callOnce(seat, prompt, kind === 'research');
+      let res = await callOnce(seat, prompt, kind === 'research');
       const attempt = { type: 'attempt', attemptId, round, kind, seat: pub(seat), fresh: res.fresh, usage: res.reported ? res.usage : null,
         ...(res.progress ? { progress: res.progress } : {}), ...(res.systemCode ? { systemCode: res.systemCode } : {}),
         ...(res.reported ? {} : { unknown: true, ms: res.usage.ms,
@@ -215,10 +233,36 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       record(attempt);
       fire('attempt', attempt);
       checkInterrupted();
+      const throttled = !res.ok && res.kind === 'throttled';
+      const retry = kind !== 'research' && !res.ok && attemptNo === 1 && !expired() && !stopRequested && !(finishRequested && !isChairman)
+        && (res.kind === 'network' || throttled && res.resetsAt != null && res.resetsAt < deadlineAt);
+      // the attempt row keeps `throttled`; everything after it sees the quota failure it became,
+      // and the card and the out banner say why the wait was not taken
+      if (throttled && !retry) {
+        const why = kind === 'research' ? 'the searcher is not retried' : attemptNo > 1 ? 'one retry per turn'
+          : stopRequested || (finishRequested && !isChairman) || expired() ? 'the review is ending' : 'the review\'s time would run out first';
+        res = { ...res, kind: 'quota', error: `${res.error} The wait was not taken: ${why}.` };
+      }
       if (!res.ok && POOL_FATAL.has(res.kind)) markDown(seat, res);
-      if (kind !== 'research' && !res.ok && res.kind === 'network' && attemptNo === 1 && !expired() && !stopRequested && !(finishRequested && !isChairman)) { await new Promise((r) => setTimeout(r, opts.networkRetryMs)); continue; }
+      if (retry) {
+        retrying = throttled ? 'rate-limit retry' : 'network retry';
+        await pause(throttled ? Math.max(0, res.resetsAt - now()) : opts.networkRetryMs);
+        continue;
+      }
       return { ...res, attemptId };
     }
+  }
+
+  // The pause before a retry. Stop, finish, the wall clock and an interruption abort the
+  // controller, which ends the pause at once; the next turn of the loop then refuses the call.
+  function pause(ms) {
+    const { signal } = controller;
+    return new Promise((resolve) => {
+      if (signal.aborted) return resolve();
+      const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); };
+      const timer = setTimeout(done, ms);
+      signal.addEventListener('abort', done, { once: true });
+    });
   }
 
   async function callOnce(seat, prompt, researching = false) {
@@ -231,6 +275,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       if (res.sessionId) seat.sessionId = res.sessionId;
       const rawCost = res.usage?.raw?.cost ?? res.rawCost;
       if (typeof rawCost === 'number') seat.lastRawCost = rawCost;
+      if (res.usage?.rawScope === 'session') seat.lastRawUsage = res.usage.raw;
       return { ...EMPTY_USAGE, ...(res.usage || {}), cost: res.usage?.cost ?? res.cost ?? null,
         ...(!res.usage && rawCost != null ? { raw: { cost: rawCost } } : {}), ms: res.usage?.ms ?? res.ms ?? (now() - t0) };
     };
@@ -238,7 +283,10 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       // prevCost: the session's last cumulative cost reading, so a resumed call is charged only
       // its own part even after a server restart (adapters/common.js).
       const res = await runner(seat.vendor, prompt, sessionId, { timeoutMs: researching ? opts.research.timeoutMs : opts.callTimeoutMs,
-        ...(researching ? { research: opts.research } : {}), signal: controller.signal, seat, model: seat.model, effort: seat.effort, allowLimitedIsolation: opts.allowLimitedIsolation === true, prevCost: sessionId ? seat.lastRawCost : undefined });
+        ...(researching ? { research: opts.research } : {}), signal: controller.signal, seat, model: seat.model, effort: seat.effort, allowLimitedIsolation: opts.allowLimitedIsolation === true,
+        // only a seat in resume memory needs its CLI to save the session for the next round
+        keepSession: resumes && !researching && seat.id !== 'chairman',
+        prevCost: sessionId ? seat.lastRawCost : undefined, prevUsage: sessionId ? seat.lastRawUsage : undefined });
       const usage = accounting(res);
       if (res.usedTools) {
         seat.sessionId = null;
@@ -257,8 +305,8 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       if (e.usedTools || e.kind === 'policy') seat.sessionId = null;
       return { ok: false, text: '', usage, reported: !!e.usage, error, progress: safeProgress(e.progress),
         ...(researching && Number.isInteger(e.research?.searches) && e.research.searches >= 0 && e.research.searches <= 9 ? { searches: e.research.searches } : {}),
-        systemCode: ['TIMEOUT', 'KILLED', 'TOOL_POLICY', 'OUTPUT_LIMIT', 'PROVIDER_PROTOCOL', 'CLI_EXIT', 'ISOLATION_REQUIRED', 'RESEARCH_LIMIT', 'RESEARCH_INVALID', 'ENOENT', 'EACCES', 'EPERM'].includes(e.code) ? e.code : undefined,
-        kind: e.usedTools ? 'policy' : kind, usedTools: !!e.usedTools, cancelReason, resetsAt: e.resetsAt || null, timedOut: !cancelReason && e.code === 'TIMEOUT', fresh: sessionId == null };
+        systemCode: ['TIMEOUT', 'KILLED', 'TOOL_POLICY', 'OUTPUT_LIMIT', 'PROVIDER_PROTOCOL', 'CLI_EXIT', 'CLI_FAILURE', 'ISOLATION_REQUIRED', 'RESEARCH_LIMIT', 'RESEARCH_INVALID', 'ENOENT', 'EACCES', 'EPERM'].includes(e.code) ? e.code : undefined,
+        kind: e.usedTools ? 'policy' : kind, usedTools: !!e.usedTools, cancelReason, resetsAt: e.resetsAt || null, timedOut: !cancelReason && kind === 'timeout', fresh: sessionId == null };
     }
   }
 
@@ -369,7 +417,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     // A seat whose login is out for the whole debate (quota, login, missing CLI) has left the table:
     // waiting for it would block consensus forever and spend every remaining round. Fewer than two
     // seats left is no debate: stop and let the chairman write from what was said.
-    const out = (r) => r.failed && (state.down[downKey(r.seat)] || policyBlocked(r.seat));
+    const out = (r) => r.failed && (downOf(r.seat) || policyBlocked(r.seat));
     const replies = all.filter((r) => !out(r));
     if (replies.length < 2) return 'seats-down';
     // PASS and consensus need every remaining seat present: a seat whose call failed this round
@@ -451,7 +499,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
   // effort, once. The board is told which and why; the record keeps the fallback chairman.
   function fallbackChairman(from) {
     const tried = new Set([`${from.vendor}@${from.account || ''}`]);
-    const seat = state.seats.find((s) => !tried.has(`${s.vendor}@${s.account || ''}`) && !state.down[downKey(s)] && !policyBlocked(s) && s.vendor !== from.vendor);
+    const seat = state.seats.find((s) => !tried.has(`${s.vendor}@${s.account || ''}`) && !downOf(s) && !policyBlocked(s) && s.vendor !== from.vendor);
     return seat ? { vendor: seat.vendor, account: seat.account, colour: seat.colour, model: seat.endpoint ? seat.model : undefined, effort: undefined, ...(seat.endpoint ? { endpoint: seat.endpoint, keyEnv: seat.keyEnv } : {}) } : null;
   }
 
@@ -461,9 +509,9 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     if (finishRequested && controller.signal.aborted && !expired()) controller = new AbortController();
     writingVerdict = true;
     const seat = { id: 'chairman', vendor: chair.vendor, lens: 'chairman', colour: chair.colour || 'ink', index: -1, sessionId: null, model: chair.model, effort: chair.effort, account: chair.account, ...(chair.endpoint ? { endpoint: chair.endpoint, keyEnv: chair.keyEnv } : {}) };
-    if (state.down[downKey(seat)] && !fallenFrom) {
+    if (downOf(seat) && !fallenFrom) {
       const next = fallbackChairman(seat);
-      if (next) { record({ type: 'chairman-fallback', from: pub(seat), to: next.vendor, reason: state.down[downKey(seat)].message }); fire('chairman-fallback', { from: pub(seat), to: next.vendor, reason: state.down[downKey(seat)].message }); return verdict(next, { fallenFrom: seat }); }
+      if (next) { record({ type: 'chairman-fallback', from: pub(seat), to: next.vendor, reason: downOf(seat).message }); fire('chairman-fallback', { from: pub(seat), to: next.vendor, reason: downOf(seat).message }); return verdict(next, { fallenFrom: seat }); }
     }
     fire('chairman-start', { seat: pub(seat) });
     const prompt = chairmanPrompt({
@@ -595,8 +643,9 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       state.status = 'researching';
       state.research = { status: 'running', maxSearches: opts.research.maxSearches, timeoutMs: opts.research.timeoutMs };
       record({ type: 'research-start', ...state.research }); fire('research', state.research);
-      const selected = state.seats.find((s) => s.vendor === 'codex') || (state.chairman.vendor === 'codex' ? state.chairman : {});
-      const seat = { id: 'research', index: -2, vendor: 'codex', label: 'Codex research', lens: 'shared web evidence', model: selected.model, effort: selected.effort, account: selected.account };
+      // the searcher: its own vendor, model, effort and login profile from the research settings
+      const { vendor, model, effort, account } = opts.research;
+      const seat = { id: 'research', index: -2, vendor, label: 'Searcher', lens: 'searcher', model, effort, account };
       result = await callSeat(seat, researchPrompt(opts.research), -1, 'research', chairmanCall(seat), { isChairman: true });
     }
     if (result.ok) {

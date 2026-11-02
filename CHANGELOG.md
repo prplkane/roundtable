@@ -1,5 +1,151 @@
 # Changelog
 
+## 0.6.0
+
+### Review fixes
+
+- Keep successful research when the searcher repeats a source URL. Repeated URLs become one
+  citation, with distinct excerpts combined when they fit the existing limit. Every record
+  still passes URL, date and length checks; no extra model call is made to repair duplicates.
+- Offer each Codex model only the effort levels it takes. The Luna models stop at `max`
+  (`codex debug models`), but every Codex model was offered `ultra`. The pips, the chairman's
+  effort list and the server's check now follow the chosen model, and picking a model that
+  does not take the chosen level returns the seat to the CLI's default.
+
+### Security and usage
+
+- Read Claude's remaining quota with `claude -p /usage`, which the CLI answers itself with no
+  model call, at start, on Refresh status, after each Claude reply and when a debate ends. Claude
+  no longer shows "not reported" until its first reply after every server start, and its
+  per-model weekly limit (for example "7d Fable") now appears beside the session and weekly
+  ones. Only the limit lines are kept; the local activity summary in the same answer is
+  discarded. A reply's own figure stands in when the read gives nothing. An answer that shows a
+  turn, tokens or a cost, one with no plan limits (API-key billing), or a read that times out
+  stops further reads until restart. Calibration now treats reset times a few minutes apart as
+  the same window, since `/usage` prints them to the minute.
+- Read Antigravity's remaining quota with `agy -p /usage`, which the CLI answers itself with no
+  model call. Its limits come per model group (Gemini; Claude and GPT; Gemini 4 Argon on some
+  plans), and the seat lamps, the quota line and the quota picture show the windows of the
+  group each seat's model draws on, with the used share and the reset time. An answer that
+  shows a turn, tokens or a conversation, or a read that times out, stops further reads until
+  the server restarts, so a CLI change can cost one call, never one per reply. Measured quota
+  rates for Antigravity are kept per model and only against that model's group.
+- Bench only the used-up Antigravity model group, not the whole login: when an Argon seat
+  reports a used-up quota, the Gemini and Claude seats on the same login keep answering. A
+  seat on the default model, whose group cannot be told, and a logged-out CLI still take the
+  whole login out, as for every other vendor.
+- Keep Roundtable's calls out of each CLI's own history. Claude seats now pass
+  `--no-session-persistence` and Codex seats `--ephemeral`, so a stateless seat, chairman or
+  searcher call no longer leaves a session, prompts included, under `~/.claude/projects` or
+  `~/.codex/sessions`. Only seats in resume memory, whose next round continues the session,
+  still save it. Antigravity has no such flag.
+- Read Antigravity's AI credits with `agy -p /credits`, which the CLI answers itself with no
+  model call, beside the `/usage` read and at most every ten minutes. The usage table shows
+  "AI credits left", which you previously had to type in from the credits page.
+
+### Local operation and interface
+
+- Keep Windows history and login profiles in `%USERPROFILE%\.roundtable` instead of
+  `%LOCALAPPDATA%\Roundtable`. Windows redirects the AppData writes of anything started from a
+  packaged app, such as the Claude or Codex desktop app and their terminals, into a private copy
+  per app, so each app saw its own history and its own one-server lock. At startup Roundtable
+  now lists every older folder that still holds a review the data folder lacks: a checkout's
+  `debates/`, the earlier AppData folder and each packaged app's copy of it. It never moves them
+  itself. A login profile made under the earlier AppData default keeps working until it is moved.
+- Stream Codex replies over SSE with an idle limit that fits inside the call limit and two
+  reconnects, through a provider entry named per call that points at the same ChatGPT backend
+  with the same login. The built-in provider offers no idle or reconnect setting, and the CLI's
+  documented stream-idle default equals the default call limit, so a stalled reply ran the full
+  five minutes before failing; it now reconnects after 95 seconds at that limit and fails sooner
+  once the reconnects are used up. That a custom provider may use the ChatGPT login is not documented;
+  `SECURITY.md` names both ways a future CLI could react. Every reconnect is counted into the
+  attempt's saved progress and shown as a "reconnected ×N" mark on the reply card, in failure
+  details, error logs and the agent state, so a recovered stall stays visible.
+- Wait out an API endpoint's short rate limit once instead of benching its host for the rest of
+  the debate. A `429` whose `Retry-After` asks for 30 seconds or less, the delay `agy` itself
+  waits out, is retried once after that wait when it ends before the wall clock does. Without
+  `Retry-After`, with a longer one, or at a second `429` the host is benched as before; `402`
+  and every other status are unchanged. A `429` now counts as zero tokens, since the server
+  refused the request before the model ran, so a seat's token cap no longer blocks the retry or
+  later rounds as unknown spending. Stop, finish and the wall clock end a retry's wait at once,
+  for this wait and a network failure's, and a retry is skipped when another seat benched the
+  same login during the wait. The limited attempt is recorded with the kind `throttled`.
+
+## 0.5.0
+
+### Security and usage
+
+- Fix the Antigravity tool guard for CLI 1.4, which reports each tool as a `step_update` with
+  the tool inside it. The guard read only the older shapes, so a tool that no Antigravity
+  permission rule can deny, its web search, went unnoticed. Any reported tool step now stops
+  the seat at once, as it does for Claude and Codex.
+
+### Local operation and interface
+
+- Move a reply card as it opens and folds: the body under its seat and position unrolls over
+  the board's base motion time and rolls up a little faster before the card folds. Reduced
+  motion opens and folds it at once. The card head is also a button, so Enter or Space opens
+  and folds it, and focus stays on it while other replies land.
+- Codex calls disable analytics/telemetry uploads and unlimited connection retries. A valid
+  completed answer with measured usage survives a CLI that hangs during shutdown; incomplete
+  answers still fail without a timeout retry. Search and reconnect stages appear in diagnostics.
+- Treat Codex warning items as diagnostics instead of tool use, and surface a failed turn's
+  provider error promptly. Unknown tools remain blocked. Resolve npm and native CLIs in PATH
+  order so a later desktop binary cannot replace the terminal's selected installation.
+- Stop presenting Codex defaults from user configuration that isolated calls ignore. Keep
+  model and effort choices explicit when reproducibility matters.
+- Keep parent Codex app routing and session variables out of child CLIs and quota reads.
+  Use a shorter decision-review base prompt for Codex instead of its coding-agent prompt;
+  the tool restrictions remain unchanged. The temporary instruction file is removed after
+  each call, including failures.
+- Charge Codex resume calls by the increase in session token counters. Previous rounds are no
+  longer counted again against usage and budget caps. Missing or decreasing baselines remain
+  unknown; fresh sessions start their accounting from zero.
+- Show the chairman at work: while the verdict call runs, the Conclusion panel draws a pixel
+  sheet being written under a quill instead of staying hidden. Reduced motion shows a still page.
+- Keep a round or detail the person folded or opened across redraws; before, every server
+  event reopened the latest round and closed everything else.
+- Give the option columns their own grid, so two options fill the row with no blank third
+  column beside them when a note or the thinking strip is present.
+- Move reported quota to one quiet line above the board; the question now heads the review
+  state, the conclusion and the rounds directly.
+- Show a plain boot screen when setup takes longer than a moment: the logo in pixels, its
+  ring breathing slowly in and out while a light runs round the seats, and one line of text.
+- Box only the main controls. Row Delete appears on hover or focus (always on touch), Show all
+  and Clear finished are quiet text at the foot of the debates list, the review state and CLI
+  seats are unboxed, recommended states take their colour, and partial token sums show "+".
+- Fewer controls in the header: Compact is gone; each reply card starts folded to its seat and
+  position, even in the round that is still coming in, and opens by a click on its head;
+  theme and sound are pixel icons; Save error log moved to the status line. The debates list
+  folds and the browser remembers it.
+- Lead the board with the question as its heading and the review state as a small tag beside
+  it. Usage details is a toggle that never moves; its table groups seats under one line per
+  account, right-aligns numbers and marks partial sums with "+" as the debates list does.
+- Start every fold closed: debates, More context, the Quota picture, login profiles, and rounds
+  once a review is finished. More context spans the panel; run settings take the width they
+  need. Quota cards share one layout, with a shade per seat and a hatched chairman in the bar.
+- Rework the paper theme on night's structure: a faint plum page, white fields with visible
+  borders, seat colours closer to night's hues at text contrast, softer position tints.
+- Make research a visible role, the **searcher**: a card added with **+ Add searcher** beside
+  the chairman, with an open pixel eye as its mark. It has its own vendor, model,
+  effort and login profile instead of borrowing the first Codex seat's. Pick Claude, Codex or
+  Antigravity on its card; it starts on that vendor's lightest model at low effort, and agent
+  requests may set all four in `options.research` (Codex when no vendor is named). Claude
+  searches with WebSearch as its only tool, and its own search count and search-model tokens
+  are included; on Antigravity any tool but its web search stops it. It
+  replaces the research panel and its switch, and is named on the board, in Usage details and in
+  the quota picture. While it works the review state reads "Searcher at work" and the sources
+  panel shows its eye moving down a column of results, lighting the ones it keeps; with reduced
+  motion the picture stays still. Its card title and Effort carry a help tip, the README's
+  "How a review works" names it as an optional step, and the chairman's Effort has the tip too.
+- Show Antigravity's limited isolation on the card that runs on it, seat, chairman or searcher:
+  one warning line whose tip says in three sentences what cannot be sealed off, what Roundtable
+  denies and stops, and that choosing Antigravity accepts it. Choosing it there is the consent
+  the board sends, so there is no separate switch and no refusal when the table opens. Agent
+  requests still send `allowLimitedIsolation: true`; without it the server refuses Antigravity.
+- Fix a stray brace in the stylesheet that dropped the quota readout grid, and debate titles
+  squeezed to one letter at medium widths.
+
 ## 0.4.0
 
 - Add optional Codex web research before discussion, with an explicit public search question,

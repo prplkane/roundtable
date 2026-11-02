@@ -9,14 +9,14 @@ import { fileURLToPath } from 'node:url';
 import { adapters, ADAPTERS, quotaReaders, poolsByAccount } from './adapters/index.js';
 import { profileHome, killAll, liveChildren, resolveBinary, runProcess, cleanEnv } from './adapters/spawn.js';
 import { checkPool, STATUS, endpointLamp, createPreflightCache } from './preflight.js';
-import { retired } from './adapters/models.js';
+import { retired, quotaGroup } from './adapters/models.js';
 import { vendorCatalogue } from './adapters/catalogue.js';
 import { createDebate, DEFAULTS } from './engine.js';
-import { normaliseSeats, normaliseChairman, MOODS, COLOURS, poolKey, poolVendor, poolAccount } from './seats.js';
+import { normaliseSeats, normaliseChairman, MOODS, COLOURS, poolKey, poolVendor, poolAccount, lightestModel } from './seats.js';
 import { slugFor, openDebateDir, rebuildDebate } from './store.js';
 import { exportDebate, validateTarget, decisionRecord } from './export.js';
 import { rollup, hasUsableRound } from './engine.js';
-import { windowDeltas, updateCalibration, migrateCalibration, CALIBRATION_VERSION, project } from './estimate.js';
+import { roundDeltas, updateCalibration, migrateCalibration, CALIBRATION_VERSION, project } from './estimate.js';
 import { readFileSync, existsSync } from 'node:fs';
 import { fakeRunner, fakeQuota } from './fake.js';
 import { validateDebateRequest, validateMessage, validateAccept, BODY_LIMIT } from './validate.js';
@@ -26,7 +26,7 @@ import { createSettingsStore } from './settings.js';
 import { noteRecord, storedNote } from './notes.js';
 import { reviewSnapshot } from './snapshot.js';
 import { pickFolder } from './folder-picker.js';
-import { dataDirectory, acquireDataLock, historyIds, checkedHistoryPath, removeHistory, createUsageStore, createHistoryIndex } from './history.js';
+import { dataDirectory, legacyHistory, acquireDataLock, checkedHistoryPath, removeHistory, createUsageStore, createHistoryIndex } from './history.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const UI = path.join(ROOT, 'src', 'ui');
@@ -38,9 +38,10 @@ const FAKE = process.argv.includes('--fake') || FAKE_CONSENSUS;
 const DEBATES_DIR = dataDirectory({ fake: FAKE });
 const releaseDataLock = acquireDataLock(DEBATES_DIR);
 process.once('exit', releaseDataLock);
-const legacyDir = path.join(ROOT, FAKE ? 'debates-fake' : 'debates');
-const legacyDataDir = !process.env.ROUNDTABLE_DEBATES_DIR && historyIds(legacyDir).length ? legacyDir : null;
-if (legacyDataDir) console.warn(`Older history remains in ${legacyDataDir}. Stop its server and move that folder to ${DEBATES_DIR}; see Local data and backups.`);
+// an explicit folder is the person's choice; only the defaults have older places to look in
+const legacy = process.env.ROUNDTABLE_DEBATES_DIR ? [] : legacyHistory(DEBATES_DIR, { root: ROOT, fake: FAKE });
+for (const { dir, missing } of legacy) console.warn(`Older history remains in ${dir}: ${missing} review${missing === 1 ? '' : 's'} not in ${DEBATES_DIR}. Stop any server using that folder, then move those review folders into ${DEBATES_DIR}; see Local data and backups.`);
+const legacyDataDirs = legacy.map((x) => x.dir);
 const diagnostics = createDiagnostics(DEBATES_DIR, { mode: FAKE ? 'demo' : 'live', version: JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version });
 diagnostics.write({ code: 'server-start', action: 'startup' });
 const PORT = Number(process.env.PORT) || (FAKE ? 4748 : 4747);
@@ -90,8 +91,8 @@ try {
 } catch { /* none yet */ }
 const snapshotQuota = () => JSON.parse(JSON.stringify(quota));
 
-// A remaining-pool figure the user types in for a vendor whose CLI reports nothing (agy: the
-// "AI credits" page is browser-only). Kept with its time so the strip can say how old it is, and
+// A remaining-pool figure the user types in for a vendor whose CLI reports no live window (agy
+// when its /usage read gives nothing). Kept with its time so the strip can say how old it is, and
 // decremented on the board by each debate's weighted tokens at the user's own rate when given.
 const POOLS_FILE = path.join(DEBATES_DIR, FAKE ? '_pools.fake.json' : '_pools.json');
 const poolStore = createSettingsStore(POOLS_FILE, { onError: (e) => {
@@ -133,19 +134,17 @@ function settleRound(d, r) {
   let changed = false;
   for (const [pool, t] of Object.entries(tokens)) {
     if (unknown.has(pool)) continue; // a partial token count cannot calibrate the window's move
-    const deltas = windowDeltas(prev[pool], next[pool]);
+    const { deltas, keys } = roundDeltas(prev[pool], next[pool], pool, models[pool]);
     if (!deltas.length) continue;
-    calibration = updateCalibration(calibration, pool, deltas, t);
-    const keys = [pool];
-    if (models[pool].size === 1) { const key = `${pool}:${[...models[pool]][0]}`; calibration = updateCalibration(calibration, key, deltas, t); keys.push(key); }
+    for (const key of keys) calibration = updateCalibration(calibration, key, deltas, t);
     changed = true;
     for (const key of keys) for (const x of debates.values()) if (activeDebate(x) || x.clients.size) push(x, { type: 'calibration', vendor: pool, key, windows: calibration[key], round: r, tokens: t, deltas });
   }
   if (changed) saveCalibration();
 }
 
-// At the end of a debate the app-server vendors (codex) have usually not been re-read since
-// their last reply, so the last round is settled only after one fresh read of each such vendor.
+// At the end of a debate the separately read vendors (codex, agy) have usually not been re-read
+// since their last reply, so the last round is settled only after one fresh read of each such vendor.
 async function settleLast(d, r) {
   const pools = new Set(d.events.filter((e) => e.type === 'reply' && e.round === r).map((e) => keyOf(e.seat.vendor, e.seat.account)));
   await Promise.all([...pools].map((k) => refreshQuota(k)));
@@ -376,10 +375,11 @@ function synthesizeDebate(d, body = {}) {
 }
 
 // Remaining quota is per account, not per debate: one snapshot per pool key (`codex`, or
-// `codex@work` for a named profile; seats.poolKey), shared by every board. claude's arrives with
-// each reply; codex is read separately (readers); agy has none.
-const quota = {}; // pool key -> { windows, plan, at }
-const readers = FAKE ? { codex: async () => fakeQuota('codex') } : quotaReaders;
+// `codex@work` for a named profile; seats.poolKey), shared by every board. Each vendor's is
+// read separately (readers): claude and agy with -p /usage, codex through its app-server; agy's
+// comes in groups of windows per model, and a claude reply's own figure stands in when a read fails.
+const quota = {}; // pool key -> { windows, plan, at, groups? }
+const readers = FAKE ? { claude: async () => fakeQuota('claude'), codex: async () => fakeQuota('codex'), agy: async () => fakeQuota('agy') } : quotaReaders;
 const keyOf = (vendor, account) => poolKey(vendor, account, poolsByAccount(ADAPTERS[vendor]));
 
 function setQuota(key, q) {
@@ -392,16 +392,19 @@ function setQuota(key, q) {
 const reading = new Map();
 function refreshQuota(key) {
   const vendor = poolVendor(key), account = poolAccount(key);
-  if (!readers[vendor]) return Promise.resolve();
+  // a reader that stopped itself (agy's latch, quota.js) said why once; no read, no repeat
+  if (!readers[vendor] || readers[vendor].stopped?.()) return Promise.resolve(null);
   if (reading.has(key)) return reading.get(key);
-  // readCodexQuota resolves null on every failure (timeout, spawn error, no result) rather than
-  // throwing, so say so here or a dead read is invisible on the console.
+  // The readers resolve null on every failure (timeout, spawn error, no result) rather than
+  // throwing, so say so here or a dead read is invisible on the console. Resolves to the figure
+  // read, or null.
   const p = (async () => {
     try {
       const q = await readers[vendor]({ home: account ? profileHome(vendor, account) : null });
       if (!q) { diagnostics.write({ code: 'status-failed', action: 'quota', vendor }); console.warn(`[quota] ${key}: no figure (read failed or timed out); the strip keeps the last one`); }
       setQuota(key, q);
-    } catch (e) { diagnostics.write({ code: 'status-failed', action: 'quota', vendor }, e); console.error(`[quota] ${key}: ${e.message}`); } finally { reading.delete(key); }
+      return q;
+    } catch (e) { diagnostics.write({ code: 'status-failed', action: 'quota', vendor }, e); console.error(`[quota] ${key}: ${e.message}`); return null; } finally { reading.delete(key); }
   })();
   reading.set(key, p);
   return p;
@@ -434,10 +437,27 @@ function prepareDebate(raw, { board = false } = {}) {
     if (r) throw new Error(`${ADAPTERS[s.vendor].label} retired ${s.model} (${r.date}); use ${r.instead}.`);
   }
   const chairman = normaliseChairman(body.chairman, { vendors: ADAPTERS, efforts: effortsByVendor() });
-  if (!FAKE && !body.options.allowLimitedIsolation && [...seats, chairman].some((s) => s && ADAPTERS[s.vendor]?.limitedIsolation)) {
-    throw Object.assign(new Error('Antigravity has limited isolation. Enable Allow limited isolation explicitly, or choose another provider.'), { status: 400 });
+  if (!FAKE && !body.options.allowLimitedIsolation && [...seats, chairman, body.options.research].some((s) => s && ADAPTERS[s.vendor]?.limitedIsolation)) {
+    // the board sends this whenever a card it shows runs on Antigravity; an agent must send it
+    throw Object.assign(new Error('Antigravity cannot be fully isolated. Send options.allowLimitedIsolation: true once the person accepts that, or choose another provider.'), { status: 400 });
   }
-  return { fieldNotes, seats, chairman, options: { ...DEFAULTS, ...body.options } };
+  const options = { ...DEFAULTS, ...body.options };
+  // the board always names the searcher's settings, even "default"; an agent may leave them out
+  const named = ['model', 'effort', 'account'].some((k) => raw?.options?.research && Object.hasOwn(raw.options.research, k));
+  if (options.research) options.research = searcherSettings(options.research, named);
+  return { fieldNotes, seats, chairman, options };
+}
+
+// The searcher runs on its own settings, checked like the chairman's. A request that names none
+// gets its vendor's lightest model at low effort: finding and quoting sources needs little reasoning.
+function searcherSettings(research, named) {
+  const v = research.vendor;
+  const efforts = effortsByVendor()[v] || ADAPTERS[v].effortLevels || [];
+  const s = normaliseChairman({ vendor: v, model: named ? research.model : lightestModel(v, modelsByVendor()[v]), effort: named ? research.effort : efforts.includes('low') ? 'low' : undefined, account: research.account }, { vendors: ADAPTERS, efforts: effortsByVendor(), role: 'Searcher' });
+  const gone = s.model && retired(v, s.model);
+  if (gone) throw Object.assign(new Error(`Searcher: ${ADAPTERS[v].label} retired ${s.model} (${gone.date}); use ${gone.instead}.`), { status: 400 });
+  const { model, effort, account, ...rest } = research;
+  return { ...rest, ...(s.model ? { model: s.model } : {}), ...(s.effort ? { effort: s.effort } : {}), ...(s.account ? { account: s.account } : {}) };
 }
 
 function startDebate(raw, opts) {
@@ -489,17 +509,24 @@ function attachEngine(d, { fieldNotes, seats, chairman, options, resume = null, 
     adapters[vendor](prompt, sessionId, {
       cwd: store.seatDir(opts.seat?.id || 'chairman'), home: opts.seat?.account && ADAPTERS[vendor].home ? profileHome(vendor, opts.seat.account) : null,
       endpoint: opts.seat?.endpoint ? { url: opts.seat.endpoint, keyEnv: opts.seat.keyEnv || null } : null, // an API seat: where to send the round
-      timeoutMs: opts.timeoutMs, prevCost: opts.prevCost, model: opts.model || undefined, effort: opts.effort || undefined, tag: d.slug,
+      timeoutMs: opts.timeoutMs, prevCost: opts.prevCost, prevUsage: opts.prevUsage, model: opts.model || undefined, effort: opts.effort || undefined, tag: d.slug,
       allowLimitedIsolation: opts.allowLimitedIsolation,
       research: opts.research,
+      keepSession: opts.keepSession === true,
       minimal: !!opts.seat?.mood?.hidden, // a hidden mood runs as cheaply as its vendor allows
     });
-  // Every reply either carries the vendor's quota or triggers a separate read (not awaited).
+  // After every reply the vendor's quota is read again (not awaited) where a free read exists, so
+  // one source fills its strip and calibration compares windows of the same shape: claude's
+  // /usage names a per-model week its reply does not, and gives reset times to the minute. The
+  // figure a reply carried is used when there is no read, or the read gave nothing.
   const runner = async (vendor, ...rest) => {
     if (shuttingDown) throw Object.assign(new Error('The server is shutting down.'), { code: 'KILLED', kind: 'killed' });
     const r = await call(vendor, ...rest);
     const key = keyOf(vendor, rest[2]?.seat?.account);
-    if (!shuttingDown) { if (r.quota) setQuota(key, r.quota); else refreshQuota(key); }
+    if (!shuttingDown) {
+      if (readers[vendor] && !readers[vendor].stopped?.()) refreshQuota(key).then((q) => { if (!q && r.quota && !shuttingDown) setQuota(key, r.quota); });
+      else if (r.quota) setQuota(key, r.quota);
+    }
     return r;
   };
 
@@ -514,6 +541,9 @@ function attachEngine(d, { fieldNotes, seats, chairman, options, resume = null, 
 
   d.debate = createDebate({
     fieldNotes, seats, chairman, options, runner, gate, store, resume, baselines, provenance: FAKE ? { fake: true } : {}, synthesisOnly,
+    // agy: the limit group a seat's model draws on, from the latest quota read, so a used-up
+    // group benches only its own seats; null for a vendor with one set of limits
+    limitGroup: (seat) => quotaGroup(quota[keyOf(seat.vendor, seat.account)]?.groups, seat.model),
     cancel: (reason) => { const n = killAll(d.slug); if (n) console.log(`[${d.slug}] ${reason === 'human' ? 'stop' : reason === 'finish' ? 'finish discussion' : reason === 'interrupted' ? 'server shutdown' : reason === 'error' ? 'engine error' : 'wall clock'}: cancelled ${n} call${n === 1 ? '' : 's'}`); },
     emit: (type, payload) => {
       // run() rejects with the original Error after emitting this. Its catch below logs a
@@ -628,9 +658,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && p === '/api/seats') {
       const cat = catalogue || await catalogueReady;
       return json(res, 200, {
-        runtime: { mode: FAKE ? 'demo' : 'live', dataDir: DEBATES_DIR, ...(legacyDataDir ? { legacyDataDir } : {}), diagnostics: diagnostics.status() },
+        runtime: { mode: FAKE ? 'demo' : 'live', dataDir: DEBATES_DIR, ...(legacyDataDirs.length ? { legacyDataDirs } : {}), diagnostics: diagnostics.status() },
         vendors: Object.entries(ADAPTERS).map(([vendor, a]) => ({
-          vendor, kind: a.kind, label: a.label, colour: a.colour, usageUrl: a.usageUrl || null, quota: quota[vendor] || null, profiles: poolsByAccount(a),
+          vendor, kind: a.kind, label: a.label, colour: a.colour, usageUrl: a.usageUrl || null, quota: quota[vendor] || null, profiles: poolsByAccount(a), limitedIsolation: a.limitedIsolation === true, search: !!a.research,
           pool: a.pool, catalogue: cat[vendor],
         })),
         moods: Object.fromEntries(Object.entries(MOODS).map(([k, v]) => [k, v])),
@@ -800,4 +830,4 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('uncaughtException', (e) => { diagnostics.write({ code: 'server-crash', action: 'unknown' }, e); console.error('[server] uncaught:', e); shutdown('uncaught error', 1); });
 process.on('unhandledRejection', (e) => { diagnostics.write({ code: 'server-crash', action: 'unknown' }, e); console.error('[server] unhandled rejection:', e); });
-for (const vendor of Object.keys(readers)) refreshQuota(vendor); // codex: one app-server read at start
+for (const vendor of Object.keys(readers)) refreshQuota(vendor); // one read each at start: claude and agy -p /usage, the codex app-server

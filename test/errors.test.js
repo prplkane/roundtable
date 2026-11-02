@@ -33,6 +33,9 @@ test('a Claude usage limit with an epoch, a lapsed login, a network failure, a t
   assert.match(auth.message, /claude \/login/);
   assert.equal(classifyError({ message: 'x', stderr: 'Error: getaddrinfo ENOTFOUND api.example.com', label: 'Codex' }).kind, 'network');
   assert.equal(classifyError({ message: 'timed out after 300000 ms', code: 'TIMEOUT', label: 'Codex' }).kind, 'timeout');
+  const stalled = classifyError({ message: 'stream disconnected before completion: idle timeout waiting for SSE', code: 'CLI_FAILURE', label: 'Codex' });
+  assert.equal(stalled.kind, 'timeout', 'a stalled stream must not become an automatic network retry');
+  assert.match(stalled.message, /provider connection stalled/);
   assert.equal(classifyError({ message: 'agy: not found on PATH', label: 'Antigravity' }).kind, 'missing');
   const other = classifyError({ message: 'Codex: empty reply (exit 1)', label: 'Codex' });
   assert.deepEqual([other.kind, other.message], ['other', 'Codex: empty reply (exit 1)'], 'unrecognised text keeps its own words');

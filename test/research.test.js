@@ -95,10 +95,11 @@ test('research snapshots preserve intended evidence and bounded status without c
   assert.equal(snapshot({ ...state, research: null }).research, undefined);
 });
 
-test('research is explicit, bounded and Codex-only; supplied source bundles cannot bypass research', () => {
+test('research is explicit, bounded and runs on one searching CLI; supplied source bundles cannot bypass research', () => {
   const b = body();
-  assert.equal(validateDebateRequest(b, { adapters: ADAPTERS }).options.research.vendor, 'codex');
-  for (const change of [{ vendor: 'api' }, { query: '' }, { maxSearches: 0 }, { maxSearches: 9 }, { timeoutMs: 29999 }, { timeoutMs: 600001 }])
+  assert.equal(validateDebateRequest(b, { adapters: ADAPTERS }).options.research.vendor, 'codex'); // a request that names none
+  for (const vendor of ['claude', 'codex', 'agy']) assert.equal(researchSettings({ ...settings, vendor }).vendor, vendor);
+  for (const change of [{ vendor: 'api' }, { vendor: 'other' }, { query: '' }, { maxSearches: 0 }, { maxSearches: 9 }, { timeoutMs: 29999 }, { timeoutMs: 600001 }])
     assert.throws(() => researchSettings({ ...settings, ...change }), /Research/);
   assert.equal(validateDebateRequest({ ...b, fieldNotes: { ...fieldNotes, research: sources } }, { adapters: ADAPTERS }).fieldNotes.research, undefined);
   assert.doesNotMatch(researchPrompt(settings), /PRIVATE_REVIEW_CONTEXT/);
@@ -115,11 +116,60 @@ test('source records validate URLs, dates and bounds while keeping excerpts as q
   for (const s of [{ ...sources[0], url: 'javascript:alert(1)' }, { ...sources[0], url: 'https://user:secret@example.com/' },
     { ...sources[0], publishedAt: '2026-02-30' }, { ...sources[0], excerpt: 'x'.repeat(1201) }])
     assert.throws(() => researchSources(JSON.stringify({ sources: [s] })), /Research/);
-  for (const raw of ['not JSON', '{"sources":[]}', JSON.stringify({ sources: [sources[0], sources[0]] })]) assert.throws(() => researchSources(raw), /Research/);
-  const observer = researchObserver(settings);
+  for (const raw of ['not JSON', '{"sources":[]}']) assert.throws(() => researchSources(raw), /Research/);
+  assert.deepEqual(researchSources(JSON.stringify({ sources: [sources[0], sources[0]] }), good[0].gatheredAt), good);
+  // one fenced block, as Claude answers, is the JSON; anything around the fence is not
+  assert.equal(researchSources('```json\n' + JSON.stringify({ sources }, null, 2) + '\n```\n')[0].url, sources[0].url);
+  for (const raw of ['Here you go:\n```json\n' + sourceText + '\n```', '```json\n' + sourceText + '\n```\nDone.', '```json\n' + sourceText + '\n```\n```json\n{}\n```'])
+    assert.throws(() => researchSources(raw), /Research/);
+  const observer = researchObserver(settings, ADAPTERS.codex.research.searchIds);
   for (const type of ['item.started', 'item.updated', 'item.completed']) assert.equal(observer.accept({ type, item: { id: 'one', type: 'web_search' } }), true);
   assert.equal(observer.searches, 1);
   assert.equal(observer.accept({ type: 'item.started', item: { id: 'tool', type: 'command_execution' } }), false);
+  observer.report(0); assert.equal(observer.searches, 1, 'a CLI count only raises the figure');
+  observer.report(2); assert.equal(observer.searches, 2);
+});
+
+test('repeated source URLs keep one citation and combine bounded evidence without losing distinct URLs', () => {
+  const first = { ...sources[0], url: 'https://EXAMPLE.com:443/evidence', excerpt: 'The pilot reduces rollout risk.' };
+  const duplicate = { ...sources[0], title: 'Another title for the same page', excerpt: 'The pilot also delays full adoption.', publishedAt: null };
+  const other = { ...sources[0], url: 'https://example.com/evidence?edition=2' };
+  const fragment = { ...sources[0], url: 'https://example.com/evidence#limitations' };
+  const result = researchSources(JSON.stringify({ sources: [first, duplicate, duplicate, other, fragment] }));
+  assert.deepEqual(result.map(s => s.id), ['S1', 'S2', 'S3']);
+  assert.deepEqual(result.map(s => s.url), [sources[0].url, other.url, fragment.url]);
+  assert.equal(result[0].title, first.title);
+  assert.equal(result[0].publishedAt, first.publishedAt);
+  assert.equal(result[0].excerpt, first.excerpt + '\n\n' + duplicate.excerpt);
+  assert.deepEqual(researchSources(JSON.stringify({ sources: result }), result[0].gatheredAt), result, 'saved bundles stay stable on reload');
+
+  const full = { ...first, excerpt: 'x'.repeat(1200) };
+  const bounded = researchSources(JSON.stringify({ sources: [full, duplicate] }));
+  assert.equal(bounded[0].excerpt, full.excerpt, 'keep the first complete excerpt when another will not fit');
+  for (const invalid of [{ ...duplicate, title: '' }, { ...duplicate, excerpt: 'x'.repeat(1201) }, { ...duplicate, publishedAt: '2026-02-30' }])
+    assert.throws(() => researchSources(JSON.stringify({ sources: [first, invalid] })), /Research/, 'duplicates must still pass every field check');
+  assert.throws(() => researchSources(JSON.stringify({ sources: Array(9).fill(first) })), /expected 1–8 sources/, 'the raw record limit still applies');
+});
+
+test('duplicate citations from either searcher reach discussion, verdict and replay without another search', async () => {
+  for (const vendor of ['agy', 'codex']) {
+    const rows = [], calls = [], base = scripted(calls);
+    const duplicateText = JSON.stringify({ sources: [sources[0], { ...sources[0], excerpt: 'A wider rollout reveals different risks.' }] });
+    const state = await createDebate({ fieldNotes, seats, chairman: { vendor: 'claude' },
+      options: { research: { ...settings, vendor }, critiqueRounds: 0, unattended: true, allowLimitedIsolation: true },
+      store: { append: r => rows.push(r) }, runner: async (...args) => {
+        const result = await base(...args);
+        return args[3].research ? { ...result, text: duplicateText } : result;
+      } }).run();
+    assert.equal(state.research.status, 'done');
+    assert.equal(state.research.sources.length, 1);
+    assert.equal(calls.filter(c => c.opts.research).length, 1);
+    assert.equal(calls.length, 4, 'one search, two seats and one chairman; no repair call');
+    for (const c of calls.filter(c => !c.opts.research)) assert.match(c.prompt, /A wider rollout reveals different risks/);
+    assert.deepEqual(rebuildDebate(rows).research.sources, state.research.sources);
+    assert.deepEqual(snapshot(state).research.sources, state.research.sources);
+    assert.match(decisionRecord(rows, 'synthetic-research').markdown, /A wider rollout reveals different risks/);
+  }
 });
 
 test('research CLI permits only reported web searches, enforces the count and keeps debate tools disabled', async () => {
@@ -133,6 +183,7 @@ test('research CLI permits only reported web searches, enforces the count and ke
     assert.equal(result.research.searches, 1);
     assert.equal(result.usedTools, false);
     assert.ok(result.raw.args.includes('web_search="live"'));
+    assert.ok(result.raw.args.includes('model_providers.roundtable.supports_websockets=false'), 'the searcher streams the same way as a seat');
     assert.ok(result.raw.args.includes('mcp_servers={}'));
     assert.ok(result.raw.args.includes('features.shell_tool=false'));
     await assert.rejects(run('ordinary debate'), (e) => e.code === 'TOOL_POLICY');
@@ -223,4 +274,95 @@ test('failed, unknown-cost or interrupted research cannot silently start or repe
     assert.equal(recovered.stopReason, 'research-failed');
     assert.match(recovered.research.error, /not rerun/);
   }
+});
+
+test('the searcher runs on its own model, effort and login profile, never a seat\'s', async () => {
+  const own = { ...settings, model: 'gpt-6-luna', effort: 'low', account: 'work' };
+  assert.deepEqual(researchSettings(own), { vendor: 'codex', query: settings.query, maxSearches: 2, timeoutMs: 30000, model: 'gpt-6-luna', effort: 'low', account: 'work' });
+  assert.equal(researchSettings({ ...settings, model: '' }).model, undefined); // "default": the CLI's own model
+  assert.throws(() => researchSettings({ ...settings, model: 42 }), /Research: searcher model/);
+  const codexSeat = { id: 'seat-1', vendor: 'codex', lens: 'cost', model: 'gpt-6-astra', effort: 'xhigh', account: 'personal' };
+  const calls = [];
+  await createDebate({ fieldNotes, seats: [seats[0], codexSeat], options: { research: own, critiqueRounds: 0, unattended: true }, runner: scripted(calls), store: { append() {} } }).run();
+  const search = calls.find((c) => c.opts.research);
+  assert.deepEqual([search.opts.model, search.opts.effort, search.opts.seat.account], ['gpt-6-luna', 'low', 'work']);
+  assert.equal(search.opts.seat.label, 'Searcher');
+  const p = project({ seats: [seats[0], codexSeat], chairman: { vendor: 'claude' }, critiqueRounds: 0, research: own });
+  assert.equal(p.bySeat.research.model, 'gpt-6-luna');
+});
+
+test('the searcher runs on the vendor chosen for it, and its call and estimate go to that pool', async () => {
+  const calls = [];
+  const claudeSearcher = { ...settings, vendor: 'claude', model: 'claude-haiku-4-5' };
+  await createDebate({ fieldNotes, seats, options: { research: claudeSearcher, critiqueRounds: 0, unattended: true }, runner: scripted(calls), store: { append() {} } }).run();
+  const search = calls.find((c) => c.opts.research);
+  assert.deepEqual([search.vendor, search.opts.seat.vendor, search.opts.model], ['claude', 'claude', 'claude-haiku-4-5']);
+  const p = project({ seats, chairman: { vendor: 'codex' }, critiqueRounds: 0, research: claudeSearcher });
+  assert.ok(p.byVendor.claude.seats.includes('research'));
+  assert.ok(!p.byVendor.codex.seats.includes('research'));
+});
+
+// Shapes from Claude CLI 2.1.292 and agy 1.4.11 searching once (stream-json), trimmed.
+const claudeSearchEvent = (id, name = 'WebSearch') => JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input: { query: 'synthetic public query' } }] } });
+const agyStep = (index, name, state = 'DONE') => JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'C1', step_index: index, state, step_type: 'tool', tool_name: name, tool_info: { name, parameters: { query: 'synthetic public query' } } } });
+const searchModels = (n) => JSON.stringify({ modelUsage: {
+  'claude-haiku-4-5': { inputTokens: 18, outputTokens: 619, cacheReadInputTokens: 10562, cacheCreationInputTokens: 3167, webSearchRequests: 0, thinkingTokens: 484 },
+  'claude-haiku-4-5-20251001': { inputTokens: 10190, outputTokens: 143, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, webSearchRequests: n, thinkingTokens: 0 } } });
+
+test('a Claude searcher may call WebSearch only, counts its own searches and includes the search model\'s tokens', async () => {
+  const bin = { file: process.execPath, prefix: [path.resolve('test/fixtures/fake-cli.mjs')] };
+  const run = makeAdapter('claude', { bin });
+  const claude = { ...settings, vendor: 'claude' };
+  try {
+    process.env.FAKE_SHAPE = 'claude'; process.env.FAKE_TEXT = sourceText;
+    process.env.FAKE_PRELUDE = claudeSearchEvent('toolu_1') + '\n';
+    process.env.FAKE_RESULT = searchModels(1);
+    const result = await run(researchPrompt(claude), null, { research: claude });
+    assert.equal(result.research.searches, 1);
+    const args = result.raw.args, i = args.indexOf('--tools');
+    assert.deepEqual(args.slice(i, i + 6), ['--tools', 'WebSearch', '--allowedTools', 'WebSearch', '--disallowedTools', 'mcp__*']);
+    assert.ok(args.includes('--strict-mcp-config') && args.includes('--safe-mode'));
+    assert.equal(result.usage.input, 18 + 10190, 'the search model\'s input is counted');
+    assert.equal(result.usage.output, 619 + 143);
+    delete process.env.FAKE_RESULT;
+    await assert.rejects(run('ordinary debate'), (e) => e.code === 'TOOL_POLICY'); // a seat may not search
+    await assert.rejects(makeAdapter('codex', { bin })('q', null, { research: claude }), (e) => e.code === 'RESEARCH_INVALID');
+    process.env.FAKE_RESULT = searchModels(3); // one WebSearch call that ran three searches
+    await assert.rejects(run('q', null, { research: claude }), (e) => e.code === 'RESEARCH_LIMIT' && e.research.searches === 3);
+    delete process.env.FAKE_RESULT;
+    process.env.FAKE_SLEEP = '10000';
+    for (const [prelude, code] of [[claudeSearchEvent('toolu_2', 'Bash'), 'TOOL_POLICY'], [['a', 'b', 'c'].map((id) => claudeSearchEvent(id)).join('\n'), 'RESEARCH_LIMIT']]) {
+      process.env.FAKE_PRELUDE = prelude + '\n';
+      await assert.rejects(run('q', null, { research: claude, timeoutMs: 3000 }), (e) => e.code === code);
+    }
+  } finally { for (const k of ['FAKE_SHAPE', 'FAKE_TEXT', 'FAKE_PRELUDE', 'FAKE_SLEEP', 'FAKE_RESULT']) delete process.env[k]; }
+  assert.equal(ADAPTERS.claude.research.foreignTool([{ type: 'result', num_turns: 4, permission_denials: [] }]), false, 'searches take turns');
+  assert.equal(ADAPTERS.claude.research.foreignTool([{ type: 'result', permission_denials: [{ tool_name: 'Read' }] }]), true, 'a denied tool is still an attempt');
+  assert.throws(() => ADAPTERS.claude.research.args(['-p', '--tools', 'Read']), (e) => e.code === 'RESEARCH_INVALID');
+});
+
+test('an Antigravity searcher may use search_web only, each step counted once, and needs consent', async () => {
+  const bin = { file: process.execPath, prefix: [path.resolve('test/fixtures/fake-cli.mjs')] };
+  const run = makeAdapter('agy', { bin });
+  const agy = { ...settings, vendor: 'agy' };
+  const consent = { research: agy, allowLimitedIsolation: true };
+  try {
+    process.env.FAKE_SHAPE = 'agy'; process.env.FAKE_TEXT = sourceText;
+    process.env.FAKE_PRELUDE = [agyStep(2, 'search_web', 'ACTIVE'), agyStep(2, 'search_web')].join('\n') + '\n';
+    const result = await run(researchPrompt(agy), null, consent);
+    assert.equal(result.research.searches, 1);
+    assert.equal(result.usedTools, false);
+    await assert.rejects(run('q', null, { research: agy }), (e) => e.code === 'ISOLATION_REQUIRED');
+    await assert.rejects(run('ordinary debate', null, { allowLimitedIsolation: true }), (e) => e.code === 'TOOL_POLICY'); // a seat's search is a tool
+    process.env.FAKE_SLEEP = '10000';
+    for (const [prelude, code] of [
+      [agyStep(2, 'view_file', 'ACTIVE'), 'TOOL_POLICY'],
+      [JSON.stringify({ event: 'step_update', step_update: { step_index: 2, step_type: 'tool' } }), 'TOOL_POLICY'], // a tool without a name is not a search
+      [JSON.stringify({ event: 'step_update', step_update: { step_index: 2, subagent_info: { id: 'x' } } }), 'TOOL_POLICY'],
+      [[2, 3, 4].map((i) => agyStep(i, 'search_web', 'ACTIVE')).join('\n'), 'RESEARCH_LIMIT'],
+    ]) {
+      process.env.FAKE_PRELUDE = prelude + '\n';
+      await assert.rejects(run('q', null, { ...consent, timeoutMs: 3000 }), (e) => e.code === code);
+    }
+  } finally { for (const k of ['FAKE_SHAPE', 'FAKE_TEXT', 'FAKE_PRELUDE', 'FAKE_SLEEP']) delete process.env[k]; }
 });

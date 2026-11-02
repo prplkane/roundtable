@@ -86,6 +86,14 @@ test('windowDeltas: same window gives the rise; a moved reset or a drop is inval
   assert.deepEqual(d.map((x) => [x.label, x.valid]), [['5h', true], ['7d', false], ['x', true], ['new', false]]);
   assert.ok(Math.abs(d[0].delta - 0.03) < 1e-9);
   assert.deepEqual(windowDeltas(null, next), []);
+  // a reset read a minute apart is the same window (Claude's /usage prints it to the minute and
+  // rounds it differently between reads); a rollover moves it by hours
+  const at = (resetsAt, used) => ({ windows: [{ label: '5h', used, resetsAt }] });
+  const T = 1_793_624_400;
+  assert.equal(windowDeltas(at(T - 60, 0.53), at(T, 0.55))[0].valid, true, 'minute jitter');
+  assert.equal(windowDeltas(at(T, 0.53), at(T - 1, 0.55))[0].valid, true, 'the reply\'s exact second beside the read\'s minute');
+  assert.equal(windowDeltas(at(T, 0.53), at(T + 5 * 3600, 0.55))[0].valid, false, 'a new 5-hour window');
+  assert.equal(windowDeltas(at(null, 0.53), at(T, 0.55))[0].valid, false, 'a reset time appearing is not known to be the same window');
 });
 
 test('updateCalibration is long-run: total movement over total tokens; a ceiling until anything moves', () => {
@@ -217,6 +225,14 @@ test('baselines never learn from scripted seats: fake- session ids are skipped r
   const kept = readAllTranscripts(root, { excludeSynthetic: true });
   assert.equal(kept.length, 2);
   assert.equal(baselinesFrom(kept).claude.fresh.input, 100);
+});
+
+test('baselines skip a call the server refused before the model ran: zero tokens is known spending, not a sample of a call', () => {
+  const seat = { vendor: 'api', id: 'seat-0' };
+  const refused = { type: 'attempt', round: 0, seat, errorKind: 'throttled', usage: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, thinking: 0, cost: null } };
+  const answered = { type: 'attempt', round: 0, seat, usage: { input: 1400, output: 120 } };
+  assert.deepEqual([baselinesFrom([refused, answered]).api.fresh.input, baselinesFrom([refused, answered]).api.fresh.n], [1400, 1]);
+  assert.equal(baselinesFrom([refused]).api, undefined, 'a vendor with only refused calls has no baseline');
 });
 
 test('two profiles of one vendor calibrate and project separately', () => {

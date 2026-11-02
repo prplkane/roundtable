@@ -13,6 +13,7 @@ export const DEFAULT_MOOD = 'grill';
 // A custom mood matching a persona code uses its prompt, avatar and light model settings.
 // The server opts board requests into these shortcuts; ordinary API requests keep custom text.
 import { HIDDEN_MOODS } from './personas.js';
+import { modelEfforts } from './adapters/models.js';
 export { HIDDEN_MOODS } from './personas.js';
 export function hiddenMood(text) {
   const word = String(text || '').trim().toLowerCase();
@@ -215,7 +216,7 @@ function normaliseEndpoint(raw, label) {
 }
 
 // vendors: { [vendor]: { label, effortLevels } } (the adapter table). efforts may widen a
-// vendor's levels from the catalogue (codex reads its list from config.toml); models is the
+// vendor's levels from the catalogue (agy's come from its model ids); models is the
 // catalogue's model list per vendor, for the lightest model a hidden mood runs on.
 export function normaliseSeats(input, { vendors, efforts = {}, models = {}, hidden = false }) {
   const issue = seatSetupIssue((input || []).map((raw) => raw && vendors[raw.vendor] ? raw : null));
@@ -225,9 +226,9 @@ export function normaliseSeats(input, { vendors, efforts = {}, models = {}, hidd
   for (const raw of input || []) {
     if (!raw || !vendors[raw.vendor]) continue;
     const lens = String(raw.lens || '').trim();
-    const allowed = efforts[raw.vendor] || vendors[raw.vendor].effortLevels || [];
+    const allowed = modelEfforts(raw.vendor, raw.model, efforts[raw.vendor] || vendors[raw.vendor].effortLevels || []);
     const effort = raw.effort ? String(raw.effort).trim() : null;
-    if (effort && !allowed.includes(effort)) throw new Error(`${vendors[raw.vendor].label} does not accept effort "${effort}" (allowed: ${allowed.join(', ')}).`);
+    if (effort && !allowed.includes(effort)) throw new Error(`${vendors[raw.vendor].label}${raw.model ? ` ${String(raw.model).trim()}` : ''} does not accept effort "${effort}" (allowed: ${allowed.join(', ')}).`);
     perVendor[raw.vendor] = (perVendor[raw.vendor] || 0) + 1;
     // an endpoint seat: URL, model and key variable checked; its account is its host
     const ep = vendors[raw.vendor].kind === 'api' ? normaliseEndpoint(raw, `Seat "${lens}"`) : null;
@@ -258,13 +259,14 @@ export function normaliseSeats(input, { vendors, efforts = {}, models = {}, hidd
   return seats;
 }
 
-export function normaliseChairman(raw, { vendors, efforts = {} }) {
+// role: who the error names; the searcher's settings are checked here too
+export function normaliseChairman(raw, { vendors, efforts = {}, role = 'Chairman' }) {
   const vendor = raw?.vendor && vendors[raw.vendor] ? raw.vendor : null;
   if (!vendor) return null;
-  const allowed = efforts[vendor] || vendors[vendor].effortLevels || [];
+  const allowed = modelEfforts(vendor, raw.model, efforts[vendor] || vendors[vendor].effortLevels || []);
   const effort = raw.effort ? String(raw.effort).trim() : null;
-  if (effort && !allowed.includes(effort)) throw new Error(`Chairman: ${vendors[vendor].label} does not accept effort "${effort}".`);
-  const ep = vendors[vendor].kind === 'api' ? normaliseEndpoint(raw, 'Chairman') : null;
+  if (effort && !allowed.includes(effort)) throw new Error(`${role}: ${vendors[vendor].label}${raw.model ? ` ${String(raw.model).trim()}` : ''} does not accept effort "${effort}".`);
+  const ep = vendors[vendor].kind === 'api' ? normaliseEndpoint(raw, role) : null;
   return { vendor, colour: vendors[vendor].colour || undefined, model: ep ? ep.model : raw.model ? String(raw.model).trim() : undefined, effort: effort || undefined,
     account: ep ? ep.account : normaliseAccount(raw.account), ...(ep ? { endpoint: ep.endpoint, keyEnv: ep.keyEnv } : {}) };
 }

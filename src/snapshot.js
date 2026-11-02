@@ -65,6 +65,8 @@ export function reviewSnapshot(d) {
       ...(gate.reopenable ? { reopenCalls: (state.seats || []).length } : {}) } : null,
     replies: (rounds[lastRound] || []).map((r) => ({ lens: r.seat.lens, vendor: r.seat.vendor,
       status: cancellationReason(r, state.stopReason, lastRound) ? 'cancelled' : r.failed ? 'failed' : r.valid ? 'replied' : 'invalid',
+      // a recovered stall on a complete reply: the provider connection was started again this many times
+      ...(safeProgress(r.progress).reconnects ? { reconnects: safeProgress(r.progress).reconnects } : {}),
       ...(r.failed ? { reason: cancellationReason(r, state.stopReason, lastRound) || r.errorKind, progress: safeProgress(r.progress) } : r.valid ? {
         position: optionLabel(r.stanceKey, state.fieldNotes?.options), agreesWith: r.parsed.agreeWith,
         disagrees: r.parsed.disagree, newPoints: r.parsed.new, assumptions: r.parsed.assumptions,

@@ -9,11 +9,11 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   own CLI (`claude`, `codex`, `agy`) as a child process, and that CLI does its own login the way
   it does in your terminal. A test asserts that no source file names a credential file or copies
   one. A second account ("login profile") is an empty directory under the OS user-data folder
-  (`%LOCALAPPDATA%\roundtable\homes\<profile>\<vendor>`, `~/Library/Application Support/roundtable/...`,
+  (`%USERPROFILE%\.roundtable\homes\<profile>\<vendor>`, `~/Library/Application Support/roundtable/...`,
   `~/.local/share/roundtable/...`) that you log into yourself once; Roundtable only points the
   CLI at it through the variable the CLI documents.
 - **Billing: the subscription, unless you say otherwise.** The child's environment is yours minus
-  the Claude Code session variables and minus API-key variables (`ANTHROPIC_API_KEY`,
+  Claude Code session variables, parent Codex app routing/session variables and API-key variables (`ANTHROPIC_API_KEY`,
   `OPENAI_API_KEY`, `GEMINI_API_KEY` and the like), so a key left in your shell cannot move a
   debate onto pay-per-token. Set `ROUNDTABLE_API_BILLING=1` to pass them through on purpose.
 - **Budget caps check admission, including retries.** Each provider attempt is checked against
@@ -125,12 +125,16 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   This is declared attribution, not an authenticated identity or proof of human approval.
   It grants no extra permissions. Legacy notes without a source retain their original label.
 - **Tool restrictions depend on the installed CLI.** Claude uses safe mode, an empty tool
-  list, no MCP servers and no permission prompts. Codex ignores user configuration and rules,
+  list, no MCP servers, MCP tools removed by name and no permission prompts. Codex ignores user configuration and rules,
   uses strict configuration, a read-only sandbox, no MCP servers, no web search and disabled
   tool features. These flags require a compatible CLI; unsupported options fail without a
   weaker fallback. Antigravity uses session-only deny rules for documented file, command,
-  URL and MCP tools. Its shared customizations and MCP discovery cannot be disabled, so live
-  Antigravity calls require explicit `allowLimitedIsolation: true` consent. No saved provider
+  URL and MCP tools. Its web search has no permission rule and cannot be denied, so the guard
+  below stops a seat at its first reported tool step, search included. Its shared
+  customizations and MCP discovery cannot be disabled either, so live
+  Antigravity calls require explicit consent: on the board, choosing Antigravity on a card that
+  states the limitation; in an agent request, `allowLimitedIsolation: true`. The server refuses
+  Antigravity without it. No saved provider
   settings are changed. All prompts use stdin, not the process command line.
   The mandatory guard terminates an owned CLI when a prohibited tool event is reported,
   stops that seat for the review, retains known or unknown spending and excludes its answer
@@ -138,11 +142,35 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   `strictTools: false` is refused and cannot disable it in old records. Streams are bounded
   to 8 MiB combined stdout/stderr and a pending event to 1 MiB. Invalid, incomplete or oversized
   streams stop the seat for the review, discard its session and retain reported spending.
+  Codex warning/error items are diagnostics, not tool activity; unknown item types still fail
+  closed. A failed turn is rejected immediately. After a validated answer, completion event
+  and token counts, a Codex process that does not exit within one second is terminated and its
+  result preserved. Output and tool checks continue until termination. No retry is made for
+  that completed call, and a truncated tail or subsequent prohibited tool still rejects it.
+  Codex telemetry exports, analytics, shell snapshots and unlimited connection retries are
+  disabled per call; shared CLI settings and login files are not changed.
+  Each Codex call also names a provider entry of its own that points at the same ChatGPT
+  backend and uses the same login, so the reply streams over SSE with an idle limit derived
+  from the call limit ((limit − 15 s) ÷ 3, between 10 s and 300 s) and at most two reconnects.
+  The built-in provider exposes no idle or reconnect setting, and the CLI's documented
+  stream-idle default, 300 s, equals the default call limit, so its own recovery could never run
+  before Roundtable ended the call. Every key is in the CLI's configuration reference; that a
+  custom provider may use the ChatGPT login is demonstrated, not documented. A CLI that refuses
+  it is expected to fail the call with an authentication error, which marks the pool down for
+  the review; one that ignores it is expected to fall back to the built-in provider. A reconnect
+  starts the answer again, and the interrupted attempt's tokens may be charged by the provider
+  without appearing in the reported usage.
+  Codex also receives a short review-specific base prompt through a uniquely created temporary
+  file, removed after the call. It contains no field notes or personal context. The tool flags,
+  read-only sandbox and reported-tool guard apply independently of these instructions.
   Detection can arrive after an operation has started and cannot undo it. Undisclosed remote
   actions are not observable. These are provider restrictions and detection, not an OS
   security sandbox supplied by Roundtable. Flags are in `src/adapters/config.js`.
 - **Optional web research has a separate policy.** Explicit research consent starts one fresh
-  Codex CLI call with live web search enabled; other tool restrictions remain. Only the
+  call on the chosen searcher's CLI with only its web search allowed; other tool restrictions
+  remain. Codex turns on live `web_search`; Claude gets `WebSearch` as its only tool, approved
+  for that call; Antigravity, whose search cannot be switched off or on, keeps its deny rules,
+  and any reported tool other than `search_web` stops the call. API endpoints cannot search. Only the
   separately entered search question goes into that call. Search terms and visited pages are
   handled by the provider, so review the question for private details. The local wall clock,
   output limits and reported search-operation limit are enforced. One reported operation can
@@ -150,7 +178,11 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   its event arrives. This is not a provider-enforced search or billing ceiling. Research
   spending joins the review's vendor budget and is shown separately from discussion seats.
   Up to eight source URLs, dates and excerpts are saved as provider-supplied, unverified data;
-  every seat and the chairman receives that same bundle. Source text cannot authorize tools
+  all returned records are validated before repeated normalized URLs are combined into one
+  citation. The first title/date are retained and distinct excerpts are appended only when
+  their complete combined text fits the 1,200-character limit. The raw eight-record limit
+  still applies; malformed duplicates cannot bypass validation. No repair call is made.
+  Every seat and the chairman receives that same bundle. Source text cannot authorize tools
   or human decisions. Failed or interrupted research stops before discussion and is never
   automatically rerun; completed evidence is reused without fetching it again. Ordinary
   discussion and verdict calls always retain the no-tools policy.

@@ -50,15 +50,16 @@ test('interrupted resume seeds completed history and every note without reusing 
     ];
     const rb = rebuildDebate(rows), calls = [], saved = [];
     assert.equal(rb.partialRound, partialReply ? 2 : null);
-    const d = createDebate({ fieldNotes: FN, seats: rb.seats.map((s) => ({ ...s, lastRawCost: 20 })), chairman: rb.chairman,
+    const d = createDebate({ fieldNotes: FN, seats: rb.seats.map((s) => ({ ...s, lastRawCost: 20, lastRawUsage: { input: 100, output: 20 } })), chairman: rb.chairman,
       options: rb.options, resume: rb, gate: async () => ({ action: 'continue' }), store: { append: (r) => saved.push(r) },
       runner: async (vendor, prompt, sid, opts) => {
-        calls.push({ prompt, sid, prevCost: opts.prevCost, id: opts.seat.id });
+        calls.push({ prompt, sid, prevCost: opts.prevCost, prevUsage: opts.prevUsage, id: opts.seat.id });
         return { text: opts.seat.id === 'chairman' ? VERDICT_OK : text('Ship now'), usage: { input: 1, output: 1 }, sessionId: `fresh-${opts.seat.id}` };
       } });
     await d.run();
     for (const c of calls.filter((c) => c.id !== 'chairman')) {
       assert.equal(c.sid, null); assert.equal(c.prevCost, undefined);
+      assert.equal(c.prevUsage, undefined);
       assert.match(c.prompt, /DECISION: Ship\?/);
       assert.match(c.prompt, /Keep the older correction/); assert.match(c.prompt, /Keep the latest correction/);
       assert.doesNotMatch(c.prompt, /DISCARDED_PROVIDER_CONTEXT/);

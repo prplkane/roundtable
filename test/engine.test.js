@@ -2,6 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createDebate, rollup, positions } from '../src/engine.js';
 import { classifyError } from '../src/adapters/errors.js';
+import { httpErrorKind } from '../src/adapters/endpoint.js';
+import { agyQuota } from '../src/adapters/quota.js';
+import { quotaGroup } from '../src/adapters/models.js';
+import { AGY_USAGE } from './fixtures/agy-usage.mjs';
 
 const FIELD_NOTES = { decision: 'Ship the new checkout?', options: ['Ship now', 'Wait a sprint'], constraints: 'two devs' };
 const SEATS = [
@@ -100,6 +104,17 @@ test('a timed-out seat explains its earlier missing usage and never disguises it
   const block = events.find((e) => e.kind === 'seat-tokens-unknown');
   assert.equal(block.cause, 'timeout'); assert.equal(block.spent, 0); assert.equal(block.cap, 400000);
   assert.equal(state.verdict.failed, false, 'other providers can finish');
+});
+
+test('only seats in resume memory ask their CLI to keep the session; stateless calls and the chairman leave none', async () => {
+  for (const [memory, seatsKeep] of [['stateless', false], ['resume', true]]) {
+    const fr = fakeRunner(disagreeForever), seen = [];
+    await createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS, chairman: { vendor: 'claude' }, gate: autoGate, store: stub(),
+      options: { critiqueRounds: 1, memory },
+      runner: async (vendor, prompt, sid, o) => { seen.push({ chair: o.seat?.id === 'chairman', keep: o.keepSession }); return fr.runner(vendor, prompt, sid, o); } }).run();
+    assert.ok(seen.filter((x) => !x.chair).every((x) => x.keep === seatsKeep), `${memory}: seat calls`);
+    assert.ok(seen.some((x) => x.chair) && seen.filter((x) => x.chair).every((x) => x.keep === false), `${memory}: the chairman`);
+  }
 });
 
 test('a budget-skipped chairman keeps its configuration available to the live recovery controls', async () => {
@@ -962,6 +977,52 @@ test('a login out of quota is down for the debate: its seat is skipped without a
   assert.ok(s.verdict.text && !s.verdict.failed, 'the debate goes on with the other seats');
 });
 
+test('a used-up limit group (agy) benches only the seats whose model draws on it; logged out, or a group nobody can tell, benches the whole login', async () => {
+  const { groups } = agyQuota(JSON.parse(AGY_USAGE));
+  const limitGroup = (seat) => (seat.vendor === 'agy' ? quotaGroup(groups, seat.model) : null);
+  const seats = [
+    { vendor: 'claude', lens: 'risk', colour: 'rust' },
+    { vendor: 'agy', lens: 'customer', colour: 'teal', model: 'gemini-4-argon-high' },
+    { vendor: 'agy', lens: 'growth', colour: 'teal', model: 'gemini-4-argon-low' },
+    { vendor: 'agy', lens: 'ops', colour: 'teal', model: 'gemini-3.8-flash-high' },
+  ];
+  const run = async (fails, seatList = seats) => {
+    const fr = fakeRunner(disagreeForever);
+    const calls = [];
+    const runner = async (vendor, prompt, sid, o) => {
+      const round = Number((prompt.match(/^Round (\d+) of/m) || [])[1] ?? 0); // round 0 has no round line
+      calls.push({ lens: o.seat?.lens, round });
+      const err = fails(o.seat || {});
+      if (err) throw Object.assign(new Error(err.message), err);
+      return fr.runner(vendor, prompt, sid, o);
+    };
+    const events = [];
+    const s = await createDebate({ fieldNotes: FIELD_NOTES, seats: seatList, runner, gate: autoGate, store: stub(), emit: (t, p) => events.push(p), options: { critiqueRounds: 2 }, limitGroup }).run();
+    return { s, calls, downs: events.filter((e) => e.type === 'pool-down') };
+  };
+  const quota = { kind: 'quota', message: 'Antigravity: usage limit reached.' };
+
+  // the Argon week is used up: both Argon seats sit out, the Flash seat keeps answering
+  const argon = await run((seat) => (/argon/.test(seat.model || '') ? quota : null));
+  assert.equal(argon.downs.length, 1, 'the board is told once');
+  assert.deepEqual([argon.downs[0].key, argon.downs[0].group, argon.downs[0].kind], ['agy@#Gemini 4 Argon', 'Gemini 4 Argon', 'quota']);
+  assert.ok(argon.calls.filter((c) => ['customer', 'growth'].includes(c.lens)).every((c) => c.round === 0), 'no Argon call after the bench');
+  assert.equal(argon.calls.filter((c) => c.lens === 'ops').length, 3, 'the Flash seat answers every round');
+  assert.ok(argon.s.rounds.every((r) => r.find((x) => x.seat.lens === 'ops').valid));
+  assert.ok(argon.s.rounds.slice(1).every((r) => r.filter((x) => x.seat.vendor === 'agy' && /argon/.test(x.seat.model)).every((x) => x.skipped)));
+
+  // logged out is the whole login, whatever the group
+  const auth = await run((seat) => (seat.lens === 'ops' ? { kind: 'auth', message: 'Antigravity: not logged in.' } : null));
+  assert.deepEqual(auth.downs.map((x) => [x.key, x.group]), [['agy@', undefined]]);
+  assert.ok(auth.calls.filter((c) => ['customer', 'growth', 'ops'].includes(c.lens)).every((c) => c.round === 0), 'every agy seat sits out after round 0');
+
+  // a seat on the default model has no known group: its quota failure benches the whole login
+  const plain = seats.map((s) => (s.lens === 'customer' ? { ...s, model: undefined } : s));
+  const unknown = await run((seat) => (seat.lens === 'customer' ? quota : null), plain);
+  assert.deepEqual(unknown.downs.map((x) => x.key), ['agy@']);
+  assert.ok(unknown.calls.filter((c) => c.lens === 'ops').every((c) => c.round === 0), 'unsure: careful, as before');
+});
+
 test('a network failure with reported usage gets one retry, and a second fails the seat for the round only', async () => {
   const fr = fakeRunner(disagreeForever);
   let tries = 0;
@@ -978,6 +1039,77 @@ test('a network failure with reported usage gets one retry, and a second fails t
   assert.equal(codex.errorKind, 'network');
   assert.equal(events.filter((e) => e.type === 'attempt' && e.seat.vendor === 'codex').length, 2, 'two attempts, both in the ledger');
   assert.equal(events.filter((e) => e.type === 'pool-down').length, 0, 'a network failure does not take the login out');
+});
+
+// An endpoint's 429, as the adapter throws it: the kind httpErrorKind gives, and the zero usage
+// of a request refused before the model ran.
+const API_SEAT = { vendor: 'api', lens: 'cost', colour: 'olive', account: 'api.example.com', endpoint: 'https://api.example.com/v1', model: 'm' };
+const http429 = (retryAfter) => {
+  const c = httpErrorKind(429, 'slow down', retryAfter);
+  return Object.assign(new Error(`API api.example.com: ${c.message}`), { kind: c.kind, resetsAt: c.resetsAt, usage: { input: 0, output: 0, cost: null, ms: 1 } });
+};
+
+test('an endpoint 429 with a short Retry-After is waited out once; a missing or long one, a second 429, or a wait past the wall clock benches the host', async () => {
+  // [case, Retry-After per call, wall clock, calls to the endpoint, host benched]
+  for (const [name, headers, wallClockMs, calls, benched] of [
+    ['short', ['0'], undefined, 3, false],              // round 0 limited, its retry and round 1 answer
+    ['missing', [null], undefined, 1, true],
+    ['long', ['31'], undefined, 1, true],
+    ['second 429', ['0', '0'], undefined, 2, true],
+    ['past the wall clock', ['20'], 5_000, 1, true],    // short, but the review ends before it lifts
+  ]) {
+    const fr = fakeRunner(disagreeForever);
+    let apiCalls = 0;
+    const runner = async (vendor, prompt, sid, o) => {
+      if (vendor === 'api' && apiCalls++ < headers.length) throw http429(headers[apiCalls - 1]);
+      return fr.runner(vendor, prompt, sid, o);
+    };
+    const events = [], rows = [];
+    const t0 = Date.now();
+    const s = await createDebate({ fieldNotes: FIELD_NOTES, seats: [SEATS[0], API_SEAT, SEATS[2]], runner, gate: autoGate,
+      store: { append: (r) => rows.push(r) }, emit: (t, p) => events.push(p), options: { critiqueRounds: 1, ...(wallClockMs ? { wallClockMs } : {}) } }).run();
+    assert.ok(Date.now() - t0 < 4_000, `${name}: no real wait beyond what the server asked`);
+    assert.equal(apiCalls, calls, `${name}: calls to the endpoint`);
+    const api = s.rounds.map((r) => r.find((x) => x.seat.vendor === 'api'));
+    const attempts = rows.filter((r) => r.type === 'attempt' && r.seat.vendor === 'api' && r.round === 0);
+    const downs = events.filter((e) => e.type === 'pool-down');
+    assert.ok(attempts.every((a) => !a.unknown), `${name}: a refused call used no tokens, so the seat cap does not block`);
+    if (!benched) {
+      assert.deepEqual(attempts.map((a) => a.errorKind), ['throttled', undefined], `${name}: the limited attempt and its retry, both in the ledger`);
+      assert.ok(api.every((x) => x.valid && !x.failed), `${name}: the seat answers this round and the next`);
+      assert.equal(downs.length, 0, `${name}: the host is not benched`);
+      continue;
+    }
+    assert.equal(attempts.length, headers.length, `${name}: one attempt per 429, no retry beyond the first`);
+    assert.equal(downs.length, 1, `${name}: the host is benched, once`);
+    assert.deepEqual([downs[0].key, downs[0].kind], ['api@api.example.com', 'quota'], `${name}: benched as a quota failure`);
+    assert.equal(downs[0].resetsAt == null, headers.at(-1) == null, `${name}: the reset time the server named, if any`);
+    assert.deepEqual([api[0].errorKind, api[0].state], ['quota', 'down'], `${name}: the card says why`);
+    assert.ok(api.slice(1).every((x) => x.skipped && x.failed), `${name}: skipped in later rounds`);
+    assert.ok(s.verdict.text && !s.verdict.failed, `${name}: the debate goes on with the other seats`);
+  }
+});
+
+test('Stop during a rate-limit pause ends it at once, with no retry and no bench', async () => {
+  const fr = fakeRunner(disagreeForever);
+  let apiCalls = 0, d;
+  const runner = async (vendor, prompt, sid, o) => {
+    if (vendor === 'api' && apiCalls++ === 0) throw http429('25');
+    return fr.runner(vendor, prompt, sid, o);
+  };
+  const rows = [];
+  d = createDebate({ fieldNotes: FIELD_NOTES, seats: [SEATS[0], API_SEAT], runner, gate: autoGate, store: { append: (r) => rows.push(r) },
+    // Stop once the pause has begun: the attempt row is written before the retry is decided
+    emit: (t, p) => { if (p.type === 'attempt' && p.errorKind === 'throttled') setTimeout(() => d.requestStop('enough'), 20); },
+    options: { critiqueRounds: 1 } });
+  const t0 = Date.now();
+  const s = await d.run();
+  assert.ok(Date.now() - t0 < 5_000, 'the 25 s pause did not hold the review');
+  assert.equal(apiCalls, 1, 'no retry after Stop');
+  assert.equal(s.stopReason, 'human');
+  const api = rows.find((r) => r.type === 'reply' && r.seat.vendor === 'api');
+  assert.deepEqual([api.errorKind, api.cancelReason], ['killed', 'human'], 'the seat ends as stopped');
+  assert.ok(!rows.some((r) => r.type === 'pool-down'), 'a limit not waited out because of Stop does not bench the host');
 });
 
 test('network retries recheck token and dollar caps against the failed attempt, without charging a refused retry', async () => {

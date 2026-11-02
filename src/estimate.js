@@ -4,6 +4,7 @@
 // Baselines come from this machine's own transcripts (tokens per call, fresh round-0 calls and
 // resumed later calls separately). Effort multipliers are guesses until measured deltas replace
 // them; they live here and nowhere else.
+import { quotaGroup } from './adapters/models.js';
 
 export const EFFORT_MULTIPLIER = { low: 0.7, medium: 1, high: 1.4, xhigh: 1.8, ultra: 2.2, max: 2.6 };
 
@@ -69,6 +70,9 @@ export function baselinesFrom(rows) {
     if (r.kind === 'research') continue; // web evidence gathering has a different context size
     if (!r.usage || !r.seat?.vendor) continue;
     if (r.type !== 'reply' && r.type !== 'verdict' && r.type !== 'attempt') continue;
+    // a call the server refused before the model ran (an endpoint's 429) reports zero tokens: known
+    // spending for the caps, but no sample of what a call costs
+    if (!((r.usage.input || 0) + (r.usage.cacheRead || 0) + (r.usage.cacheWrite || 0) + (r.usage.output || 0))) continue;
     if (typeof r.sessionId === 'string' && r.sessionId.startsWith('fake-')) continue; // a scripted seat
     // Rows since 0.2.0 say whether the call resumed a session; older rows are fresh at round 0 only.
     const kind = r.type === 'verdict' || r.kind === 'verdict' || r.round === 0 || r.fresh === true ? 'fresh' : 'resumed';
@@ -140,9 +144,10 @@ export function project({ seats, chairman, critiqueRounds = 3, baselines = {}, m
     add(chairman.vendor, 'chairman', [{ input: fresh.input * CHAIRMAN_INPUT_FACTOR + extra, output: fresh.output * 1.5 * m, cost: cc == null ? undefined : cc * CHAIRMAN_INPUT_FACTOR + evidenceCost(cc, fresh, extra) }], chairman.model);
   }
   if (research) {
-    const selected = (seats || []).find((s) => s.vendor === 'codex') || (chairman?.vendor === 'codex' ? chairman : {});
-    const fresh = baseFor('codex', 'fresh', baselines), m = EFFORT_MULTIPLIER[selected.effort] ?? 1;
-    add('codex', 'research', [{ input: fresh.input * CHAIRMAN_INPUT_FACTOR, output: fresh.output * 1.5 * m }], selected.model);
+    const selected = typeof research === 'object' ? research : {}; // the searcher's own vendor, model and effort
+    const vendor = selected.vendor || 'codex';
+    const fresh = baseFor(vendor, 'fresh', baselines), m = EFFORT_MULTIPLIER[selected.effort] ?? 1;
+    add(vendor, 'research', [{ input: fresh.input * CHAIRMAN_INPUT_FACTOR, output: fresh.output * 1.5 * m }], selected.model);
   }
   const total = Object.values(byVendor).reduce((a, v) => a + v.total, 0);
   return { bySeat, byVendor, total, critiqueRounds };
@@ -150,15 +155,37 @@ export function project({ seats, chairman, critiqueRounds = 3, baselines = {}, m
 
 // Two quota snapshots of one vendor -> per-window change. A window whose reset time moved has
 // rolled over in between, so its delta is meaningless and marked invalid.
+// Two readings of one window can give its reset a minute apart: Claude's /usage prints the time to
+// the minute and rounds it differently from one read to the next ("4:59am", then "5am"), and its
+// reply gives the exact second. A rollover moves the reset by hours, so a few minutes is the same
+// window.
+const SAME_RESET_S = 300;
 export function windowDeltas(prev, next) {
   if (!prev?.windows || !next?.windows) return [];
   return next.windows.map((w) => {
     const p = prev.windows.find((x) => x.label === w.label);
     if (!p) return { label: w.label, delta: 0, valid: false };
-    const sameWindow = (p.resetsAt ?? null) === (w.resetsAt ?? null);
+    const a = p.resetsAt ?? null, b = w.resetsAt ?? null;
+    const sameWindow = a == null || b == null ? a === b : Math.abs(a - b) <= SAME_RESET_S;
     const delta = w.used - p.used;
     return { label: w.label, delta, valid: sameWindow && delta >= 0 };
   });
+}
+
+// What one round of one pool can measure: its window deltas and the calibration keys they feed,
+// the pool's and, when the round ran one model, `pool:model`. models: the Set of models it ran.
+// A quota in groups (agy) moves only the windows of the group a model draws on, and the other
+// groups standing still says nothing about these tokens. So only a one-model round is measured
+// there, only on that model's group, and only under the model's key: a pool-wide rate would be
+// projected onto every group.
+export function roundDeltas(prev, next, pool, models) {
+  const deltas = windowDeltas(prev, next);
+  const model = models?.size === 1 ? [...models][0] : null;
+  if (!next?.groups?.length) return { deltas, keys: model ? [pool, `${pool}:${model}`] : [pool] };
+  const group = model && quotaGroup(next.groups, model);
+  if (!group) return { deltas: [], keys: [] };
+  const own = new Set(next.windows.filter((w) => w.group === group).map((w) => w.label));
+  return { deltas: deltas.filter((d) => own.has(d.label)), keys: [`${pool}:${model}`] };
 }
 
 // Vendors report window usage in whole percentage points and, at least for Claude, with a lag:

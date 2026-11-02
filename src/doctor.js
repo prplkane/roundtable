@@ -2,7 +2,7 @@
 //
 // What this machine can seat. Per vendor: the binary and where it was found, its version, the
 // models and effort levels the setup screen will offer, the live pool read where one exists
-// (codex), and, with --live, one trivial model call through the adapter: logged in or not,
+// (codex, agy), and, with --live, one trivial model call through the adapter: logged in or not,
 // what it answered, whether it reached for tools (the guard must see false on a plain reply),
 // tokens and the quota it reported (claude). --profile <name> prints how to log that profile
 // in for each vendor.
@@ -63,7 +63,7 @@ async function main() {
     console.log(`  isolation  ${a.isolation}`);
     if (quotaReaders[vendor]) {
       const q = bin ? await quotaReaders[vendor]() : null;
-      console.log(`  pool read  ${q ? q.windows.map((w) => `${w.label} ${(w.used * 100).toFixed(0)}% used`).join(', ') + (q.plan ? ` (plan ${q.plan})` : '') : 'no figure (not logged in, or the app-server read failed)'}`);
+      console.log(`  pool read  ${q ? q.windows.map((w) => `${w.label} ${(w.used * 100).toFixed(0)}% used`).join(', ') + (q.plan ? ` (plan ${q.plan})` : '') : 'no figure (not logged in, or the read failed)'}`);
     } else console.log(`  pool read  ${a.quota === 'per-call' ? 'rides on each reply (shown with --live)' : `none headless; usage page ${a.usageUrl}`}`);
     if (live && bin && a.limitedIsolation && !allowLimitedIsolation) console.log('  live call  skipped: Antigravity has limited isolation. Add --allow-limited-isolation to consent, or use another provider.');
     if (live && bin && (!a.limitedIsolation || allowLimitedIsolation)) {

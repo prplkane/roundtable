@@ -1,14 +1,15 @@
 // A stand-in for a vendor CLI, run through node by the tests. It prints the vendor's verified
 // output shape (claude stream-json, codex jsonl, agy json) and, when FAKE_RECORD names a file,
 // writes its argv, cwd and the environment variables the adapters set, so a test can see what
-// the real CLI would have seen. Never reads anything.
+// the real CLI would have seen. Reads only the adapter's temporary instruction file when recording.
 //   FAKE_SHAPE   claude | codex | agy        (default claude)
 //   FAKE_TOOLS   1: the reply shows tool use in the stream
 //   FAKE_SLEEP   milliseconds to stay alive before answering (child-process cleanup tests)
 //   FAKE_EXIT    exit code to use after printing (default 0)
 //   FAKE_IS_ERROR 1: claude's result line is an error (is_error: true), as for a usage limit
 //   FAKE_USAGE missing | empty | partial | zero (default: reported fixture usage)
-import { writeFileSync } from 'node:fs';
+//   FAKE_RESULT  JSON merged into the final result object (claude: modelUsage for a searcher)
+import { writeFileSync, readFileSync } from 'node:fs';
 
 const shape = process.env.FAKE_SHAPE || 'claude';
 const tools = process.env.FAKE_TOOLS === '1';
@@ -24,7 +25,10 @@ if (process.stdin.isTTY) main();
 async function main() {
   if (process.env.FAKE_RECORD) {
     const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => /^(CLAUDE|CODEX|ANTHROPIC|FAKE|MAX_THINKING)/.test(k)));
-    writeFileSync(process.env.FAKE_RECORD, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), env, stdin }));
+    const arg = process.argv.find((a) => a.startsWith('model_instructions_file='));
+    const instructionsFile = arg ? JSON.parse(arg.slice('model_instructions_file='.length)) : null;
+    writeFileSync(process.env.FAKE_RECORD, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), env, stdin,
+      ...(instructionsFile ? { instructionsFile, instructions: readFileSync(instructionsFile, 'utf8') } : {}) }));
   }
   if (process.env.FAKE_PRELUDE) {
     const prelude = process.env.FAKE_PRELUDE;
@@ -52,7 +56,9 @@ async function main() {
   }
   const output = lines.map((line) => {
     const row = JSON.parse(line);
+    if (process.env.FAKE_RESULT && (row.type === 'result' || row.conversation_id)) Object.assign(row, JSON.parse(process.env.FAKE_RESULT));
     if (row.usage) {
+      if (process.env.FAKE_TOKEN_USAGE) row.usage = JSON.parse(process.env.FAKE_TOKEN_USAGE);
       if (process.env.FAKE_USAGE === 'missing') delete row.usage;
       if (process.env.FAKE_USAGE === 'empty') row.usage = {};
       if (process.env.FAKE_USAGE === 'partial') row.usage = { input_tokens: 10 };

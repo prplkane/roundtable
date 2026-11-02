@@ -1,9 +1,11 @@
 import { ADAPTERS, ARGV_LIMIT } from './config.js';
 import { resolveBinary, runProcess, cleanEnv } from './spawn.js';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, unlinkSync, rmdirSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { classifyError } from './errors.js';
 import { safeProgress, progressText } from '../progress.js';
-import { researchSettings, researchObserver } from '../research.js';
+import { researchSettings, researchObserver, limitExceeded } from '../research.js';
 
 export function dig(obj, dotPath) {
   if (!dotPath || obj == null) return undefined;
@@ -64,6 +66,14 @@ export function pickJsonl(text, paths) {
 }
 
 const lastCost = new Map(); // sessionId -> cumulative cost already charged (this process only)
+const lastUsage = new Map(); // sessionId -> vendor's last cumulative token reading
+
+// Reject a missing baseline or counters that went backwards; neither is a measured zero.
+export function usageDelta(current, previous) {
+  const a = usageCounters(current || {}), b = usageCounters(previous || {});
+  if (!a || !b) return null;
+  return usageCounters(Object.fromEntries(Object.keys(a).map((k) => [k, a[k] - b[k]])));
+}
 
 // One meaning for every vendor: `input` is input not served from cache, so input + cacheRead +
 // cacheWrite is everything the model read. The vendor's own numbers stay under `raw`.
@@ -76,15 +86,21 @@ export function normaliseUsage(cfg, u, rawCost = null) {
   return { ...u, input, raw, usageVersion: USAGE_VERSION, cacheSemantics: semantics };
 }
 
-// Turn a config row plus (prompt, sessionId, model, effort) into argv and stdin. Pure, so it is unit tested.
-export function buildArgs(cfg, { prompt, sessionId = null, model = null, effort = null }) {
+// Turn a config row plus (prompt, sessionId, model, effort, call limit) into argv and stdin. Pure, so it is unit tested.
+// keepSession: the call's session will be resumed (resume memory), so the CLI must save it. Any
+// other fresh call adds the CLI's `ephemeral` argv when it has one; a resumed call never does,
+// since its session goes on.
+export function buildArgs(cfg, { prompt, sessionId = null, model = null, effort = null, instructionsFile = null, timeoutMs = 300_000, keepSession = false }) {
   const useStdin = cfg.promptVia === 'stdin' ||
     (cfg.promptVia === 'argv-or-stdin' && prompt.length > ARGV_LIMIT);
   const streamMode = useStdin && !!cfg.stdinArgs;
   const base = streamMode ? cfg.stdinArgs : cfg.args;
   const args = sessionId ? cfg.resume(sessionId, base) : [...base];
   const extra = [];
+  if (cfg.stream) extra.push(...cfg.stream(timeoutMs)); // the stream's idle limit fits inside the call limit
+  if (!keepSession && !sessionId && cfg.ephemeral) extra.push(...cfg.ephemeral);
   if (model && cfg.model) extra.push(...cfg.model(model));
+  if (instructionsFile) extra.push('-c', `model_instructions_file=${JSON.stringify(instructionsFile)}`);
   // Skip the effort flag when the model id already names the level (agy), so nothing is said twice.
   if (effort && cfg.effort && !(model && cfg.effortInModel && cfg.effortInModel.test(model))) extra.push(...cfg.effort(effort));
   if (extra.length) {
@@ -105,26 +121,40 @@ export function makeAdapter(name, overrides = {}) {
 
   // Every failure leaves the adapter classified (errors.js): kind, a plain message, a reset time.
   return async function run(prompt, sessionId = null, opts = {}) {
-    try { return await runOnce(prompt, sessionId, opts); } catch (e) {
+    let instructionsDir, instructionsFile;
+    try {
+      if (name === 'codex' && cfg.instructions) {
+        instructionsDir = mkdtempSync(path.join(os.tmpdir(), 'roundtable-codex-'));
+        instructionsFile = path.join(instructionsDir, 'instructions.txt');
+        writeFileSync(instructionsFile, cfg.instructions, { flag: 'wx', mode: 0o600 });
+      }
+      return await runOnce(prompt, sessionId, opts, instructionsFile);
+    } catch (e) {
       const c = classifyError({ message: e.message, stdout: e.raw?.stdout ?? e.stdout ?? '', stderr: e.raw?.stderr ?? e.stderr ?? '', code: e.code, label: cfg.label });
       throw Object.assign(e, { kind: c.kind, resetsAt: c.resetsAt, detail: c.detail, message: c.kind === 'timeout'
         ? `${c.message} ${progressText(e.progress)} Save the error log before retrying. Missing usage remains unknown.`
         : c.kind === 'other' ? e.message : c.message });
+    } finally {
+      // Delete only the file we created. Never recursively remove a directory supplied by a caller.
+      if (instructionsFile) { try { unlinkSync(instructionsFile); } catch {} }
+      if (instructionsDir) { try { rmdirSync(instructionsDir); } catch {} }
     }
   };
 
-  async function runOnce(prompt, sessionId = null, opts = {}) {
+  async function runOnce(prompt, sessionId = null, opts = {}, instructionsFile = null) {
     const research = opts.research ? researchSettings(opts.research) : null;
-    if (research && (name !== 'codex' || sessionId)) throw Object.assign(new Error('Research requires one fresh Codex CLI call.'), { code: 'RESEARCH_INVALID' });
-    const observer = research ? researchObserver(research) : null;
+    // the searcher's CLI only, on its own fresh call; cfg.research says how it searches (config.js)
+    const searching = research ? cfg.research : null;
+    if (research && (research.vendor !== name || !searching || sessionId)) throw Object.assign(new Error('Research requires one fresh call to the searcher\'s CLI.'), { code: 'RESEARCH_INVALID' });
+    const observer = research ? researchObserver(research, searching.searchIds) : null;
+    const guard = searching ? searching.foreignTool : cfg.usedTools; // search allowed, every other tool still stops the call
     if (cfg.limitedIsolation && !opts.allowLimitedIsolation) throw Object.assign(new Error('Explicit consent to limited isolation is required.'), { code: 'ISOLATION_REQUIRED' });
     bin ??= cfg.bin || resolveBinary(cfg.binary, cfg.npmBin); // cfg.bin: a test's fake CLI
-    const { args, stdin, streamMode } = buildArgs(cfg, { prompt, sessionId, model: opts.model, effort: opts.effort });
-    if (research) {
-      const index = args.indexOf('web_search="disabled"');
-      if (index < 0) throw Object.assign(new Error('Research needs the supported Codex restriction flags.'), { code: 'RESEARCH_INVALID' });
-      args[index] = 'web_search="live"';
-    }
+    // One time limit for the process and for the argv derived from it (cfg.stream).
+    const timeoutMs = research ? Math.min(research.timeoutMs, opts.timeoutMs ?? research.timeoutMs) : opts.timeoutMs ?? 300_000;
+    const built = buildArgs(cfg, { prompt, sessionId, model: opts.model, effort: opts.effort, instructionsFile, timeoutMs, keepSession: opts.keepSession === true });
+    const { stdin, streamMode } = built;
+    const args = searching ? searching.args(built.args) : built.args;
 
     // opts.home: the directory of a named profile's CLI state (spawn.js profileHome). Only
     // vendors with a `home` entry honour it. It is created empty and never seeded: the user logs
@@ -132,7 +162,7 @@ export function makeAdapter(name, overrides = {}) {
     let home = null;
     if (opts.home && cfg.home) { mkdirSync(opts.home, { recursive: true }); home = { env: cfg.home.env, dir: opts.home }; }
     if (opts.cwd) mkdirSync(opts.cwd, { recursive: true }); // a missing cwd makes spawn fail with ENOENT
-    let pendingLine = '', processError = null, res, eventCount = 0, stage = 'waiting';
+    let pendingLine = '', processError = null, res, eventCount = 0, stage = 'waiting', hasReply = false, terminalUsage = false, reconnects = 0;
     const inspect = (chunk) => {
       pendingLine += chunk;
       let end;
@@ -147,24 +177,37 @@ export function makeAdapter(name, overrides = {}) {
         else if (event?.item?.type === 'reasoning' || event?.message?.content?.some?.((c) => c?.type === 'thinking')) stage = 'reasoning';
         else if (event?.item?.type === 'agent_message' || event?.type === 'assistant') stage = 'reply';
         else if (stage === 'waiting') stage = 'started';
-        const allowedSearch = observer?.accept(event);
-        const tool = allowedSearch ? false : streamMode ? cfg.usedTools?.(event.event === 'result' ? event.result : {}, [event])
-          : cfg.output === 'jsonl' ? cfg.usedTools?.([event]) : cfg.usedTools?.(event);
+        if (observer?.accept(event)) stage = 'searching';
+        if (name === 'codex') {
+          if (event?.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string' && event.item.text.trim()) hasReply = true;
+          if (event?.type === 'turn.completed') terminalUsage = !!usageCounters({ input: event.usage?.input_tokens, output: event.usage?.output_tokens,
+            cacheRead: event.usage?.cached_input_tokens, cacheWrite: event.usage?.cache_write_input_tokens, thinking: event.usage?.reasoning_output_tokens });
+          // the CLI's "Reconnecting... n/m": the stream stalled and the answer starts again; counted
+          // into the saved progress so a recovered stall stays visible (retry notices set the stage only)
+          if (event?.type === 'error' && /reconnect|retry|stream.*disconnect/i.test(event.message || '')) { stage = 'reconnecting'; if (/reconnect/i.test(event.message)) reconnects++; }
+          if (event?.type === 'turn.failed') {
+            stage = 'provider-error';
+            throw Object.assign(new Error(String(event.error?.message || 'Codex reported a failed turn.').slice(0, 1000)), { code: 'CLI_FAILURE' });
+          }
+        }
+        const tool = streamMode ? guard?.(event.event === 'result' ? event.result : {}, [event])
+          : cfg.output === 'jsonl' ? guard?.([event]) : guard?.(event);
         if (tool) { stage = 'tool'; throw Object.assign(new Error('Provider reported prohibited tool activity.'), { code: 'TOOL_POLICY', usedTools: true }); }
       }
       if (pendingLine.length > 1024 * 1024) throw Object.assign(new Error('Provider event exceeded the local size limit.'), { code: 'OUTPUT_LIMIT' });
+      return hasReply && terminalUsage;
     };
     try { res = await runProcess(bin, args, {
       // opts.minimal: the seat runs as cheaply as the vendor allows (cfg.minimalEnv, if any)
-      stdin, cwd: opts.cwd, timeoutMs: research ? Math.min(research.timeoutMs, opts.timeoutMs ?? research.timeoutMs) : opts.timeoutMs ?? 300_000, env: { ...cleanEnv(home), ...(opts.minimal && cfg.minimalEnv) }, tag: opts.tag ?? null,
-      onStdout: inspect,
+      stdin, cwd: opts.cwd, timeoutMs, env: { ...cleanEnv(home), ...(opts.minimal && cfg.minimalEnv) }, tag: opts.tag ?? null,
+      onStdout: inspect, completionGraceMs: cfg.completionGraceMs,
     }); } catch (e) { processError = e; res = { stdout: e.stdout || '', stderr: e.stderr || '', code: null, ms: e.ms || 0, progress: e.progress }; }
     // A last event need not end in a newline. Validate it too; a truncated tail must not
     // turn an earlier partial answer into a successful reply.
     if (!processError && pendingLine.trim()) {
       try { inspect('\n'); } catch (e) { processError = e; }
     }
-    if (!processError && res.code !== 0) processError = Object.assign(new Error(`${cfg.label} exited unsuccessfully (${res.code ?? 'signal'}).`), { code: 'CLI_EXIT', stdout: res.stdout, stderr: res.stderr });
+    if (!processError && res.code !== 0 && !res.completed) processError = Object.assign(new Error(`${cfg.label} exited unsuccessfully (${res.code ?? 'signal'}).`), { code: 'CLI_EXIT', stdout: res.stdout, stderr: res.stderr });
     const raw = {
       args: args.map((a) => (a.length > 200 ? a.slice(0, 200) + '...' : a)),
       stdout: res.stdout, stderr: res.stderr, code: res.code, ms: res.ms,
@@ -178,17 +221,22 @@ export function makeAdapter(name, overrides = {}) {
       completed = !!last;
       const obj = last ? last.result : {};
       picked = pickJson(obj, cfg.paths);
-      usedTools = !!cfg.usedTools?.(obj, events);
+      usedTools = !!guard?.(obj, events);
     } else if (cfg.output === 'jsonl') {
-      completed = parseLines(res.stdout).some((e) => e.type === cfg.paths.input?.[0]);
+      const events = parseLines(res.stdout);
+      completed = events.some((e) => e.type === cfg.paths.input?.[0]);
       picked = pickJsonl(res.stdout, cfg.paths);
-      usedTools = !!cfg.usedTools?.(parseLines(res.stdout).filter((e) => !(research && /^item\.(started|updated|completed)$/.test(e.type) && e.item?.type === 'web_search')));
+      usedTools = !!guard?.(events);
+      // the searcher's figures from the CLI's own totals, where the reply's leave the search out
+      observer?.report(searching.reported?.(events));
+      const searchUsage = searching?.usage ? usageCounters(searching.usage(events) || {}) : null;
+      if (searchUsage) picked.usage = searchUsage;
     } else {
       let obj = {};
       try { obj = JSON.parse(res.stdout); } catch { /* reported below */ }
       completed = !!obj && typeof obj === 'object' && !Array.isArray(obj);
       picked = pickJson(obj, cfg.paths);
-      usedTools = !!cfg.usedTools?.(obj);
+      usedTools = !!guard?.(obj);
     }
 
     // A cumulative counter is charged as the difference from the session's previous reading.
@@ -201,16 +249,26 @@ export function makeAdapter(name, overrides = {}) {
       lastCost.set(key, cost);
       cost = Math.max(0, cost - prev);
     }
-    const usage = picked.usage ? { ...normaliseUsage(cfg, picked.usage, picked.cost), cost, ms: res.ms } : null;
+    let charged = picked.usage;
+    if (cfg.usageIsCumulative && picked.usage) {
+      const key = picked.sessionId || sessionId;
+      if (sessionId) charged = picked.sessionId && picked.sessionId !== sessionId ? null
+        : usageDelta(picked.usage, opts.prevUsage ?? lastUsage.get(key));
+      if (key) lastUsage.set(key, picked.usage);
+    }
+    const usage = charged ? { ...normaliseUsage(cfg, charged, picked.cost), cost, ms: res.ms,
+      ...(cfg.usageIsCumulative ? { raw: { ...picked.usage, ...(picked.cost != null ? { cost: picked.cost } : {}) }, rawScope: 'session' } : {}),
+    } : null;
     // A CLI can report dollars without tokens. Preserve both the charge and its cumulative
     // reading separately so a restart does not charge that part of the session again.
-    const progress = safeProgress({ ...res.progress, eventCount, stage,
+    const progress = safeProgress({ ...res.progress, eventCount, stage, ...(reconnects ? { reconnects } : {}),
       ...(processError?.code === 'PROVIDER_PROTOCOL' ? { outcome: 'protocol' } : {}),
       ...(usedTools || processError?.usedTools ? { outcome: 'policy' } : {}),
     });
     const accounting = { usage, progress, ...(observer ? { research: { searches: observer.searches } } : {}), ...(!usage ? { cost, rawCost: picked.cost, ms: res.ms } : {}) };
     if (usedTools || processError?.usedTools) throw Object.assign(new Error('Provider reported prohibited tool activity.'), { code: 'TOOL_POLICY', usedTools: true, ...accounting });
     if (processError) throw Object.assign(processError, accounting);
+    if (observer && observer.searches > research.maxSearches) throw Object.assign(limitExceeded(), accounting); // counted by the CLI after the stream
     if (!completed) throw Object.assign(new Error(`${cfg.label} ended without a completion event; the partial answer was rejected.`), { code: 'PROVIDER_PROTOCOL', ...accounting });
     if (observer && observer.searches === 0) throw Object.assign(new Error('Research completed without a reported web-search operation.'), { code: 'RESEARCH_INVALID', ...accounting });
     if (!picked.text) {

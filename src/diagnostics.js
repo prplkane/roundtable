@@ -10,9 +10,9 @@ const CODES = new Set(['request-failed', 'provider-failed', 'call-cancelled', 'r
 export const BROWSER_CODES = new Set([...CODES].filter((c) => c.startsWith('browser-')));
 const ACTIONS = new Set(['setup', 'pick-folder', 'history', 'delete', 'clear-finished', 'preflight', 'preview', 'create', 'events', 'state', 'continue', 'finish', 'stop', 'hold',
   'resume', 'export', 'synthesize', 'accept', 'pools', 'diagnostics', 'catalogue', 'quota', 'calibration', 'startup', 'unknown']);
-const KINDS = new Set(['quota', 'auth', 'missing', 'network', 'timeout', 'killed', 'format', 'budget', 'policy', 'compatibility', 'other']);
+const KINDS = new Set(['quota', 'throttled', 'auth', 'missing', 'network', 'timeout', 'killed', 'format', 'budget', 'policy', 'compatibility', 'other']);
 const SYSTEM_CODES = new Set(['ENOENT', 'EACCES', 'EPERM', 'ENOSPC', 'EIO', 'EISDIR', 'EROFS', 'EMFILE', 'ENFILE',
-  'TOOL_POLICY', 'OUTPUT_LIMIT', 'PROVIDER_PROTOCOL', 'CLI_EXIT', 'ISOLATION_REQUIRED', 'RESEARCH_LIMIT', 'RESEARCH_INVALID',
+  'TOOL_POLICY', 'OUTPUT_LIMIT', 'PROVIDER_PROTOCOL', 'CLI_EXIT', 'CLI_FAILURE', 'ISOLATION_REQUIRED', 'RESEARCH_LIMIT', 'RESEARCH_INVALID',
   'EADDRINUSE', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'TIMEOUT', 'KILLED', 'TRANSCRIPT_CORRUPT', 'TRANSCRIPT_TAIL',
   'SEAT_LENS_REQUIRED', 'SEAT_LENS_DUPLICATE', 'SEAT_MOOD_REQUIRED']);
 const FILES = new Set(['server.js', 'store.js', 'history.js', 'engine.js', 'export.js', 'validate.js', 'estimate.js',
