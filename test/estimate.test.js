@@ -219,6 +219,14 @@ test('baselines never learn from scripted seats: fake- session ids are skipped r
   assert.equal(baselinesFrom(kept).claude.fresh.input, 100);
 });
 
+test('baselines skip a call the server refused before the model ran: zero tokens is known spending, not a sample of a call', () => {
+  const seat = { vendor: 'api', id: 'seat-0' };
+  const refused = { type: 'attempt', round: 0, seat, errorKind: 'throttled', usage: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, thinking: 0, cost: null } };
+  const answered = { type: 'attempt', round: 0, seat, usage: { input: 1400, output: 120 } };
+  assert.deepEqual([baselinesFrom([refused, answered]).api.fresh.input, baselinesFrom([refused, answered]).api.fresh.n], [1400, 1]);
+  assert.equal(baselinesFrom([refused]).api, undefined, 'a vendor with only refused calls has no baseline');
+});
+
 test('two profiles of one vendor calibrate and project separately', () => {
   let calib = {};
   calib = updateCalibration(calib, 'codex', [{ label: '5h', delta: 0.01, valid: true }], 100_000);

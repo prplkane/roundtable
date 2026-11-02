@@ -69,6 +69,9 @@ export function baselinesFrom(rows) {
     if (r.kind === 'research') continue; // web evidence gathering has a different context size
     if (!r.usage || !r.seat?.vendor) continue;
     if (r.type !== 'reply' && r.type !== 'verdict' && r.type !== 'attempt') continue;
+    // a call the server refused before the model ran (an endpoint's 429) reports zero tokens: known
+    // spending for the caps, but no sample of what a call costs
+    if (!((r.usage.input || 0) + (r.usage.cacheRead || 0) + (r.usage.cacheWrite || 0) + (r.usage.output || 0))) continue;
     if (typeof r.sessionId === 'string' && r.sessionId.startsWith('fake-')) continue; // a scripted seat
     // Rows since 0.2.0 say whether the call resumed a session; older rows are fresh at round 0 only.
     const kind = r.type === 'verdict' || r.kind === 'verdict' || r.round === 0 || r.fresh === true ? 'fresh' : 'resumed';

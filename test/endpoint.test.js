@@ -6,6 +6,7 @@ import http from 'node:http';
 import { gzipSync } from 'node:zlib';
 import { run, pickUsage, httpErrorKind, MAX_RESPONSE_BYTES } from '../src/adapters/endpoint.js';
 import { killAll, liveChildren } from '../src/adapters/spawn.js';
+import { createDebate } from '../src/engine.js';
 
 // A scripted endpoint. `script(req, body)` returns { status, body (object or text), headers,
 // delayMs, writeBody(res) }; every request is recorded with its headers and parsed body.
@@ -187,21 +188,79 @@ test('an HTTP error carries the status and the body\'s first words, through http
     await assert.rejects(run('q', null, { endpoint: { url: ep.url }, model: 'm', effort: 'low', timeoutMs: 5000 }), (e) => e.raw.status === 400 && /400/.test(e.message) && /reasoning_effort/.test(e.message) && typeof e.kind === 'string');
   } finally { await ep.close(); }
   assert.deepEqual(Object.keys(httpErrorKind(500, 'x')).sort(), ['kind', 'message', 'resetsAt']);
-  // each status family: what the engine does next depends on the kind
-  const NOW = Date.UTC(2026, 9, 22, 12, 0, 0);
+  // each status family: what the engine does next depends on the kind (429: the next test)
   for (const s of [401, 403]) assert.equal(httpErrorKind(s, 'invalid api key').kind, 'auth', `${s}: a refused key benches the host`);
   assert.equal(httpErrorKind(402, 'Insufficient Balance').kind, 'quota', '402: no credit benches the host');
   for (const s of [500, 502, 503, 504, 529]) assert.equal(httpErrorKind(s).kind, 'network', `${s}: the service, worth the one retry`);
   for (const s of [400, 404, 422]) assert.equal(httpErrorKind(s).kind, 'other', `${s}: this seat, this round`);
-  const limited = httpErrorKind(429, 'quota exceeded', '30', NOW);
-  assert.deepEqual([limited.kind, limited.resetsAt], ['quota', NOW + 30_000], '429 benches the host; Retry-After in seconds');
-  assert.match(limited.message, /HTTP 429.*: quota exceeded$/, 'the server\'s own words reach the card');
-  assert.equal(httpErrorKind(429, '', 'Wed, 22 Oct 2026 14:00:00 GMT', NOW).resetsAt, Date.UTC(2026, 9, 22, 14, 0, 0), 'Retry-After as an HTTP date');
-  assert.equal(httpErrorKind(429, '', 'soon', NOW).resetsAt, null, 'an unreadable Retry-After is no reset time');
-  assert.equal(httpErrorKind(429).resetsAt, null);
   assert.ok(!/sk-/.test(httpErrorKind(401, 'bad key').message), 'no key in a message');
   await assert.rejects(run('q', null, { endpoint: { url: 'http://api.example.com/v1' }, model: 'm' }), /plain http only/);
   await assert.rejects(run('q', null, { endpoint: { url: 'http://localhost:11434/v1' } }), /no model id/);
+});
+
+test('a 429 is throttled, waited out once by the engine, only when Retry-After names a wait of 30 seconds or less', () => {
+  const NOW = Date.UTC(2026, 9, 22, 12, 0, 0);
+  const at = (secs) => new Date(NOW + secs * 1000).toUTCString();
+  // [Retry-After, kind, resetsAt]
+  for (const [header, kind, resetsAt] of [
+    ['30', 'throttled', NOW + 30_000],   // seconds, at the limit
+    ['2', 'throttled', NOW + 2_000],
+    ['0', 'throttled', NOW],             // "now": no wait at all
+    [at(10), 'throttled', NOW + 10_000], // an HTTP date close by
+    [at(-5), 'throttled', NOW - 5_000],  // a date already past: the engine waits nothing
+    ['31', 'quota', NOW + 31_000],       // one second over
+    [at(7200), 'quota', NOW + 7_200_000],
+    ['soon', 'quota', null],             // unreadable: no reset time, so not known to be short
+    ['', 'quota', null],
+    [null, 'quota', null],               // no Retry-After at all
+  ]) {
+    const c = httpErrorKind(429, 'slow down', header, NOW);
+    assert.deepEqual([c.kind, c.resetsAt], [kind, resetsAt], `Retry-After ${JSON.stringify(header)}`);
+    assert.match(c.message, /^HTTP 429, too many requests.*: slow down$/, 'the server\'s own words reach the card');
+  }
+  assert.match(httpErrorKind(429, '', '12', NOW).message, /asked for a 12 s wait$/);
+  // a wait named on any other status changes nothing: no credit, a service problem, a bad request
+  assert.deepEqual([httpErrorKind(402, '', '5', NOW).kind, httpErrorKind(402, '', '5', NOW).resetsAt], ['quota', null]);
+  assert.equal(httpErrorKind(503, '', '5', NOW).kind, 'network');
+  assert.equal(httpErrorKind(400, '', '5', NOW).kind, 'other');
+});
+
+test('a 429 reports zero tokens, since the server refused it before the model ran; other errors stay unreported', async () => {
+  for (const [status, headers, kind, zero] of [[429, { 'retry-after': '2' }, 'throttled', true], [429, {}, 'quota', true], [500, { 'retry-after': '2' }, 'network', false]]) {
+    const ep = await endpoint(() => ({ status, headers, body: { error: { message: 'slow down' } } }));
+    const t0 = Date.now();
+    try {
+      await assert.rejects(run('q', null, { endpoint: { url: ep.url }, model: 'm', timeoutMs: 5000 }), (e) => {
+        assert.equal(e.kind, kind, `${status} ${JSON.stringify(headers)}`);
+        if (zero) assert.deepEqual([e.usage.input, e.usage.cacheRead, e.usage.cacheWrite, e.usage.output, e.usage.thinking, e.usage.cost], [0, 0, 0, 0, 0, null]);
+        else assert.equal(e.usage, undefined);
+        if (kind === 'throttled') assert.ok(e.resetsAt >= t0 + 2000 && e.resetsAt <= Date.now() + 2000, 'the wait is counted from the answer');
+        return true;
+      });
+    } finally { await ep.close(); }
+  }
+});
+
+test('in a debate, an endpoint seat waits out a short 429 and answers on the retry, within its default token cap', async () => {
+  const fieldNotes = { decision: 'Synthetic rate-limit check', options: ['Trial', 'Wait'] };
+  const answer = 'STANCE: opt-1\nAGREE_WITH: []\nDISAGREE: none\nNEW: none\nASSUMPTIONS: bounded trial';
+  const verdict = 'RECOMMENDATION: opt-1\nTry it.\nDISSENT: none\nKILL_CRITERIA: overrun\nOPEN_QUESTIONS: date';
+  const ep = await endpoint((req, body) => ep.seen.length === 1 ? { status: 429, headers: { 'retry-after': '0' }, body: { error: { message: 'slow down' } } }
+    : reply(/^You are the chairman/.test(body.messages[0].content) ? verdict : answer));
+  const rows = [];
+  try {
+    const seat = { vendor: 'api', lens: 'cost', account: new URL(ep.url).host, endpoint: ep.url, model: 'm' };
+    const state = await createDebate({ fieldNotes, seats: [seat], chairman: seat, options: { critiqueRounds: 0 },
+      gate: async () => ({ action: 'continue' }), store: { append: (row) => rows.push(row) },
+      runner: (vendor, prompt, sid, o) => run(prompt, null, { endpoint: { url: ep.url }, model: o.model, timeoutMs: 5000 }) }).run();
+    assert.equal(ep.seen.length, 3, 'the limited call, its retry, the verdict');
+    assert.ok(state.rounds[0][0].valid && !state.verdict.failed);
+    const attempts = rows.filter((r) => r.type === 'attempt' && r.kind === 'reply');
+    assert.deepEqual(attempts.map((a) => a.errorKind), ['throttled', undefined]);
+    assert.equal(attempts[0].usage.input + attempts[0].usage.output, 0);
+    assert.ok(!attempts[0].unknown, 'a refused call is known to have used nothing');
+    assert.ok(!rows.some((r) => r.type === 'pool-down' || r.type === 'budget'));
+  } finally { await ep.close(); }
 });
 
 test('the adapter rejects private-looking public DNS before any request, including stored seat URLs', async (t) => {

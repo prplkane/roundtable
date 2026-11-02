@@ -553,6 +553,13 @@ What is different from a CLI seat:
 - **One pool per host.** Two seats on `localhost:11434` share a pool; a seat on DeepSeek has
   its own. A host that fails (wrong key, no credit, nothing listening) benches only its own seats.
   The token cap, though, is per vendor: one cap covers every endpoint seat at the table.
+- **A short rate limit is waited out once.** A `429` whose `Retry-After` asks for 30 seconds
+  or less (the delay past which `agy` stops waiting on its own server) is waited out, and the
+  call is sent once more, provided the wait ends before the review's wall clock does. Stop and
+  finish end the wait at once. A `429` with no `Retry-After`, with a longer one, or a second
+  `429` after the wait benches the host like no credit does, so a used-up quota is never called
+  round after round. A `429` counts as zero tokens, since the server refused the request before
+  the model ran. A CLI seat needs none of this: its CLI waits out such delays itself.
 - **No tools are offered** in the request. A reply that carries `tool_calls`, a legacy
   `function_call`, or a tool finish reason stops that seat for the review. Its answer is
   excluded from later discussion; its reported spending still counts.
@@ -827,7 +834,7 @@ there is no current snapshot. Refresh with an authenticated JSON `POST /api/pref
 | A seat's lamp is red: "quota used up" | Wait for the reset it shows, use another vendor for that seat, or seat a second account (step 7). |
 | `doctor` says a CLI is not found | Install it (step 2) or fix your PATH; for `agy`, run `agy install`. |
 | An API seat's lamp is red: "… is not set in the environment" | Set that variable in the shell you start roundtable from (`set DEEPSEEK_API_KEY=…` on Windows, `export …` elsewhere) and start it again. The board cannot read it for you. |
-| An API seat shows "could not reach" or an HTTP status | Nothing listens at that URL (start the local server, check the port and the `/v1` suffix), or the endpoint refused the call (`401` a wrong key, `402`/`429` no credit or a limit, `404` a model id the server does not know). The seat's card quotes the server's own words. |
+| An API seat shows "could not reach" or an HTTP status | Nothing listens at that URL (start the local server, check the port and the `/v1` suffix), or the endpoint refused the call (`401` a wrong key, `402` no credit, `429` a quota or a rate limit that one short wait did not lift, `404` a model id the server does not know). The seat's card quotes the server's own words. |
 | A red "out" banner on the board | A vendor ran out of quota or lost its login mid-debate. Its seats are skipped from then on (no call, no tokens). If fewer than two seats are left, the debate stops and the chairman writes from what was said. |
 | A seat shows "no reply" in red | Its call failed this round; the card gives a next step, with the CLI's own words under "details". Network failures may retry once if the budget and time limit allow it. The others carry on. |
 | The verdict failed, or was not written | **Write the verdict with** a vendor of your choice, under the bar. If the chairman's vendor ran out, another one is preselected. |

@@ -12,7 +12,9 @@
 //     -> { text, usage, sessionId: null, quota: null, usedTools, raw }
 //
 // Errors carry the same kinds as a CLI failure (errors.js): auth, quota, network, timeout,
-// killed, other; the engine benches a pool on the first three.
+// killed, other; the engine benches a pool on the first two and retries a network failure once.
+// One more, throttled, is an endpoint's own: a 429 whose server named a short wait, which the
+// engine waits out once (a CLI waits out such a delay itself before it reports a failure).
 import { ADAPTERS } from './config.js';
 import { normaliseUsage, usageCounters } from './common.js';
 import { registerCall } from './spawn.js';
@@ -21,6 +23,9 @@ import { safeProgress, progressText } from '../progress.js';
 
 const cfg = ADAPTERS.api;
 export const MAX_RESPONSE_BYTES = 1024 * 1024;
+// The longest Retry-After on a 429 that is waited out instead of benching the host: the limit
+// past which agy stops waiting for its own server and reports the failure.
+export const SHORT_RATE_LIMIT_MS = 30_000;
 
 // fetch exposes decoded bytes, including for compressed responses. Bound those bytes before
 // decoding or parsing, on errors as well as successful replies, and close an oversized stream.
@@ -51,7 +56,7 @@ async function responseText(res, onBytes = () => {}) {
 
 // What an HTTP failure means for the pool. Pure, so it is unit tested on status codes.
 //
-//   { kind, message, resetsAt }   kind as in errors.js: auth | quota | network | other
+//   { kind, message, resetsAt }   kind as in errors.js: auth | quota | network | other, or throttled
 //
 // `status` is the response status; `text` the body's first 300 characters (the vendor's own
 // words, shown to the human); `retryAfter` the Retry-After header (seconds or a date) or null.
@@ -70,8 +75,13 @@ export function httpErrorKind(status, text = '', retryAfter = null, now = Date.n
   // the service itself is down or overloaded: the case the one retry exists for
   if (status >= 500) return { kind: 'network', message: `HTTP ${status}, the service had a problem${said}`, resetsAt: null };
 
-  // a 429 is either a burst limit or a used-up quota; bench the host either way, so a dead
-  // quota is never called again round after round (a burst costs the seat this debate)
+  // a 429 is either a burst limit or a used-up quota. A server that names a short wait is waited
+  // out once (engine.js). Without a wait, with a long one, or at a second 429 the host is benched,
+  // so a dead quota is never called again round after round (a burst costs the seat this debate)
+  if (status === 429 && resetsAt != null && resetsAt - now <= SHORT_RATE_LIMIT_MS) {
+    const waitSecs = Math.max(0, Math.ceil((resetsAt - now) / 1000));
+    return { kind: 'throttled', message: `HTTP 429, too many requests; the server asked for a ${waitSecs} s wait${said}`, resetsAt };
+  }
   if (status === 429) return { kind: 'quota', message: `HTTP 429, too many requests or quota used up${said}`, resetsAt };
 
   // anything else (404 a model id the server does not know, 400 a field it rejects): this seat, this round
@@ -148,7 +158,10 @@ export async function run(prompt, sessionId = null, opts = {}) {
 
   if (!res.ok) {
     const c = httpErrorKind(res.status, excerpt(text, 300), res.headers.get('retry-after'));
-    throw fail(c.message, { kind: c.kind, resetsAt: c.resetsAt, raw });
+    // A 429 refuses the request before the model runs, so it used no tokens. Saying so keeps a
+    // seat's token cap from blocking the retry, and later rounds, as unknown spending.
+    const refused = res.status === 429 ? { usage: { ...normaliseUsage(cfg, usageCounters({ input: 0, output: 0 })), cost: null, ms } } : {};
+    throw fail(c.message, { kind: c.kind, resetsAt: c.resetsAt, raw, ...refused });
   }
   let data;
   try { data = JSON.parse(text); } catch { throw fail(`answered with something other than JSON (${excerpt(text, 120)}).`, { raw }); }

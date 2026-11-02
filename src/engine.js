@@ -157,7 +157,10 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
   // while the call runs. A call that ends without a usage report is `unknown`, not zero.
   // A login whose quota is used up, or that is logged out or missing, is down for the rest of the
   // debate: its seats are skipped without a call (they would only fail again), and the board is
-  // told once. A network failure gets one retry; anything else fails the seat for the round.
+  // told once. A network failure gets one retry; so does a `throttled` call (a rate limit its
+  // provider announced as short, lifting at resetsAt) when the limit lifts before the wall clock
+  // runs out. A throttled call not waited out is a quota failure. Anything else fails the seat
+  // for the round.
   const downKey = (seat) => `${seat.vendor}@${seat.account || ''}`;
   function markDown(seat, res) {
     const key = downKey(seat);
@@ -169,9 +172,11 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
 
   async function callSeat(seat, prompt, round, kind, projection = {}, { isChairman = false } = {}) {
     if (policyBlocked(seat)) return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false, error: 'This seat is stopped after a provider-policy failure. Check its earlier failure details.', kind: 'policy', skipped: true, fresh: true, attemptId: null };
-    const down = state.down[downKey(seat)];
-    if (down) return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false, error: `skipped: ${down.message}`, kind: down.kind, resetsAt: down.resetsAt, skipped: true, fresh: true, attemptId: null };
+    let retrying = null; // what a second attempt is called: 'network retry' or 'rate-limit retry'
     for (let attemptNo = 1; ; attemptNo++) {
+      // checked before a retry too: another seat may have benched this login during the pause
+      const down = state.down[downKey(seat)];
+      if (down) return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false, error: `skipped: ${down.message}`, kind: down.kind, resetsAt: down.resetsAt, skipped: true, fresh: true, attemptId: null };
       checkInterrupted();
       if (state.status === 'error') return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false, error: 'the review stopped after an error', kind: 'killed', fresh: true, attemptId: null };
       if (stopRequested || finishRequested && !isChairman) return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false,
@@ -180,7 +185,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       // earlier calls. Never dispatch a new call after that one-time cancellation sweep.
       if (expired()) return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false,
         error: 'the wall clock ran out before the call', kind: 'killed', cancelReason: 'wall-clock', fresh: !resumes || seat.sessionId == null, attemptId: null };
-      const action = attemptNo > 1 ? 'network retry' : kind === 'reprompt' ? 're-prompt' : kind;
+      const action = retrying || (kind === 'reprompt' ? 're-prompt' : kind);
       const what = ['verdict', 'research'].includes(action) ? action : `${action} of ${isChairman ? 'the chairman' : seat.lens}`;
       if (!isChairman) projection = oneCall(seat, round);
       // Check and reserve synchronously at the dispatch boundary. A retry sees the failed
@@ -205,7 +210,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       const attemptId = newId();
       reserved.set(attemptId, projection);
       record({ type: 'attempt-start', attemptId, round, kind, seat: pub(seat), fresh: !resumes || seat.sessionId == null });
-      const res = await callOnce(seat, prompt, kind === 'research');
+      let res = await callOnce(seat, prompt, kind === 'research');
       const attempt = { type: 'attempt', attemptId, round, kind, seat: pub(seat), fresh: res.fresh, usage: res.reported ? res.usage : null,
         ...(res.progress ? { progress: res.progress } : {}), ...(res.systemCode ? { systemCode: res.systemCode } : {}),
         ...(res.reported ? {} : { unknown: true, ms: res.usage.ms,
@@ -216,10 +221,36 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       record(attempt);
       fire('attempt', attempt);
       checkInterrupted();
+      const throttled = !res.ok && res.kind === 'throttled';
+      const retry = kind !== 'research' && !res.ok && attemptNo === 1 && !expired() && !stopRequested && !(finishRequested && !isChairman)
+        && (res.kind === 'network' || throttled && res.resetsAt != null && res.resetsAt < deadlineAt);
+      // the attempt row keeps `throttled`; everything after it sees the quota failure it became,
+      // and the card and the out banner say why the wait was not taken
+      if (throttled && !retry) {
+        const why = kind === 'research' ? 'the searcher is not retried' : attemptNo > 1 ? 'one retry per turn'
+          : stopRequested || (finishRequested && !isChairman) || expired() ? 'the review is ending' : 'the review\'s time would run out first';
+        res = { ...res, kind: 'quota', error: `${res.error} The wait was not taken: ${why}.` };
+      }
       if (!res.ok && POOL_FATAL.has(res.kind)) markDown(seat, res);
-      if (kind !== 'research' && !res.ok && res.kind === 'network' && attemptNo === 1 && !expired() && !stopRequested && !(finishRequested && !isChairman)) { await new Promise((r) => setTimeout(r, opts.networkRetryMs)); continue; }
+      if (retry) {
+        retrying = throttled ? 'rate-limit retry' : 'network retry';
+        await pause(throttled ? Math.max(0, res.resetsAt - now()) : opts.networkRetryMs);
+        continue;
+      }
       return { ...res, attemptId };
     }
+  }
+
+  // The pause before a retry. Stop, finish, the wall clock and an interruption abort the
+  // controller, which ends the pause at once; the next turn of the loop then refuses the call.
+  function pause(ms) {
+    const { signal } = controller;
+    return new Promise((resolve) => {
+      if (signal.aborted) return resolve();
+      const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); };
+      const timer = setTimeout(done, ms);
+      signal.addEventListener('abort', done, { once: true });
+    });
   }
 
   async function callOnce(seat, prompt, researching = false) {

@@ -13,6 +13,15 @@
   `SECURITY.md` names both ways a future CLI could react. Every reconnect is counted into the
   attempt's saved progress and shown as a "reconnected ×N" mark on the reply card, in failure
   details, error logs and the agent state, so a recovered stall stays visible.
+- Wait out an API endpoint's short rate limit once instead of benching its host for the rest of
+  the debate. A `429` whose `Retry-After` asks for 30 seconds or less, the delay `agy` itself
+  waits out, is retried once after that wait when it ends before the wall clock does. Without
+  `Retry-After`, with a longer one, or at a second `429` the host is benched as before; `402`
+  and every other status are unchanged. A `429` now counts as zero tokens, since the server
+  refused the request before the model ran, so a seat's token cap no longer blocks the retry or
+  later rounds as unknown spending. Stop, finish and the wall clock end a retry's wait at once,
+  for this wait and a network failure's, and a retry is skipped when another seat benched the
+  same login during the wait. The limited attempt is recorded with the kind `throttled`.
 
 ## 0.5.0
 
