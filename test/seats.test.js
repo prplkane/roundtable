@@ -78,6 +78,15 @@ test('effort is checked against the vendor list, which the catalogue may widen',
   assert.equal(seats[0].effort, 'max');
 });
 
+test('a model that takes fewer levels than its vendor narrows the check: Luna stops at max', () => {
+  const codex = (model, effort) => normaliseSeats([{ vendor: 'codex', lens: 'a', model, effort }, { vendor: 'codex', lens: 'b' }], { vendors: V });
+  assert.throws(() => codex('gpt-6-luna', 'ultra'), /gpt-6-luna does not accept effort "ultra" \(allowed: low, medium, high, xhigh, max\)/);
+  assert.equal(codex('gpt-6-luna', 'max')[0].effort, 'max');
+  assert.equal(codex('gpt-6.1-sol', 'ultra')[0].effort, 'ultra', 'a model taking every level is unchanged');
+  assert.equal(codex('my-typed-model', 'ultra')[0].effort, 'ultra', 'an id the table does not know keeps the vendor\'s levels');
+  assert.throws(() => normaliseChairman({ vendor: 'codex', model: 'gpt-6-luna', effort: 'ultra' }, { vendors: V }), /Chairman: .*gpt-6-luna does not accept effort "ultra"/);
+});
+
 test('custom mood needs text; unknown presets fall back to grill; moodLine renders each', () => {
   assert.throws(() => normaliseSeats([{ vendor: 'codex', lens: 'a', mood: { preset: 'custom', text: ' ' } }, { vendor: 'codex', lens: 'b' }], { vendors: V }), /custom mood/);
   const [a, b] = normaliseSeats([{ vendor: 'codex', lens: 'a', mood: { preset: 'custom', text: 'Argue as a dentist would.' } }, { vendor: 'codex', lens: 'b', mood: 'bogus' }], { vendors: V });
@@ -105,6 +114,7 @@ test('an account profile is optional, validated, and carried on seats and the ch
 test('chairman keeps model and effort, rejects a bad effort, and is null for an unknown vendor', () => {
   assert.deepEqual(normaliseChairman({ vendor: 'agy', model: 'gemini-4-argon-high', effort: 'high' }, { vendors: V }), { vendor: 'agy', colour: 'teal', model: 'gemini-4-argon-high', effort: 'high', account: undefined });
   assert.throws(() => normaliseChairman({ vendor: 'claude', effort: 'ultra' }, { vendors: V }), /Chairman/);
+  assert.throws(() => normaliseChairman({ vendor: 'codex', model: 'gpt-6-luna', effort: 'ultra' }, { vendors: V, role: 'Searcher' }), /^Error: Searcher: /, 'the searcher is checked here too, under its own name');
   assert.equal(normaliseChairman({ vendor: 'nope' }, { vendors: V }), null);
 });
 

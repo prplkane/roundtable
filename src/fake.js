@@ -19,6 +19,7 @@ export function fakeQuota(vendor, n = vendor === 'codex' ? codexCalls++ : vendor
   if (vendor === 'agy') return {
     windows: AGY_GROUPS.flatMap(([group, tag, , used]) => used.map((u, i) => ({ label: `${tag} ${i ? '5h' : '7d'}`, used: Math.min(0.95, u + n * 0.01 * (i + 1)), resetsAt: BOOT + (i ? 4 * 3600 : 3 * 86400), group }))),
     groups: AGY_GROUPS.map(([name, , models]) => ({ name, models })),
+    credits: { remaining: 1200, at: Date.now() }, // as `agy -p /credits` reports them
     plan: null,
     at: Date.now(),
   };

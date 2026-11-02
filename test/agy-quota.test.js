@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { AGY_USAGE } from './fixtures/agy-usage.mjs';
-import { agyQuota, agyReadWasFree, agyQuotaReader } from '../src/adapters/quota.js';
+import { agyQuota, agyReadWasFree, agyQuotaReader, agyCredits, AGY_CREDITS_EVERY_MS } from '../src/adapters/quota.js';
 import { quotaGroup, quotaWindows } from '../src/adapters/models.js';
 import { lamp } from '../src/preflight.js';
 import { roundDeltas } from '../src/estimate.js';
@@ -195,4 +195,57 @@ test('the Antigravity row says its quota is a separate read, and the demo quota 
   assert.equal(new Set(demo.windows.map((w) => w.label)).size, demo.windows.length);
   for (const id of IDS) assert.ok(quotaGroup(demo.groups, id), id);
   assert.deepEqual(quotaWindows(demo, ['gemini-4-argon-high']).map((w) => w.label), ['Gemini 4 Argon 7d']);
+});
+
+// `agy -p /credits --output-format json` as CLI 1.4.12 answered it: free, structured
+const CREDITS = (remaining) => JSON.stringify({ conversation_id: '', status: 'SUCCESS', duration_seconds: 0, num_turns: 0,
+  usage: { input_tokens: 0, output_tokens: 0, thinking_tokens: 0, cache_read_tokens: 0, total_tokens: 0 },
+  command: { name: 'credits', data: { remaining_credits: remaining, upgrade_uri: 'https://antigravity.google/g1-upgrade' } } });
+
+test('agyCredits reads remaining_credits from the /credits answer and nothing else', () => {
+  assert.equal(agyCredits(JSON.parse(CREDITS(0))), 0, 'none left is a figure, not a missing one');
+  assert.equal(agyCredits(JSON.parse(CREDITS(1200))), 1200);
+  assert.equal(agyCredits(JSON.parse(AGY_USAGE)), null, 'the /usage answer holds no credits');
+  assert.equal(agyCredits({ ...JSON.parse(CREDITS(5)), status: 'ERROR' }), null);
+  for (const bad of [-1, '12', NaN, null]) assert.equal(agyCredits({ ...JSON.parse(CREDITS(0)), command: { name: 'credits', data: { remaining_credits: bad } } }), null, String(bad));
+});
+
+test('the reader asks /credits after a good /usage read, at most every ten minutes, under the same latch', async () => {
+  const resolve = () => ({ file: 'agy', prefix: [] });
+  let clock = 1_000_000, credits = 0;
+  const asked = [];
+  const answers = { '/usage': () => AGY_USAGE, '/credits': () => CREDITS(credits) };
+  const read = agyQuotaReader({ resolve, warn: () => {}, now: () => clock, run: async (bin, args) => { asked.push(args[1]); return { stdout: answers[args[1]](), code: 0 }; } });
+  let q = await read();
+  assert.deepEqual(asked, ['/usage', '/credits']);
+  assert.deepEqual(q.credits, { remaining: 0, at: 1_000_000 });
+  assert.equal(q.windows.length, 5, 'the windows are unchanged');
+  credits = 300; clock += AGY_CREDITS_EVERY_MS - 1;
+  q = await read();
+  assert.deepEqual(asked, ['/usage', '/credits', '/usage'], 'within ten minutes: /usage only');
+  assert.equal(q.credits.remaining, 0, 'the last figure is kept with its time');
+  clock += 1;
+  q = await read();
+  assert.equal(asked.at(-1), '/credits');
+  assert.deepEqual(q.credits, { remaining: 300, at: clock });
+
+  // a /credits answer that is not shown free stops every read, as for /usage
+  const spent = agyQuotaReader({ resolve, warn: () => {}, run: async (bin, args) => ({ stdout: args[1] === '/usage' ? AGY_USAGE : JSON.stringify({ ...JSON.parse(CREDITS(0)), num_turns: 1 }), code: 0 }) });
+  assert.equal(await spent(), null);
+  assert.match(spent.stopped(), /\/credits did not answer as a free command/);
+  // a /credits error is no credits figure; the windows still arrive, reads go on, and /credits is
+  // not asked again on every read (an account without credits would cost a second start each time)
+  const failAsked = [];
+  const failed = agyQuotaReader({ resolve, warn: () => {}, run: async (bin, args) => { failAsked.push(args[1]); return { stdout: args[1] === '/usage' ? AGY_USAGE : JSON.stringify({ ...JSON.parse(CREDITS(0)), status: 'ERROR' }), code: 0 }; } });
+  const f = await failed();
+  assert.equal(f.windows.length, 5);
+  assert.equal(f.credits, undefined);
+  assert.equal(failed.stopped(), null);
+  await failed();
+  assert.deepEqual(failAsked, ['/usage', '/credits', '/usage'], 'the next read within ten minutes asks /usage only');
+  // no /credits while /usage fails: a signed-out CLI is asked once per read, not twice
+  const out = [];
+  const signedOut = agyQuotaReader({ resolve, warn: () => {}, run: async (bin, args) => { out.push(args[1]); return { stdout: JSON.stringify({ ...JSON.parse(AGY_USAGE), status: 'ERROR' }), code: 0 }; } });
+  assert.equal(await signedOut(), null);
+  assert.deepEqual(out, ['/usage']);
 });

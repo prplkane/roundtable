@@ -10,6 +10,8 @@
 //  args        fixed argv for a fresh headless call
 //  resume      argv for continuing a session; (id, base) => full argv, where base is `args`
 //              (or `stdinArgs` in stream mode); codex replaces the subcommand, the others append
+//  ephemeral   argv that keeps a fresh call from saving its session in the CLI's own history,
+//              added unless the call will be resumed (resume memory); agy has none
 //  model       argv for a model override; (id) => argv (inserted before a trailing "-")
 //  effort      argv for a reasoning-effort override; (level) => argv
 //  stream      argv for how the reply is streamed, derived from the call's time limit;
@@ -154,6 +156,8 @@ export const ADAPTERS = {
     home: { env: 'CLAUDE_CONFIG_DIR' },
     isolation: 'empty cwd per instance; safe mode skips memory, hooks, plugins and customizations while preserving login; no built-in tools or MCP servers',
     resume: (id, base) => [...base, '--resume', id],
+    // without it every seat call left a session, prompts included, under ~/.claude/projects
+    ephemeral: ['--no-session-persistence'],
     model: (m) => ['--model', m],
     effort: (e) => ['--effort', e],
     effortLevels: ['low', 'medium', 'high'], // `claude --help`: "--effort <level>"
@@ -223,6 +227,8 @@ export const ADAPTERS = {
     // `exec resume` does not accept --sandbox; the same policy goes through -c.
     resume: (id) => ['exec', 'resume', id, '--json', '--skip-git-repo-check',
       ...CODEX_ISOLATION, '-c', 'sandbox_mode="read-only"', '-c', 'project_doc_max_bytes=0', ...CODEX_NO_TOOLS, ...CODEX_NO_TELEMETRY, ...CODEX_RUNTIME, '-'],
+    // without it every seat call left a session file, prompts included, under ~/.codex/sessions
+    ephemeral: ['--ephemeral'],
     completionGraceMs: 1000,
     // Replace the coding-agent base prompt: these calls review decisions, not repositories.
     // The CLI tool restrictions and the wrapper's stream guard still apply independently.

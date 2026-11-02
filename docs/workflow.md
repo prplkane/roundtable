@@ -97,6 +97,9 @@ Claude and GPT; Gemini 4 Argon on some plans), each with a weekly window and usu
 one, and a seat counts only the group its model draws on. A seat on the default model counts
 every group. If an answer ever shows a turn, tokens or a conversation, or the read times out,
 Roundtable stops reading Antigravity quota until the server restarts and says so on the console.
+With a successful read it also asks `agy -p /credits`, at most every ten minutes, for the AI
+credits that take over once a group's limits are used up; the usage table shows them as
+"AI credits left". The same check and stop apply to that answer.
 The same groups decide who sits out when a call reports a used-up quota during a debate: only
 the seats whose model draws on that group are skipped, and the others keep answering. A seat
 on the default model, or a CLI that is logged out, takes the whole Antigravity login out.

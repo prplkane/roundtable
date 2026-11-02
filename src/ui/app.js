@@ -2,7 +2,7 @@ import { rollup, hasUsableRound, positions } from '/src/engine.js';
 import { optionLabel } from '/src/contract.js';
 import { poolKey, poolVendor, poolAccount, hostKey, seatKind, initialSeatVendors, nextSeatLens, fillMissingSeatLenses, seatSetupIssue, hiddenMood, lightestModel, keyEnvName, HIDDEN_MOODS } from '/src/seats.js';
 import { avatar } from '/ui/avatars.js';
-import { modelsForPlan, retired, quotaWindows, quotaGroup } from '/src/adapters/models.js';
+import { modelsForPlan, retired, quotaWindows, quotaGroup, modelEfforts } from '/src/adapters/models.js';
 import { project, projectedWindows, unknownUsageMessage } from '/src/estimate.js';
 import { PREFLIGHT_TTL_MS, lamp as preflightLamp } from '/src/preflight.js';
 import { createBrowserDiagnostics, requestAction } from '/ui/diagnostics.js';
@@ -291,6 +291,8 @@ async function setup() {
   $('chairman-endpoint').addEventListener('change', () => { const pre = ENDPOINT_PRESETS.find((e) => e.url === $('chairman-endpoint').value.trim()); if (pre?.keyEnv && !$('chairman-keyenv').value.trim()) $('chairman-keyenv').value = pre.keyEnv; renderChair(); requestPreflight(); });
   for (const id of ['chairman-endpoint', 'chairman-keyenv']) $(id).addEventListener('input', () => { renderChair(); requestPreflight(); });
   renderChair();
+  // first, so the projection below reads the level the new model takes, not the one it dropped
+  $('chairman-model').addEventListener('input', chairEffortOptions); // a model that takes fewer levels offers only those
   for (const id of ['chairman-model', 'chairman-effort', 'critique-rounds', 'memory']) $(id).addEventListener('input', renderProjection);
   for (const id of ['chairman-model', 'searcher-model']) $(id).addEventListener('input', () => updateLamps()); // agy: the lamp follows the model's quota group
   $('add-searcher').addEventListener('click', () => { setSearcher(true); $('research-query').focus(); });
@@ -358,12 +360,13 @@ function poolEntry(vendor, weightedTokens) {
 // "default (<level>)" when the catalogue knows the CLI's own default level; today no vendor
 // reports one (codex's config.toml is not a source: the seat runs with --ignore-user-config).
 const defaultEffortLabel = (vendor) => { const d = VENDOR_META[vendor]?.catalogue?.defaultEffort; return d ? `default (${d})` : 'default'; };
-const effortOptions = (vendor, chosen, none = defaultEffortLabel(vendor)) => `<option value="">${esc(none)}</option>${(VENDOR_META[vendor]?.catalogue?.efforts || []).map((e) => `<option value="${e}" ${e === chosen ? 'selected' : ''}>${e}</option>`).join('')}`;
+// model: a model that takes fewer levels than its vendor offers (models.js modelEfforts) offers only those
+const effortOptions = (vendor, chosen, model = '', none = defaultEffortLabel(vendor)) => `<option value="">${esc(none)}</option>${modelEfforts(vendor, model, VENDOR_META[vendor]?.catalogue?.efforts || []).map((e) => `<option value="${e}" ${e === chosen ? 'selected' : ''}>${e}</option>`).join('')}`;
 
 function chairEffortOptions() {
   const sel = $('chairman-effort');
   const keep = sel.value;
-  sel.innerHTML = effortOptions($('chairman').value, keep);
+  sel.innerHTML = effortOptions($('chairman').value, keep, $('chairman-model').value.trim());
   $('chairman-model').setAttribute('list', `models-${$('chairman').value}`);
 }
 
@@ -394,7 +397,8 @@ function modelPicker(vendor, account, value, idAttr = '') {
 }
 // A picked model as the id to send: an Antigravity model takes its effort as the suffix.
 function pickedModel(vendor, picked, effort) {
-  if (vendor !== 'agy' || !picked) return { model: picked, effort };
+  // a level the newly picked model does not take is dropped, back to the CLI's default
+  if (vendor !== 'agy' || !picked) return { model: picked, effort: effort && !modelEfforts(vendor, picked, VENDOR_META[vendor]?.catalogue?.efforts || []).includes(effort) ? '' : effort };
   const fam = familyOf(vendor, picked);
   const level = fam?.levels.includes(effort) ? effort : fam?.levels.includes('medium') ? 'medium' : fam?.levels[0];
   return { model: level ? `${picked}-${level}` : picked, effort: level || '' };
@@ -403,7 +407,7 @@ function pickedModel(vendor, picked, effort) {
 // Effort as pips, one per level the CLI accepts; none filled is the CLI's own default. An
 // Antigravity model offers the levels its id comes in.
 function pipsHtml(vendor, chosen, model = '') {
-  const levels = (vendor === 'agy' && familyOf(vendor, model)?.levels) || VENDOR_META[vendor]?.catalogue?.efforts || [];
+  const levels = (vendor === 'agy' && familyOf(vendor, model)?.levels) || modelEfforts(vendor, model, VENDOR_META[vendor]?.catalogue?.efforts || []);
   const at = levels.indexOf(chosen);
   return levels.map((l, i) => `<button type="button" class="pip ${i <= at ? 'on' : ''}" data-level="${l}" title="${l}" aria-label="Effort ${l}" aria-pressed="${l === chosen}"></button>`).join('')
     + `<span class="pip-label">${esc(chosen || defaultEffortLabel(vendor))}</span>`;
@@ -474,7 +478,7 @@ function seatRow(s, i) {
       ${gone ? `<span class="seat-note danger">${esc(s.model)} was retired (${esc(gone.date)}); use ${esc(gone.instead)}.</span>` : ''}
       ${api ? `<label class="f"><span class="label">Endpoint</span><input class="flat endpoint" aria-label="Endpoint base URL" list="endpoints" value="${esc(s.endpoint || '')}" placeholder="http://localhost:11434/v1" title="The base URL of an OpenAI-compatible server, ending in /v1. Plain http only on this machine or a private network."></label>
       <label class="f"><span class="label">Key var</span><input class="flat keyenv" aria-label="Key environment variable" value="${esc(s.keyEnv || '')}" placeholder="none (local server)" title="The NAME of the environment variable that holds the key, set in the shell roundtable was started from. Never the key itself."></label>` : ''}
-      <div class="f"><span class="label help-label" data-help="effort" tabindex="0" aria-describedby="help-effort">Effort</span><span class="pips ${hidden ? 'locked' : ''}">${pipsHtml(s.vendor, s.effort, s.model)}</span><select class="effort" hidden>${effortOptions(s.vendor, s.effort)}</select></div>
+      <div class="f"><span class="label help-label" data-help="effort" tabindex="0" aria-describedby="help-effort">Effort</span><span class="pips ${hidden ? 'locked' : ''}">${pipsHtml(s.vendor, s.effort, s.model)}</span><select class="effort" hidden>${effortOptions(s.vendor, s.effort, s.model)}</select></div>
       <span class="seat-note lamp-note ${lamp.cls === 'danger' || lamp.cls === 'warn' ? lamp.cls : ''}">${esc(lamp.note)}</span>
       ${isoNote(s.vendor)}
       ${api ? '' : `<details class="seat-more"><summary>Login profile${s.account ? `: ${esc(s.account)}` : ''}</summary><input class="flat account" aria-label="Login profile" value="${esc(s.account || '')}" placeholder="none: your usual login" title="A second login of this CLI, for example a work subscription; node src/doctor.js shows how to log a profile in"></details>`}
@@ -717,7 +721,12 @@ function onSeatEdit(ev) {
   if (['account', 'endpoint', 'keyenv'].some((c) => ev.target.classList.contains(c))) requestPreflight();
   if (ev.type === 'change' && ['mood', 'account', 'endpoint', 'keyenv'].some((c) => ev.target.classList.contains(c))) { renderSeats(); if (s.mood === 'custom') $('seats').querySelectorAll('.seat')[S.draft.indexOf(s)]?.querySelector('.mood-text')?.focus(); return; }
   row.querySelector('.mood-text').hidden = s.mood !== 'custom';
-  if (ev.target.classList.contains('model')) updateLamps(); // agy: the lamp follows the model's quota group
+  if (ev.target.classList.contains('model')) {
+    // a typed id: drop a level that model does not take, and redraw its pips
+    if (s.vendor !== 'agy' && s.effort && !modelEfforts(s.vendor, s.model, VENDOR_META[s.vendor]?.catalogue?.efforts || []).includes(s.effort)) { s.effort = ''; row.querySelector('.effort').value = ''; }
+    const pips = row.querySelector('.pips'); if (pips) pips.innerHTML = pipsHtml(s.vendor, s.effort, s.model);
+    updateLamps(); // agy: the lamp follows the model's quota group
+  }
   renderProjection();
 }
 
@@ -1279,7 +1288,9 @@ function poolLine(key, models = []) {
     ? windows.map((w) => `<span class="pool-window ${level(w.used) ? level(w.used) : ''}" title="${esc([w.resetsAt ? `resets ${untilText(w.resetsAt * 1000)}` : '', `read ${agoText(q.at)}`].filter(Boolean).join(' · '))}"><span class="quota-track"><span style="width:${width(w.used)}%"></span></span>${pct(w.used)} of ${esc(w.label)} used</span>`).join('')
     : pl ? `<span class="pool-window">${esc(pl.remaining.toLocaleString())} ${esc(pl.unit)} left · entered ${agoText(pl.at)}</span>`
     : '<span class="pool-window muted">no live figure from this CLI</span>';
-  return `<div class="pool-head"><span class="pool-name"><b>${esc(VENDOR_LABEL[vendor] || vendor)}${account ? ` (${esc(account)})` : ''}</b><span>${esc(VENDOR_META[vendor]?.pool || '')}</span></span><span class="pool-figures">${figure}</span>${usageLink(key)}</div>`;
+  // AI credits (agy /credits): what takes over once a group's limits are used up
+  const credits = Number.isFinite(q?.credits?.remaining) ? `<span class="pool-window" title="${esc(`read ${agoText(q.credits.at)}`)}">${esc(q.credits.remaining.toLocaleString())} AI credits left</span>` : '';
+  return `<div class="pool-head"><span class="pool-name"><b>${esc(VENDOR_LABEL[vendor] || vendor)}${account ? ` (${esc(account)})` : ''}</b><span>${esc(VENDOR_META[vendor]?.pool || '')}</span></span><span class="pool-figures">${figure}${credits}</span>${usageLink(key)}</div>`;
 }
 
 function untilText(t) {

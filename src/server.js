@@ -450,7 +450,7 @@ function prepareDebate(raw, { board = false } = {}) {
 function searcherSettings(research, named) {
   const v = research.vendor;
   const efforts = effortsByVendor()[v] || ADAPTERS[v].effortLevels || [];
-  const s = normaliseChairman({ vendor: v, model: named ? research.model : lightestModel(v, modelsByVendor()[v]), effort: named ? research.effort : efforts.includes('low') ? 'low' : undefined, account: research.account }, { vendors: ADAPTERS, efforts: effortsByVendor() });
+  const s = normaliseChairman({ vendor: v, model: named ? research.model : lightestModel(v, modelsByVendor()[v]), effort: named ? research.effort : efforts.includes('low') ? 'low' : undefined, account: research.account }, { vendors: ADAPTERS, efforts: effortsByVendor(), role: 'Searcher' });
   const gone = s.model && retired(v, s.model);
   if (gone) throw Object.assign(new Error(`Searcher: ${ADAPTERS[v].label} retired ${s.model} (${gone.date}); use ${gone.instead}.`), { status: 400 });
   const { model, effort, account, ...rest } = research;
@@ -509,6 +509,7 @@ function attachEngine(d, { fieldNotes, seats, chairman, options, resume = null, 
       timeoutMs: opts.timeoutMs, prevCost: opts.prevCost, prevUsage: opts.prevUsage, model: opts.model || undefined, effort: opts.effort || undefined, tag: d.slug,
       allowLimitedIsolation: opts.allowLimitedIsolation,
       research: opts.research,
+      keepSession: opts.keepSession === true,
       minimal: !!opts.seat?.mood?.hidden, // a hidden mood runs as cheaply as its vendor allows
     });
   // Every reply either carries the vendor's quota or triggers a separate read (not awaited).

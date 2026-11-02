@@ -106,6 +106,17 @@ test('a timed-out seat explains its earlier missing usage and never disguises it
   assert.equal(state.verdict.failed, false, 'other providers can finish');
 });
 
+test('only seats in resume memory ask their CLI to keep the session; stateless calls and the chairman leave none', async () => {
+  for (const [memory, seatsKeep] of [['stateless', false], ['resume', true]]) {
+    const fr = fakeRunner(disagreeForever), seen = [];
+    await createDebate({ fieldNotes: FIELD_NOTES, seats: SEATS, chairman: { vendor: 'claude' }, gate: autoGate, store: stub(),
+      options: { critiqueRounds: 1, memory },
+      runner: async (vendor, prompt, sid, o) => { seen.push({ chair: o.seat?.id === 'chairman', keep: o.keepSession }); return fr.runner(vendor, prompt, sid, o); } }).run();
+    assert.ok(seen.filter((x) => !x.chair).every((x) => x.keep === seatsKeep), `${memory}: seat calls`);
+    assert.ok(seen.some((x) => x.chair) && seen.filter((x) => x.chair).every((x) => x.keep === false), `${memory}: the chairman`);
+  }
+});
+
 test('a budget-skipped chairman keeps its configuration available to the live recovery controls', async () => {
   const chairman = { vendor: 'claude', model: 'sonnet', effort: 'low', account: 'review' };
   const { d, fr, events } = debate(disagreeForever, { chairman, options: { budget: { claude: { tokens: 1 } } } });

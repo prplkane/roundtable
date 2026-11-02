@@ -10,15 +10,25 @@ import path from 'node:path';
 
 test('claude: fresh call on stdin, resume appends --resume', () => {
   const fresh = buildArgs(ADAPTERS.claude, { prompt: 'hi' });
-  assert.deepEqual(fresh.args, ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'plan', '--tools', '', '--disallowedTools', 'mcp__*', '--disable-slash-commands', '--setting-sources', 'local', '--strict-mcp-config', '--safe-mode', '--permission-prompts', 'none']);
+  assert.deepEqual(fresh.args, ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'plan', '--tools', '', '--disallowedTools', 'mcp__*', '--disable-slash-commands', '--setting-sources', 'local', '--strict-mcp-config', '--safe-mode', '--permission-prompts', 'none', '--no-session-persistence']);
   assert.equal(fresh.stdin, 'hi');
   const res = buildArgs(ADAPTERS.claude, { prompt: 'hi', sessionId: 'S1', model: 'opus' });
   assert.deepEqual(res.args.slice(-4), ['--resume', 'S1', '--model', 'opus']);
 });
 
+test('a fresh call saves no session in the CLI\'s history unless resume memory will continue it', () => {
+  const flag = { claude: '--no-session-persistence', codex: '--ephemeral' };
+  for (const [vendor, f] of Object.entries(flag)) {
+    assert.ok(buildArgs(ADAPTERS[vendor], { prompt: 'hi' }).args.includes(f), `${vendor}: a stateless call`);
+    assert.ok(!buildArgs(ADAPTERS[vendor], { prompt: 'hi', keepSession: true }).args.includes(f), `${vendor}: the first call resume memory continues`);
+    assert.ok(!buildArgs(ADAPTERS[vendor], { prompt: 'hi', sessionId: 'S1' }).args.includes(f), `${vendor}: a resumed call keeps its session going`);
+  }
+  assert.equal(ADAPTERS.agy.ephemeral, undefined, 'agy has no such flag');
+});
+
 test('codex: resume replaces the subcommand and keeps the trailing "-" last', () => {
   const fresh = buildArgs(ADAPTERS.codex, { prompt: 'hi', model: 'gpt-x' });
-  assert.deepEqual(fresh.args, ['exec', '--json', '--sandbox', 'read-only', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules', '--strict-config', '-c', 'project_doc_max_bytes=0', ...CODEX_NO_TOOLS, ...CODEX_NO_TELEMETRY, ...CODEX_RUNTIME, ...codexStream(300_000), '-m', 'gpt-x', '-']);
+  assert.deepEqual(fresh.args, ['exec', '--json', '--sandbox', 'read-only', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules', '--strict-config', '-c', 'project_doc_max_bytes=0', ...CODEX_NO_TOOLS, ...CODEX_NO_TELEMETRY, ...CODEX_RUNTIME, ...codexStream(300_000), '--ephemeral', '-m', 'gpt-x', '-']);
   const res = buildArgs(ADAPTERS.codex, { prompt: 'hi', sessionId: 'T1' });
   assert.equal(res.args.filter((a) => a === 'exec').length, 1, 'exec must appear once');
   assert.deepEqual(res.args.slice(0, 3), ['exec', 'resume', 'T1']);

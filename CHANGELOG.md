@@ -7,6 +7,10 @@
 - Keep successful research when the searcher repeats a source URL. Repeated URLs become one
   citation, with distinct excerpts combined when they fit the existing limit. Every record
   still passes URL, date and length checks; no extra model call is made to repair duplicates.
+- Offer each Codex model only the effort levels it takes. The Luna models stop at `max`
+  (`codex debug models`), but every Codex model was offered `ultra`. The pips, the chairman's
+  effort list and the server's check now follow the chosen model, and picking a model that
+  does not take the chosen level returns the seat to the CLI's default.
 
 ### Security and usage
 
@@ -21,6 +25,14 @@
   reports a used-up quota, the Gemini and Claude seats on the same login keep answering. A
   seat on the default model, whose group cannot be told, and a logged-out CLI still take the
   whole login out, as for every other vendor.
+- Keep Roundtable's calls out of each CLI's own history. Claude seats now pass
+  `--no-session-persistence` and Codex seats `--ephemeral`, so a stateless seat, chairman or
+  searcher call no longer leaves a session, prompts included, under `~/.claude/projects` or
+  `~/.codex/sessions`. Only seats in resume memory, whose next round continues the session,
+  still save it. Antigravity has no such flag.
+- Read Antigravity's AI credits with `agy -p /credits`, which the CLI answers itself with no
+  model call, beside the `/usage` read and at most every ten minutes. The usage table shows
+  "AI credits left", which you previously had to type in from the credits page.
 
 ### Local operation and interface
 

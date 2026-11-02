@@ -87,7 +87,10 @@ export function normaliseUsage(cfg, u, rawCost = null) {
 }
 
 // Turn a config row plus (prompt, sessionId, model, effort, call limit) into argv and stdin. Pure, so it is unit tested.
-export function buildArgs(cfg, { prompt, sessionId = null, model = null, effort = null, instructionsFile = null, timeoutMs = 300_000 }) {
+// keepSession: the call's session will be resumed (resume memory), so the CLI must save it. Any
+// other fresh call adds the CLI's `ephemeral` argv when it has one; a resumed call never does,
+// since its session goes on.
+export function buildArgs(cfg, { prompt, sessionId = null, model = null, effort = null, instructionsFile = null, timeoutMs = 300_000, keepSession = false }) {
   const useStdin = cfg.promptVia === 'stdin' ||
     (cfg.promptVia === 'argv-or-stdin' && prompt.length > ARGV_LIMIT);
   const streamMode = useStdin && !!cfg.stdinArgs;
@@ -95,6 +98,7 @@ export function buildArgs(cfg, { prompt, sessionId = null, model = null, effort 
   const args = sessionId ? cfg.resume(sessionId, base) : [...base];
   const extra = [];
   if (cfg.stream) extra.push(...cfg.stream(timeoutMs)); // the stream's idle limit fits inside the call limit
+  if (!keepSession && !sessionId && cfg.ephemeral) extra.push(...cfg.ephemeral);
   if (model && cfg.model) extra.push(...cfg.model(model));
   if (instructionsFile) extra.push('-c', `model_instructions_file=${JSON.stringify(instructionsFile)}`);
   // Skip the effort flag when the model id already names the level (agy), so nothing is said twice.
@@ -148,7 +152,7 @@ export function makeAdapter(name, overrides = {}) {
     bin ??= cfg.bin || resolveBinary(cfg.binary, cfg.npmBin); // cfg.bin: a test's fake CLI
     // One time limit for the process and for the argv derived from it (cfg.stream).
     const timeoutMs = research ? Math.min(research.timeoutMs, opts.timeoutMs ?? research.timeoutMs) : opts.timeoutMs ?? 300_000;
-    const built = buildArgs(cfg, { prompt, sessionId, model: opts.model, effort: opts.effort, instructionsFile, timeoutMs });
+    const built = buildArgs(cfg, { prompt, sessionId, model: opts.model, effort: opts.effort, instructionsFile, timeoutMs, keepSession: opts.keepSession === true });
     const { stdin, streamMode } = built;
     const args = searching ? searching.args(built.args) : built.args;
 

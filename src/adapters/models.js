@@ -29,10 +29,19 @@ export const MODELS = {
   codex: [
     { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol', min: 'plus' },
     { id: 'gpt-6-sol', label: 'GPT-6 Sol', min: 'plus' },
-    { id: 'gpt-6-luna', label: 'GPT-6 Luna', min: 'free', note: 'lightest' },
+    // efforts: only where a model takes fewer levels than its vendor offers (`codex debug models`
+    // supported_reasoning_levels: the Luna models stop at max)
+    { id: 'gpt-6-luna', label: 'GPT-6 Luna', min: 'free', note: 'lightest', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
     { id: 'gpt-6-astra', label: 'GPT-6 Astra', min: 'prolite', note: 'GPT-6 Pro' },
   ],
 };
+
+// The effort levels a model takes: its vendor's levels, narrowed where the table names fewer.
+// A model the table does not know (a typed id, the CLI default) keeps the vendor's levels.
+export function modelEfforts(vendor, model, levels = []) {
+  const known = (MODELS[vendor] || []).find((m) => m.id === String(model || '').trim());
+  return known?.efforts ? levels.filter((l) => known.efforts.includes(l)) : levels;
+}
 
 // Retired for ChatGPT sign-in: a call with one of these fails. id -> [date, replacement].
 export const RETIRED = {

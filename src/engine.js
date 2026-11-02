@@ -284,6 +284,8 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       // its own part even after a server restart (adapters/common.js).
       const res = await runner(seat.vendor, prompt, sessionId, { timeoutMs: researching ? opts.research.timeoutMs : opts.callTimeoutMs,
         ...(researching ? { research: opts.research } : {}), signal: controller.signal, seat, model: seat.model, effort: seat.effort, allowLimitedIsolation: opts.allowLimitedIsolation === true,
+        // only a seat in resume memory needs its CLI to save the session for the next round
+        keepSession: resumes && !researching && seat.id !== 'chairman',
         prevCost: sessionId ? seat.lastRawCost : undefined, prevUsage: sessionId ? seat.lastRawUsage : undefined });
       const usage = accounting(res);
       if (res.usedTools) {

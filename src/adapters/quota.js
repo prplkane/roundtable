@@ -99,22 +99,50 @@ function lastJson(text) {
 // tokens each time. The argv below is the one measured free; the seats' deny rules are not
 // added to it, since that was not measured, and the latch bounds a CLI that stops answering.
 // run and resolve are injectable so tests never spawn the CLI.
-export function agyQuotaReader({ run = runProcess, resolve = resolveBinary, warn = console.error } = {}) {
-  let stopped = null;
+// agy: the parsed answer to `-p /credits`, the AI credits that take over once a group's limits
+// are used: command.data.remaining_credits. null when the answer holds no such number.
+export function agyCredits(obj) {
+  const n = obj?.status === 'SUCCESS' && obj.command?.name === 'credits' ? obj.command.data?.remaining_credits : undefined;
+  return typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+// How often /credits is asked: a balance that moves only once a group's limits are used up, so
+// not after every reply as /usage is.
+export const AGY_CREDITS_EVERY_MS = 10 * 60_000;
+
+export function agyQuotaReader({ run = runProcess, resolve = resolveBinary, warn = console.error, now = Date.now } = {}) {
+  // credits: { remaining, at } from the last /credits answer that held a figure; askedAt: when it
+  // was last asked, answered or not, so an account without credits is not asked on every read
+  let stopped = null, credits = null, askedAt = null;
   const stop = (why) => { stopped = why; warn(`[quota] agy: ${why}; Antigravity quota reads are off until the server restarts`); return null; };
-  // 30 s, as for `agy models`: both wait on the network, and a timeout here turns reads off
+  // One command the CLI answers itself, or null: it did not start, or it was not shown free (the
+  // latch then says why, once). 30 s, as for `agy models`: both wait on the network, and a
+  // timeout turns reads off.
+  const ask = async (bin, command, timeoutMs) => {
+    let out;
+    try { out = (await run(bin, ['-p', command, '--output-format', 'json'], { timeoutMs, env: cleanEnv() })).stdout; } catch (e) {
+      if (e.code === 'TIMEOUT') return stop(`${command} gave no answer within ${timeoutMs} ms, so it may have reached a model`);
+      return null; // it did not start, or the server is shutting down
+    }
+    const obj = lastJson(out);
+    if (!agyReadWasFree(obj)) return stop(obj ? `${command} did not answer as a free command (a turn, tokens or a conversation)` : `${command} gave no JSON answer`);
+    return obj;
+  };
   const read = async ({ timeoutMs = 30_000 } = {}) => {
     if (stopped) return null;
     let bin;
     try { bin = resolve('agy'); } catch { return null; }
-    let out;
-    try { out = (await run(bin, ['-p', '/usage', '--output-format', 'json'], { timeoutMs, env: cleanEnv() })).stdout; } catch (e) {
-      if (e.code === 'TIMEOUT') return stop(`/usage gave no answer within ${timeoutMs} ms, so it may have reached a model`);
-      return null; // it did not start, or the server is shutting down
+    const usage = await ask(bin, '/usage', timeoutMs);
+    const q = usage?.status === 'SUCCESS' ? agyQuota(usage) : null; // ERROR: not signed in, or no network
+    if (!q) return null;
+    if (askedAt == null || now() - askedAt >= AGY_CREDITS_EVERY_MS) {
+      askedAt = now();
+      const answer = await ask(bin, '/credits', timeoutMs);
+      if (stopped) return null;
+      const remaining = agyCredits(answer);
+      if (remaining != null) credits = { remaining, at: now() };
     }
-    const obj = lastJson(out);
-    if (!agyReadWasFree(obj)) return stop(obj ? '/usage did not answer as a free command (a turn, tokens or a conversation)' : '/usage gave no JSON answer');
-    return obj.status === 'SUCCESS' ? agyQuota(obj) : null; // ERROR: not signed in, or no network
+    return credits ? { ...q, credits } : q;
   };
   read.stopped = () => stopped;
   return read;
