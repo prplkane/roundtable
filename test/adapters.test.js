@@ -285,7 +285,13 @@ test('effort: each vendor spells it its own way; agy skips it when the model id 
 
 test('profile homes live under the OS user-data dir, one per profile name, per vendor', () => {
   const h = '/home/u';
-  assert.equal(profileHome('claude', 'work', { platform: 'win32', env: { LOCALAPPDATA: 'C:\\Users\\u\\AppData\\Local' }, homedir: h }), 'C:\\Users\\u\\AppData\\Local\\roundtable\\homes\\work\\claude');
+  // Windows: the user profile, never AppData (packaged apps redirect it into private copies)
+  const win = { platform: 'win32', env: { LOCALAPPDATA: 'C:\\Users\\u\\AppData\\Local' }, homedir: 'C:\\Users\\u' };
+  assert.equal(profileHome('claude', 'work', { ...win, exists: () => false }), 'C:\\Users\\u\\.roundtable\\homes\\work\\claude');
+  // a profile already logged in under the earlier AppData default keeps that login until moved
+  const earlier = 'C:\\Users\\u\\AppData\\Local\\roundtable\\homes\\work\\claude';
+  assert.equal(profileHome('claude', 'work', { ...win, exists: (p) => p === earlier }), earlier);
+  assert.equal(profileHome('claude', 'work', { ...win, exists: () => true }), 'C:\\Users\\u\\.roundtable\\homes\\work\\claude', 'the new place wins once it exists');
   assert.equal(profileHome('codex', 'work', { platform: 'darwin', env: {}, homedir: h }), '/home/u/Library/Application Support/roundtable/homes/work/codex');
   assert.equal(profileHome('codex', 'alt', { platform: 'linux', env: {}, homedir: h }), '/home/u/.local/share/roundtable/homes/alt/codex');
   assert.equal(profileHome('codex', 'alt', { platform: 'linux', env: { XDG_DATA_HOME: '/data' }, homedir: h }), '/data/roundtable/homes/alt/codex');

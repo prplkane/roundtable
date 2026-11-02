@@ -142,12 +142,15 @@ export function cleanEnv(home = null, { allowApiKeys = process.env.ROUNDTABLE_AP
 // folder. One tree per profile name, one subdirectory per vendor inside it, so a profile is a
 // login the user made themselves (`doctor` prints the command). Nothing is ever copied into it:
 // the CLI's own login flow writes its credentials there, and roundtable never reads them.
-//   Windows  %LOCALAPPDATA%\\roundtable\\homes\\<profile>\\<vendor>
+//   Windows  %USERPROFILE%\\.roundtable\\homes\\<profile>\\<vendor>
 //   macOS    ~/Library/Application Support/roundtable/homes/<profile>/<vendor>
 //   Linux    $XDG_DATA_HOME/roundtable/homes/<profile>/<vendor>, default ~/.local/share
+// Windows uses the user profile, not AppData, for the reason history.js dataDirectory gives: a
+// packaged app's programs have their AppData writes redirected into that app's own copy, so a
+// login made from one app would be missing in another.
 export function dataDir({ platform = process.platform, env = process.env, homedir = os.homedir() } = {}) {
   const P = platform === 'win32' ? path.win32 : path.posix; // the target platform's separators, so tests can ask for any
-  if (platform === 'win32') return P.join(env.LOCALAPPDATA || P.join(homedir, 'AppData', 'Local'), 'roundtable');
+  if (platform === 'win32') return P.join(homedir, '.roundtable');
   if (platform === 'darwin') return P.join(homedir, 'Library', 'Application Support', 'roundtable');
   return P.join(env.XDG_DATA_HOME || P.join(homedir, '.local', 'share'), 'roundtable');
 }
@@ -155,5 +158,14 @@ export function dataDir({ platform = process.platform, env = process.env, homedi
 export function profileHome(vendor, profile, where = {}) {
   const name = String(profile || '').trim();
   if (!PROFILE_RE.test(name)) throw new Error(`Profile name "${profile}" must be 1-40 letters, digits, dots, dashes or underscores.`);
-  return (where.platform === 'win32' || (!where.platform && process.platform === 'win32') ? path.win32 : path.posix).join(dataDir(where), 'homes', name, vendor);
+  const win = where.platform === 'win32' || (!where.platform && process.platform === 'win32');
+  const P = win ? path.win32 : path.posix;
+  const dir = P.join(dataDir(where), 'homes', name, vendor);
+  // a profile logged in under the earlier AppData default keeps its login until it is moved
+  if (win) {
+    const exists = where.exists || existsSync, env = where.env || process.env;
+    const earlier = env.LOCALAPPDATA && P.join(env.LOCALAPPDATA, 'roundtable', 'homes', name, vendor);
+    if (earlier && !exists(dir) && exists(earlier)) return earlier;
+  }
+  return dir;
 }

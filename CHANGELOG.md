@@ -24,6 +24,13 @@
 
 ### Local operation and interface
 
+- Keep Windows history and login profiles in `%USERPROFILE%\.roundtable` instead of
+  `%LOCALAPPDATA%\Roundtable`. Windows redirects the AppData writes of anything started from a
+  packaged app, such as the Claude or Codex desktop app and their terminals, into a private copy
+  per app, so each app saw its own history and its own one-server lock. At startup Roundtable
+  now lists every older folder that still holds a review the data folder lacks: a checkout's
+  `debates/`, the earlier AppData folder and each packaged app's copy of it. It never moves them
+  itself. A login profile made under the earlier AppData default keeps working until it is moved.
 - Stream Codex replies over SSE with an idle limit that fits inside the call limit and two
   reconnects, through a provider entry named per call that points at the same ChatGPT backend
   with the same login. The built-in provider offers no idle or reconnect setting, and the CLI's

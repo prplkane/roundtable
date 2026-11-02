@@ -9,7 +9,7 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   own CLI (`claude`, `codex`, `agy`) as a child process, and that CLI does its own login the way
   it does in your terminal. A test asserts that no source file names a credential file or copies
   one. A second account ("login profile") is an empty directory under the OS user-data folder
-  (`%LOCALAPPDATA%\roundtable\homes\<profile>\<vendor>`, `~/Library/Application Support/roundtable/...`,
+  (`%USERPROFILE%\.roundtable\homes\<profile>\<vendor>`, `~/Library/Application Support/roundtable/...`,
   `~/.local/share/roundtable/...`) that you log into yourself once; Roundtable only points the
   CLI at it through the variable the CLI documents.
 - **Billing: the subscription, unless you say otherwise.** The child's environment is yours minus

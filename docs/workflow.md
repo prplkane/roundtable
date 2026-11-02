@@ -521,7 +521,7 @@ npm run doctor -- --profile work
 It prints the exact commands for each vendor, for example on Windows:
 
 ```
-set CODEX_HOME=C:\Users\<you>\AppData\Local\roundtable\homes\work\codex
+set CODEX_HOME=C:\Users\<you>\.roundtable\homes\work\codex
 codex login
 ```
 
@@ -875,13 +875,15 @@ there is no current snapshot. Refresh with an authenticated JSON `POST /api/pref
 | Retained usage statistics | `_usage.json` in the data folder; counters and model IDs, without review text |
 | Measured quota rates and entered pool figures | `_calibration.json` and `_pools.json` in the live data folder; demo names include `.fake` |
 | Saved setup preferences | browser local storage, separate for each host and port |
-| Account profiles | `%LOCALAPPDATA%\roundtable\homes` on Windows, `~/Library/Application Support/roundtable/homes` on macOS, `~/.local/share/roundtable/homes` on Linux |
+| Account profiles | `%USERPROFILE%\.roundtable\homes` on Windows, `~/Library/Application Support/roundtable/homes` on macOS, `~/.local/share/roundtable/homes` on Linux |
 | Decision records you exported | the folder you chose |
 
-The user-data folder is `%LOCALAPPDATA%\Roundtable` on Windows,
+The user-data folder is `%USERPROFILE%\.roundtable` on Windows,
 `~/Library/Application Support/Roundtable` on macOS, and `$XDG_DATA_HOME/roundtable` on Linux
 (or `~/.local/share/roundtable` when XDG_DATA_HOME is unset). It stays the same across checkout
-changes. An absolute `ROUNDTABLE_DEBATES_DIR` selects another location; use distinct paths for
+changes. On Windows it is not under AppData: Windows redirects the AppData writes of anything
+started from a packaged app, such as the Claude or Codex desktop app and the terminals they
+open, into a private copy for that app, so each app would see its own history. An absolute `ROUNDTABLE_DEBATES_DIR` selects another location; use distinct paths for
 demo and live data. Only one server can use a data folder at a time, even on different ports.
 
 The live diagnostic check (`doctor --live`) keeps its working files under `_doctor/` in the
@@ -901,15 +903,24 @@ recorded calls after cleanup and restart. A statistics-write failure prevents de
 tabs showing a deleted session return to the list. Corrupt records must be repaired first so
 their reported usage can be retained. Browser preferences and provider histories are separate.
 
-### Move older history out of a checkout
+### Move older history
 
-Stop every server using the old data folder. Before starting this version, move the entire
-old `debates/` folder to the user-data folder's `live/` directory, and `debates-fake/` to `demo/`
-if needed. Preserve all contents, including calibration, pools, diagnostics and recovery files.
-Verify that the destination is unused and outside the checkout; do not overwrite an existing
-history folder. You can instead move to a new folder and select it with `ROUNDTABLE_DEBATES_DIR`.
-Start the server and check **Local data and backups** and the saved-session count. Existing
-checkout history is reported when detected; it is never silently merged or deleted at startup.
+Older versions kept history in a checkout's `debates/` folder, and on Windows in
+`%LOCALAPPDATA%\Roundtable`. A server started from a packaged app wrote that AppData folder into
+the app's private copy instead, under `%LOCALAPPDATA%\Packages\<app>\LocalCache\Local\Roundtable`,
+so one machine can hold several copies with different reviews. At startup Roundtable lists every
+such folder that holds a review the current data folder lacks, in the terminal and under
+**Local data and backups**. It never moves, merges or deletes them itself.
+
+To move them, stop every server using an old folder. Move each review folder (the dated ones
+with a `transcript.jsonl`) into `live/`, or into `demo/` for `debates-fake/` and the old `demo/`
+folders. If a folder with the same name is already in the destination, do not replace it: leave
+the old one where it is and compare the two. When the destination has no
+`_calibration.json`, `_usage.json` or `_pools.json` yet, move the old one too; otherwise keep the
+destination's. Usage is recounted from the moved reviews at startup, and quota rates relearn as
+debates run. Start the server and check that the old folders are no longer listed and the
+saved-session count is right. A folder whose reviews have all been moved is not listed again.
+You can instead move everything to a new folder and select it with `ROUNDTABLE_DEBATES_DIR`.
 
 ### Back up and restore
 

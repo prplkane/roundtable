@@ -173,8 +173,9 @@ async function setup() {
   $('run-mode').className = `run-mode ${demo ? 'demo' : 'live'}`;
   $('mode-note').textContent = demo ? 'Demo: replies and usage are scripted. No model calls are made.' : 'Live: debates send your field notes to the providers you select and use their quota or billing.';
   $('data-dir').textContent = runtime?.dataDir || 'unavailable — check the server terminal';
-  $('legacy-data').hidden = !runtime?.legacyDataDir;
-  $('legacy-data').textContent = runtime?.legacyDataDir ? `Older history remains at ${runtime.legacyDataDir}. Stop that server before moving its data; see the user guide.` : '';
+  const legacy = Array.isArray(runtime?.legacyDataDirs) ? runtime.legacyDataDirs : [];
+  $('legacy-data').hidden = !legacy.length;
+  $('legacy-data').textContent = legacy.length ? `Older history remains at ${legacy.join('; ')}. Stop any server using ${legacy.length === 1 ? 'that folder before moving its reviews' : 'those folders before moving their reviews'}; see the user guide.` : '';
   if (runtime?.diagnostics?.available === false) { $('diagnostics-status').textContent = 'The local error log is unavailable. Check disk space and data-folder permissions.'; $('diagnostics-status').hidden = false; }
   MOODS = moods; COLOURS = colours; BASELINES = baselines || {}; S.calib = calibration || {}; S.pools = pools || {};
   const chair = $('chairman');

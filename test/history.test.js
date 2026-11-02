@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { dataDirectory, acquireDataLock, checkedHistoryPath, removeHistory, createUsageStore, createHistoryIndex } from '../src/history.js';
+import { dataDirectory, legacyHistory, acquireDataLock, checkedHistoryPath, removeHistory, createUsageStore, createHistoryIndex } from '../src/history.js';
 import { slugFor } from '../src/store.js';
 
 const temporary = () => mkdtempSync(path.join(os.tmpdir(), 'rt-history-'));
@@ -54,9 +54,40 @@ test('default history lives in the OS data folder, with separate live and demo p
     assert.equal(path.basename(dataDirectory({ home, platform, env: {}, fake: true })), 'demo');
     assert.ok(live.startsWith(home + path.sep));
   }
-  assert.equal(dataDirectory({ home, platform: 'win32', env: { LOCALAPPDATA: root } }), path.join(root, 'Roundtable', 'live'));
+  // Windows: the user profile, never AppData, which packaged apps redirect into private copies
+  assert.equal(dataDirectory({ home, platform: 'win32', env: { LOCALAPPDATA: root } }), path.join(home, '.roundtable', 'live'));
+  assert.equal(dataDirectory({ home, platform: 'win32', env: {}, fake: true }), path.join(home, '.roundtable', 'demo'));
   assert.equal(dataDirectory({ home, platform: 'linux', env: { XDG_DATA_HOME: root } }), path.join(root, 'roundtable', 'live'));
   assert.equal(dataDirectory({ env: { ROUNDTABLE_DEBATES_DIR: root }, fake: true }), root);
+});
+
+test('older history is reported only where a review is missing from the data folder: a checkout, the AppData default, a packaged app\'s copy', () => {
+  const root = temporary(), local = path.join(root, 'AppData', 'Local'), data = path.join(root, 'home', '.roundtable', 'live');
+  const review = (dir, id) => { mkdirSync(path.join(dir, id), { recursive: true }); writeFileSync(path.join(dir, id, 'transcript.jsonl'), '{}\n'); };
+  const checkout = path.join(root, 'checkout'), appdata = path.join(local, 'Roundtable', 'live');
+  const codex = path.join(local, 'Packages', 'OpenAI.Codex_x', 'LocalCache', 'Local', 'Roundtable', 'live');
+  review(data, '2026-11-01-moved');
+  review(path.join(checkout, 'debates'), '2026-10-28-old'); review(path.join(checkout, 'debates'), '2026-11-01-moved');
+  review(appdata, '2026-11-01-moved'); // every review already moved: quiet
+  review(codex, '2026-10-20-codex-a'); review(codex, '2026-10-20-codex-b');
+  mkdirSync(path.join(local, 'Packages', 'Other.App_y', 'LocalCache', 'Local', 'Roundtable', 'live', '_diagnostics'), { recursive: true }); // no review
+  writeFileSync(path.join(codex, '_calibration.json'), '{}');
+  const found = legacyHistory(data, { root: checkout, platform: 'win32', env: { LOCALAPPDATA: local } });
+  assert.deepEqual(found.map((x) => [x.dir, x.missing]), [[path.join(checkout, 'debates'), 1], [codex, 2]]);
+  // demo looks in the demo folders; other systems only in the checkout; no LOCALAPPDATA, no AppData look
+  assert.deepEqual(legacyHistory(path.join(root, 'demo'), { root: checkout, fake: true, platform: 'win32', env: { LOCALAPPDATA: local } }), []);
+  assert.deepEqual(legacyHistory(data, { root: checkout, platform: 'linux', env: { LOCALAPPDATA: local } }).map((x) => x.dir), [path.join(checkout, 'debates')]);
+  assert.deepEqual(legacyHistory(data, { root: checkout, platform: 'win32', env: {} }).map((x) => x.dir), [path.join(checkout, 'debates')]);
+  // the same reviews seen in two places are named once, at the first: a packaged app's server sees
+  // its own copy through %LOCALAPPDATA% as well as at its Packages path
+  review(appdata, '2026-10-20-codex-a'); review(appdata, '2026-10-20-codex-b');
+  assert.deepEqual(legacyHistory(data, { root: checkout, platform: 'win32', env: { LOCALAPPDATA: local } }).map((x) => [x.dir, x.missing]),
+    [[path.join(checkout, 'debates'), 1], [appdata, 2]]);
+  // a place that cannot be listed (here a file where a folder was expected) is skipped, never thrown
+  const odd = path.join(root, 'odd'); mkdirSync(odd); writeFileSync(path.join(odd, 'debates'), 'not a folder');
+  assert.deepEqual(legacyHistory(data, { root: odd, platform: 'linux', env: {} }), []);
+  // a data folder that is itself one of those places is never its own older copy (case ignored on Windows)
+  assert.deepEqual(legacyHistory(codex.toUpperCase(), { platform: 'win32', env: { LOCALAPPDATA: local } }).map((x) => x.dir), [appdata]);
 });
 
 test('a data folder admits one server and refuses an unreadable lock', () => {

@@ -26,7 +26,7 @@ import { createSettingsStore } from './settings.js';
 import { noteRecord, storedNote } from './notes.js';
 import { reviewSnapshot } from './snapshot.js';
 import { pickFolder } from './folder-picker.js';
-import { dataDirectory, acquireDataLock, historyIds, checkedHistoryPath, removeHistory, createUsageStore, createHistoryIndex } from './history.js';
+import { dataDirectory, legacyHistory, acquireDataLock, checkedHistoryPath, removeHistory, createUsageStore, createHistoryIndex } from './history.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const UI = path.join(ROOT, 'src', 'ui');
@@ -38,9 +38,10 @@ const FAKE = process.argv.includes('--fake') || FAKE_CONSENSUS;
 const DEBATES_DIR = dataDirectory({ fake: FAKE });
 const releaseDataLock = acquireDataLock(DEBATES_DIR);
 process.once('exit', releaseDataLock);
-const legacyDir = path.join(ROOT, FAKE ? 'debates-fake' : 'debates');
-const legacyDataDir = !process.env.ROUNDTABLE_DEBATES_DIR && historyIds(legacyDir).length ? legacyDir : null;
-if (legacyDataDir) console.warn(`Older history remains in ${legacyDataDir}. Stop its server and move that folder to ${DEBATES_DIR}; see Local data and backups.`);
+// an explicit folder is the person's choice; only the defaults have older places to look in
+const legacy = process.env.ROUNDTABLE_DEBATES_DIR ? [] : legacyHistory(DEBATES_DIR, { root: ROOT, fake: FAKE });
+for (const { dir, missing } of legacy) console.warn(`Older history remains in ${dir}: ${missing} review${missing === 1 ? '' : 's'} not in ${DEBATES_DIR}. Stop any server using that folder, then move those review folders into ${DEBATES_DIR}; see Local data and backups.`);
+const legacyDataDirs = legacy.map((x) => x.dir);
 const diagnostics = createDiagnostics(DEBATES_DIR, { mode: FAKE ? 'demo' : 'live', version: JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version });
 diagnostics.write({ code: 'server-start', action: 'startup' });
 const PORT = Number(process.env.PORT) || (FAKE ? 4748 : 4747);
@@ -647,7 +648,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && p === '/api/seats') {
       const cat = catalogue || await catalogueReady;
       return json(res, 200, {
-        runtime: { mode: FAKE ? 'demo' : 'live', dataDir: DEBATES_DIR, ...(legacyDataDir ? { legacyDataDir } : {}), diagnostics: diagnostics.status() },
+        runtime: { mode: FAKE ? 'demo' : 'live', dataDir: DEBATES_DIR, ...(legacyDataDirs.length ? { legacyDataDirs } : {}), diagnostics: diagnostics.status() },
         vendors: Object.entries(ADAPTERS).map(([vendor, a]) => ({
           vendor, kind: a.kind, label: a.label, colour: a.colour, usageUrl: a.usageUrl || null, quota: quota[vendor] || null, profiles: poolsByAccount(a), limitedIsolation: a.limitedIsolation === true, search: !!a.research,
           pool: a.pool, catalogue: cat[vendor],
