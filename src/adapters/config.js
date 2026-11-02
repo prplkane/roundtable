@@ -207,7 +207,7 @@ export const ADAPTERS = {
         return models.length ? { input: sum('inputTokens'), output: sum('outputTokens'), cacheRead: sum('cacheReadInputTokens'), cacheWrite: sum('cacheCreationInputTokens'), thinking: sum('thinkingTokens', true) } : null;
       },
     },
-    quota: 'per-call', // see quota.js
+    quota: 'command', // `claude -p /usage`, answered without a turn; each reply's figure is the fallback (quota.js)
     usageUrl: 'https://claude.ai/settings/usage',
     colour: 'rust',
     readOnly: '--permission-mode plan',

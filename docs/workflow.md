@@ -52,6 +52,16 @@ claude
 
 Inside the program, type `/login`, finish the sign-in in the browser, then exit with `/exit`.
 
+Roundtable reads Claude's remaining quota with `claude -p /usage`, which the CLI answers itself,
+with no model call and no conversation. It reads when the server starts, on **Refresh status**,
+after each Claude reply and when a debate ends, from an empty folder with a seat's lockdown
+(no tools, no MCP servers, safe mode) but with slash commands on, which `/usage` needs. Only the session, weekly and per-model weekly limit lines are kept; the activity summary
+the same answer prints (requests, sessions, skills, MCP servers) is discarded and never saved.
+If the read gives nothing, the figure each Claude reply carries is shown instead; with API-key
+billing, where `/usage` shows no plan limits, reads stop after the first and replies supply it. If an answer
+ever shows a turn, tokens or a cost, or the read gets no answer within 30 seconds, Roundtable
+stops reading Claude quota until the server restarts and says so on the console.
+
 ### Codex (OpenAI)
 
 ```bash
@@ -867,7 +877,7 @@ there is no current snapshot. Refresh with an authenticated JSON `POST /api/pref
 | A seat is "reconnected ×1" | Its provider connection went silent for the idle limit and the CLI started the answer again. The reply is complete; the interrupted attempt may have been charged without appearing in usage. Repeated marks on one vendor point at the provider, not at the seat. |
 | "address already in use" | Another server is on that port. Stop it, or start with a different `PORT`. |
 | The board says the debate is unknown | The server was restarted. Reopen the address; the board replays from disk and offers Resume. |
-| A vendor's remaining quota shows nothing | Antigravity's read needs agy 1.1.11 or later and a sign-in; check `agy -p /usage` in a plain terminal (not a shell opened by another agent CLI: with Claude Code's variables in the environment, agy sends the text to a model instead of answering it), or type the figure from its credits page. If the console says Antigravity quota reads are off, restart the server once the CLI answers `/usage` without a turn again. Codex shows only a weekly window on some plans. |
+| A vendor's remaining quota shows nothing | Claude's read needs a subscription sign-in; with API-key billing, `/usage` has no limits to show and the figure appears after the first Claude reply. Antigravity's read needs agy 1.1.11 or later and a sign-in; check `agy -p /usage` in a plain terminal (not a shell opened by another agent CLI: with Claude Code's variables in the environment, agy sends the text to a model instead of answering it), or type the figure from its credits page. If the console says Antigravity quota reads are off, restart the server once the CLI answers `/usage` without a turn again. Codex shows only a weekly window on some plans. |
 
 ## Where things live
 

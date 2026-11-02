@@ -6,15 +6,20 @@
 // A vendor whose limits differ by model adds groups: each window names its `group`, and
 // `groups: [{ name, models }]` lets models.js quotaGroup say which group a seat's model uses.
 //
-//  claude  rides on every call: `--output-format stream-json` emits a rate_limit_event line
-//          whose rate_limit_info.unifiedWindows holds utilization (0..1) per window.
+//  claude  separate read, no model call: `claude -p /usage --output-format json` is answered by
+//          the CLI itself (no turn, zero tokens, local_command "usage") -> sentences in `result`
+//          ("Current session: 53% used · resets Nov 2, 4:59am (Europe/Berlin)"). Each reply also
+//          carries a rate_limit_event (rate_limit_info.unifiedWindows, utilization 0..1), used
+//          when that read gives nothing.
 //  codex   separate read, no model call: `codex app-server` over stdio, JSON-RPC
 //          account/rateLimits/read -> rateLimits.{primary,secondary}.usedPercent (0..100).
 //  agy     separate read, no model call: `agy -p /usage --output-format json` is answered by the
 //          CLI itself (no turn, zero tokens) -> command.data.groups[].buckets[] with window,
 //          remaining_fraction (0..1) and reset_time (ISO, UTC). Groups are model families.
-import { resolveBinary, runProcess, cleanEnv } from './spawn.js';
+import { resolveBinary, runProcess, cleanEnv, dataDir } from './spawn.js';
 import { spawn, execFileSync } from 'node:child_process';
+import { mkdirSync } from 'node:fs';
+import path from 'node:path';
 
 // Keys seen in rate_limit_info.unifiedWindows (the third appeared in the first real debate after the
 // spike). An unknown key is shown with its underscores as spaces rather than hidden.
@@ -30,6 +35,113 @@ export function claudeQuota(info, at = Date.now()) {
     .map(([k, w]) => ({ label: windowKeyLabel(k), used: w.utilization, resetsAt: w.resetsAt ?? null }));
   return windows.length ? { windows, plan: null, at } : null;
 }
+
+// claude: the text `claude -p /usage` prints. Only the limit lines are read:
+//   Current session: 53% used · resets Nov 2, 4:59am (Europe/Berlin)
+//   Current week (all models): 57% used · resets Nov 2, 8:59pm (Europe/Berlin)
+//   Current week (Fable): 75% used · resets Nov 2, 8:59pm (Europe/Berlin)
+// The same answer summarises local activity (requests, sessions, skills, MCP servers); none of it
+// is kept. Labels match the reply's rate_limit_event (5h, 7d), so calibration compares like with
+// like; a week for one model family becomes "7d <family>".
+const CLAUDE_LIMIT = /^\s*Current (session|week)(?:\s*\(([^)]+)\))?\s*:\s*(\d{1,3}(?:\.\d+)?)%\s+used\b(?:\s*\S\s*resets\s+(.+?))?\s*$/i;
+export function claudeUsage(text, at = Date.now()) {
+  const windows = [];
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const m = CLAUDE_LIMIT.exec(line);
+    if (!m) continue;
+    const family = m[2] && !/^all models$/i.test(m[2].trim()) ? m[2].trim() : null;
+    const label = m[1].toLowerCase() === 'session' ? '5h' : family ? `7d ${family}` : '7d';
+    if (windows.some((w) => w.label === label)) continue;
+    windows.push({ label, used: Math.min(1, Number(m[3]) / 100), resetsAt: m[4] ? claudeResetAt(m[4], at) : null });
+  }
+  return windows.length ? { windows, plan: null, at } : null;
+}
+
+// "Nov 2, 4:59am (Europe/Berlin)", or "4:59am (Europe/Berlin)" for later today: a wall-clock time
+// in a named zone, without a year. The next such moment from `now`, in epoch seconds; null when
+// the text or the zone cannot be read (the reply's figure then supplies exact reset times).
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+function zoneParts(ms, zone) {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: zone, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' }).formatToParts(ms);
+  const n = Object.fromEntries(parts.filter((p) => p.type !== 'literal').map((p) => [p.type, Number(p.value)]));
+  return n;
+}
+function zoneToEpochMs(year, month, day, hour, minute, zone) {
+  const wall = Date.UTC(year, month, day, hour, minute);
+  const offset = (ms) => { const p = zoneParts(ms, zone); return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - ms; };
+  const first = wall - offset(wall);
+  return wall - offset(first); // a second pass settles a daylight-saving change between the two
+}
+export function claudeResetAt(text, now = Date.now()) {
+  const m = /^(?:([a-z]{3})[a-z]*\.?\s+(\d{1,2}),?\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(([^)]+)\)\s*$/i.exec(String(text).trim());
+  if (!m) return null;
+  let today;
+  try { today = zoneParts(now, m[6].trim()); } catch { return null; } // a zone this runtime does not know
+  if (Number(m[3]) < 1 || Number(m[3]) > 12) return null; // a 12-hour clock: 13pm is no time
+  const hour = (Number(m[3]) % 12) + (m[5].toLowerCase() === 'pm' ? 12 : 0), minute = Number(m[4] || 0);
+  if (minute > 59) return null;
+  const month = m[1] ? MONTHS.indexOf(m[1].toLowerCase()) : today.month - 1;
+  if (month < 0) return null;
+  // A dated reset up to a day past is a display a little behind, not next year's; an undated one
+  // already past means tomorrow.
+  const candidates = m[1] ? [[today.year, month, Number(m[2])], [today.year + 1, month, Number(m[2])]]
+    : [[today.year, month, today.day], [today.year, month, today.day + 1]];
+  const grace = m[1] ? 86_400_000 : 60_000;
+  for (const [y, mo, d] of candidates) {
+    const t = zoneToEpochMs(y, mo, d, hour, minute, m[6].trim());
+    if (t >= now - grace) return Math.round(t / 1000);
+  }
+  return null;
+}
+
+// The read is free only when the CLI answered it as a local command: no turn, no cost, every
+// token counter zero. Anything else, an unreadable answer included, is not shown free.
+const CLAUDE_TOKENS = ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'];
+export function claudeReadWasFree(obj) {
+  const u = obj?.usage;
+  return !!u && typeof u === 'object' && obj.num_turns === 0 && obj.local_command === 'usage'
+    && (obj.total_cost_usd ?? 0) === 0 && CLAUDE_TOKENS.every((k) => (u[k] ?? 0) === 0);
+}
+
+// The seats' lockdown (config.js claude args) minus --disable-slash-commands, which /usage needs.
+// --model haiku: should a CLI ever send "/usage" to a model, the stray turn is the cheapest one,
+// and the latch below stops every later read.
+export const CLAUDE_USAGE_ARGS = ['-p', '/usage', '--output-format', 'json', '--model', 'haiku', '--permission-mode', 'plan',
+  '--tools', '', '--disallowedTools', 'mcp__*', '--setting-sources', 'local', '--strict-mcp-config', '--safe-mode', '--no-session-persistence'];
+
+// A reader with its own latch, as for agy: an answer that is not shown free, or a read cut off by
+// the timeout, stops every later read until the server restarts. So does a free answer without
+// limit lines (API-key billing, not signed in, reworded text): reading again after every reply
+// would only log a failure each time, and each reply's own figure is used instead. An error
+// answer is no figure this time, not a stop. It runs from an empty folder
+// so no project settings or instructions load, with the seats' cleaned environment (a shell
+// another agent CLI opened changes how the CLI treats slash commands). home: a named profile's
+// CLAUDE_CONFIG_DIR. run, resolve and cwd are injectable so tests never spawn the CLI.
+export function claudeQuotaReader({ run = runProcess, resolve = resolveBinary, warn = console.error, cwd = null } = {}) {
+  let stopped = null;
+  const stop = (why) => { stopped = why; warn(`[quota] claude: ${why}; Claude quota reads are off until the server restarts`); return null; };
+  const read = async ({ timeoutMs = 30_000, home = null } = {}) => {
+    if (stopped) return null;
+    let bin;
+    try { bin = resolve('claude'); } catch { return null; }
+    const dir = cwd || path.join(dataDir(), 'quota', 'claude');
+    let out;
+    try {
+      mkdirSync(dir, { recursive: true });
+      out = (await run(bin, CLAUDE_USAGE_ARGS, { timeoutMs, cwd: dir, env: cleanEnv(home ? { env: 'CLAUDE_CONFIG_DIR', dir: home } : null) })).stdout;
+    } catch (e) {
+      if (e.code === 'TIMEOUT') return stop(`/usage gave no answer within ${timeoutMs} ms, so it may have reached a model`);
+      return null; // it did not start, or the server is shutting down
+    }
+    const obj = lastJson(out);
+    if (!claudeReadWasFree(obj)) return stop(obj ? '/usage did not answer as a local command (a turn, tokens or a cost)' : '/usage gave no JSON answer');
+    if (obj.is_error) return null;
+    return claudeUsage(obj.result) || stop('/usage shows no plan limits (API-key billing, or not signed in); each Claude reply\'s own figure is used');
+  };
+  read.stopped = () => stopped;
+  return read;
+}
+export const readClaudeQuota = claudeQuotaReader();
 
 // codex: the result object of account/rateLimits/read.
 export function codexQuota(result, at = Date.now()) {

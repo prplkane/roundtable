@@ -86,6 +86,14 @@ test('windowDeltas: same window gives the rise; a moved reset or a drop is inval
   assert.deepEqual(d.map((x) => [x.label, x.valid]), [['5h', true], ['7d', false], ['x', true], ['new', false]]);
   assert.ok(Math.abs(d[0].delta - 0.03) < 1e-9);
   assert.deepEqual(windowDeltas(null, next), []);
+  // a reset read a minute apart is the same window (Claude's /usage prints it to the minute and
+  // rounds it differently between reads); a rollover moves it by hours
+  const at = (resetsAt, used) => ({ windows: [{ label: '5h', used, resetsAt }] });
+  const T = 1_793_624_400;
+  assert.equal(windowDeltas(at(T - 60, 0.53), at(T, 0.55))[0].valid, true, 'minute jitter');
+  assert.equal(windowDeltas(at(T, 0.53), at(T - 1, 0.55))[0].valid, true, 'the reply\'s exact second beside the read\'s minute');
+  assert.equal(windowDeltas(at(T, 0.53), at(T + 5 * 3600, 0.55))[0].valid, false, 'a new 5-hour window');
+  assert.equal(windowDeltas(at(null, 0.53), at(T, 0.55))[0].valid, false, 'a reset time appearing is not known to be the same window');
 });
 
 test('updateCalibration is long-run: total movement over total tokens; a ceiling until anything moves', () => {

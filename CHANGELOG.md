@@ -14,6 +14,15 @@
 
 ### Security and usage
 
+- Read Claude's remaining quota with `claude -p /usage`, which the CLI answers itself with no
+  model call, at start, on Refresh status, after each Claude reply and when a debate ends. Claude
+  no longer shows "not reported" until its first reply after every server start, and its
+  per-model weekly limit (for example "7d Fable") now appears beside the session and weekly
+  ones. Only the limit lines are kept; the local activity summary in the same answer is
+  discarded. A reply's own figure stands in when the read gives nothing. An answer that shows a
+  turn, tokens or a cost, one with no plan limits (API-key billing), or a read that times out
+  stops further reads until restart. Calibration now treats reset times a few minutes apart as
+  the same window, since `/usage` prints them to the minute.
 - Read Antigravity's remaining quota with `agy -p /usage`, which the CLI answers itself with no
   model call. Its limits come per model group (Gemini; Claude and GPT; Gemini 4 Argon on some
   plans), and the seat lamps, the quota line and the quota picture show the windows of the

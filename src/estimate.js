@@ -155,12 +155,18 @@ export function project({ seats, chairman, critiqueRounds = 3, baselines = {}, m
 
 // Two quota snapshots of one vendor -> per-window change. A window whose reset time moved has
 // rolled over in between, so its delta is meaningless and marked invalid.
+// Two readings of one window can give its reset a minute apart: Claude's /usage prints the time to
+// the minute and rounds it differently from one read to the next ("4:59am", then "5am"), and its
+// reply gives the exact second. A rollover moves the reset by hours, so a few minutes is the same
+// window.
+const SAME_RESET_S = 300;
 export function windowDeltas(prev, next) {
   if (!prev?.windows || !next?.windows) return [];
   return next.windows.map((w) => {
     const p = prev.windows.find((x) => x.label === w.label);
     if (!p) return { label: w.label, delta: 0, valid: false };
-    const sameWindow = (p.resetsAt ?? null) === (w.resetsAt ?? null);
+    const a = p.resetsAt ?? null, b = w.resetsAt ?? null;
+    const sameWindow = a == null || b == null ? a === b : Math.abs(a - b) <= SAME_RESET_S;
     const delta = w.used - p.used;
     return { label: w.label, delta, valid: sameWindow && delta >= 0 };
   });

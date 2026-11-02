@@ -375,10 +375,11 @@ function synthesizeDebate(d, body = {}) {
 }
 
 // Remaining quota is per account, not per debate: one snapshot per pool key (`codex`, or
-// `codex@work` for a named profile; seats.poolKey), shared by every board. claude's arrives with
-// each reply; codex and agy are read separately (readers), agy's in groups of windows per model.
+// `codex@work` for a named profile; seats.poolKey), shared by every board. Each vendor's is
+// read separately (readers): claude and agy with -p /usage, codex through its app-server; agy's
+// comes in groups of windows per model, and a claude reply's own figure stands in when a read fails.
 const quota = {}; // pool key -> { windows, plan, at, groups? }
-const readers = FAKE ? { codex: async () => fakeQuota('codex'), agy: async () => fakeQuota('agy') } : quotaReaders;
+const readers = FAKE ? { claude: async () => fakeQuota('claude'), codex: async () => fakeQuota('codex'), agy: async () => fakeQuota('agy') } : quotaReaders;
 const keyOf = (vendor, account) => poolKey(vendor, account, poolsByAccount(ADAPTERS[vendor]));
 
 function setQuota(key, q) {
@@ -392,16 +393,18 @@ const reading = new Map();
 function refreshQuota(key) {
   const vendor = poolVendor(key), account = poolAccount(key);
   // a reader that stopped itself (agy's latch, quota.js) said why once; no read, no repeat
-  if (!readers[vendor] || readers[vendor].stopped?.()) return Promise.resolve();
+  if (!readers[vendor] || readers[vendor].stopped?.()) return Promise.resolve(null);
   if (reading.has(key)) return reading.get(key);
   // The readers resolve null on every failure (timeout, spawn error, no result) rather than
-  // throwing, so say so here or a dead read is invisible on the console.
+  // throwing, so say so here or a dead read is invisible on the console. Resolves to the figure
+  // read, or null.
   const p = (async () => {
     try {
       const q = await readers[vendor]({ home: account ? profileHome(vendor, account) : null });
       if (!q) { diagnostics.write({ code: 'status-failed', action: 'quota', vendor }); console.warn(`[quota] ${key}: no figure (read failed or timed out); the strip keeps the last one`); }
       setQuota(key, q);
-    } catch (e) { diagnostics.write({ code: 'status-failed', action: 'quota', vendor }, e); console.error(`[quota] ${key}: ${e.message}`); } finally { reading.delete(key); }
+      return q;
+    } catch (e) { diagnostics.write({ code: 'status-failed', action: 'quota', vendor }, e); console.error(`[quota] ${key}: ${e.message}`); return null; } finally { reading.delete(key); }
   })();
   reading.set(key, p);
   return p;
@@ -512,12 +515,18 @@ function attachEngine(d, { fieldNotes, seats, chairman, options, resume = null, 
       keepSession: opts.keepSession === true,
       minimal: !!opts.seat?.mood?.hidden, // a hidden mood runs as cheaply as its vendor allows
     });
-  // Every reply either carries the vendor's quota or triggers a separate read (not awaited).
+  // After every reply the vendor's quota is read again (not awaited) where a free read exists, so
+  // one source fills its strip and calibration compares windows of the same shape: claude's
+  // /usage names a per-model week its reply does not, and gives reset times to the minute. The
+  // figure a reply carried is used when there is no read, or the read gave nothing.
   const runner = async (vendor, ...rest) => {
     if (shuttingDown) throw Object.assign(new Error('The server is shutting down.'), { code: 'KILLED', kind: 'killed' });
     const r = await call(vendor, ...rest);
     const key = keyOf(vendor, rest[2]?.seat?.account);
-    if (!shuttingDown) { if (r.quota) setQuota(key, r.quota); else refreshQuota(key); }
+    if (!shuttingDown) {
+      if (readers[vendor] && !readers[vendor].stopped?.()) refreshQuota(key).then((q) => { if (!q && r.quota && !shuttingDown) setQuota(key, r.quota); });
+      else if (r.quota) setQuota(key, r.quota);
+    }
     return r;
   };
 
@@ -821,4 +830,4 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('uncaughtException', (e) => { diagnostics.write({ code: 'server-crash', action: 'unknown' }, e); console.error('[server] uncaught:', e); shutdown('uncaught error', 1); });
 process.on('unhandledRejection', (e) => { diagnostics.write({ code: 'server-crash', action: 'unknown' }, e); console.error('[server] unhandled rejection:', e); });
-for (const vendor of Object.keys(readers)) refreshQuota(vendor); // one read each at start: the codex app-server, agy -p /usage
+for (const vendor of Object.keys(readers)) refreshQuota(vendor); // one read each at start: claude and agy -p /usage, the codex app-server
