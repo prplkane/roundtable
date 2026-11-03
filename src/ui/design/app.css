@@ -380,6 +380,8 @@ details.panel:not([open]) > .panel-title { border-bottom: 0; }
 .seat-note { font: var(--text-xs) var(--font-mono); color: var(--color-text-muted); }
 .seat-note.danger { color: var(--color-danger); } .seat-note.warn { color: var(--color-warn); }
 .iso-note { min-height: 0; } /* a card on Antigravity: the limitation, its explanation as the tip */
+/* a card on a vendor with a terms notice: a note that opens the notice (#vendor-terms) */
+.terms-note { display: block; padding: 0; border: 0; background: none; text-align: left; text-decoration: underline dotted; text-underline-offset: 2px; cursor: pointer; }
 /* flat controls */
 .seat-card .flat { width: 100%; padding: 2px var(--space-1); font-size: var(--text-sm); color: var(--color-text); background: transparent; border: var(--border-width) solid transparent; border-bottom: var(--border-width) dashed var(--color-border-strong); border-radius: var(--radius-sm); }
 .seat-card .flat:hover { border-color: var(--color-border-strong); }
@@ -562,10 +564,10 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .history-row .debate-row { flex: 1; min-width: 0; border-top: 0; }
 .history-delete { align-self: center; margin: var(--space-2); }
 .history-notice { margin: var(--space-2) var(--space-3); font-size: var(--text-sm); color: var(--color-text-muted); }
-#delete-history { width: min(480px, calc(100% - 32px)); color: var(--color-text); background: var(--color-surface); border: var(--border-width) solid var(--color-border-strong); border-radius: var(--radius); padding: var(--space-4); box-shadow: var(--shadow-overlay); }
-#delete-history::backdrop { background: rgb(0 0 0 / 45%); }
-#delete-history h2 { margin-top: 0; }
-#delete-history p { overflow-wrap: anywhere; }
+#delete-history, #vendor-terms { width: min(480px, calc(100% - 32px)); color: var(--color-text); background: var(--color-surface); border: var(--border-width) solid var(--color-border-strong); border-radius: var(--radius); padding: var(--space-4); box-shadow: var(--shadow-overlay); }
+#delete-history::backdrop, #vendor-terms::backdrop { background: rgb(0 0 0 / 45%); }
+#delete-history h2, #vendor-terms h2 { margin-top: 0; }
+#delete-history p, #vendor-terms p { overflow-wrap: anywhere; }
 .debate-row { display: grid; grid-template-columns: 88px minmax(0, 1fr) 128px minmax(0, 160px) 184px; gap: var(--space-3); align-items: center; padding: var(--space-2) var(--space-3); border-top: var(--border-width) solid var(--color-border); color: inherit; text-decoration: none; }
 .debate-row:first-child { border-top: 0; }
 .debate-row:hover, .debate-row:focus-visible { background: var(--color-selection); }

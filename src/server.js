@@ -23,6 +23,7 @@ import { validateDebateRequest, validateMessage, validateAccept, BODY_LIMIT } fr
 import { createDiagnostics, diagnosticAction, validateBrowserDiagnostics } from './diagnostics.js';
 import { answerMessage } from './review-view.js';
 import { createSettingsStore } from './settings.js';
+import { createTermsRecord, termsRefusal } from './terms.js';
 import { noteRecord, storedNote } from './notes.js';
 import { reviewSnapshot } from './snapshot.js';
 import { pickFolder } from './folder-picker.js';
@@ -58,12 +59,24 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
 const debates = new Map(); // slug -> live debate record
 let shuttingDown = false;
 
+// The board's acknowledgment of a vendor's terms notice (config.js terms, src/terms.js). Until it
+// is given, nothing reads that vendor's model list or quota in the background; a debate whose
+// request carried options.acknowledgeTermsRisk may still call and read it for itself.
+const TERMS_FILE = path.join(DEBATES_DIR, FAKE ? '_terms.fake.json' : '_terms.json');
+const termsRecord = createTermsRecord(TERMS_FILE, { adapters: ADAPTERS, onError: (e) => {
+  diagnostics.write({ code: 'storage-failed', action: 'terms' }, e);
+  console.warn('[terms] Settings unreadable; restore the file and restart before saving. Antigravity stays held until then.');
+} });
+const termsHeld = (vendor, acknowledged = false) => !acknowledged && !termsRecord.acknowledged(vendor);
+
 // Model ids and effort levels per vendor. `agy models` is a network call, so it is read once in
-// the background at boot; the setup screen gets the static hints until it lands.
+// the background at boot, or once Antigravity's terms notice is acknowledged; the setup screen
+// gets the static hints until it lands.
 let catalogue = null;
-const catalogueReady = (FAKE ? vendorCatalogue({ agyModels: async () => [] }) : vendorCatalogue())
+const readCatalogue = () => (FAKE || termsHeld('agy') ? vendorCatalogue({ agyModels: async () => [] }) : vendorCatalogue())
   .then((c) => { catalogue = c; return c; })
   .catch((e) => { diagnostics.write({ code: 'status-failed', action: 'catalogue' }, e); console.error('[catalogue]', e.message); return vendorCatalogue({ agyModels: async () => [] }).then((c) => (catalogue = c)); });
+let catalogueReady = readCatalogue();
 const effortsByVendor = () => Object.fromEntries(Object.entries(catalogue || {}).map(([v, c]) => [v, c.efforts]));
 const modelsByVendor = () => Object.fromEntries(Object.entries(catalogue || {}).map(([v, c]) => [v, c.models || []]));
 
@@ -147,7 +160,7 @@ function settleRound(d, r) {
 // since their last reply, so the last round is settled only after one fresh read of each such vendor.
 async function settleLast(d, r) {
   const pools = new Set(d.events.filter((e) => e.type === 'reply' && e.round === r).map((e) => keyOf(e.seat.vendor, e.seat.account)));
-  await Promise.all([...pools].map((k) => refreshQuota(k)));
+  await Promise.all([...pools].map((k) => refreshQuota(k, { acknowledged: d.termsAcknowledged })));
   settleRound(d, r);
 }
 
@@ -297,6 +310,9 @@ async function preflight(keys, { refresh = false, fresh = false, endpoints = {} 
       const url = typeof ep.url === 'string' ? ep.url.slice(0, 500) : '', keyEnv = typeof ep.keyEnv === 'string' ? ep.keyEnv.slice(0, 64) : null;
       return { key, vendor, account, installed: true, loggedIn: null, plan: null, quota: null, ...endpointLamp({ url, keyEnv: keyEnv || null, keySet: !!(keyEnv && process.env[keyEnv]) }) };
     }
+    // not even a status check before the person acknowledges the vendor's terms notice
+    if (termsHeld(vendor)) return { key, vendor, account, installed: null, loggedIn: null, plan: null, quota: null, state: 'warn', kind: 'terms',
+      note: `held: nothing is sent to ${ADAPTERS[vendor].binary} until you acknowledge ${ADAPTERS[vendor].label}'s terms notice on its card` };
     return refresh ? preflightCache.refresh(key, { fresh }) : preflightCache.read(key);
   }));
 }
@@ -389,11 +405,12 @@ function setQuota(key, q) {
 }
 
 // One read per pool at a time: a read asked for while one is running shares its result.
+// acknowledged: the debate asking carried options.acknowledgeTermsRisk (termsHeld).
 const reading = new Map();
-function refreshQuota(key) {
+function refreshQuota(key, { acknowledged = false } = {}) {
   const vendor = poolVendor(key), account = poolAccount(key);
   // a reader that stopped itself (agy's latch, quota.js) said why once; no read, no repeat
-  if (!readers[vendor] || readers[vendor].stopped?.()) return Promise.resolve(null);
+  if (!readers[vendor] || readers[vendor].stopped?.() || termsHeld(vendor, acknowledged)) return Promise.resolve(null);
   if (reading.has(key)) return reading.get(key);
   // The readers resolve null on every failure (timeout, spawn error, no result) rather than
   // throwing, so say so here or a dead read is invisible on the console. Resolves to the figure
@@ -437,6 +454,9 @@ function prepareDebate(raw, { board = false } = {}) {
     if (r) throw new Error(`${ADAPTERS[s.vendor].label} retired ${s.model} (${r.date}); use ${r.instead}.`);
   }
   const chairman = normaliseChairman(body.chairman, { vendors: ADAPTERS, efforts: effortsByVendor() });
+  // the board sends acknowledgeTermsRisk once the person has acknowledged on a card; an agent must send it
+  const unacknowledged = FAKE ? null : termsRefusal([...seats, chairman, body.options.research], body.options, ADAPTERS);
+  if (unacknowledged) throw unacknowledged;
   if (!FAKE && !body.options.allowLimitedIsolation && [...seats, chairman, body.options.research].some((s) => s && ADAPTERS[s.vendor]?.limitedIsolation)) {
     // the board sends this whenever a card it shows runs on Antigravity; an agent must send it
     throw Object.assign(new Error('Antigravity cannot be fully isolated. Send options.allowLimitedIsolation: true once the person accepts that, or choose another provider.'), { status: 400 });
@@ -470,7 +490,7 @@ function startDebate(raw, opts) {
   for (const [key, windows] of Object.entries(calibration)) push(d, { type: 'calibration', vendor: key.split(':')[0], key, windows });
   for (const [vendor, pool] of Object.entries(pools)) push(d, { type: 'pool', vendor, pool });
   // a named profile's pool has not been read yet: read it before round 0 is measured
-  for (const k of new Set([...seats, ...(chairman ? [chairman] : [])].map((s) => keyOf(s.vendor, s.account)))) if (!quota[k]) refreshQuota(k);
+  for (const k of new Set([...seats, ...(chairman ? [chairman] : [])].map((s) => keyOf(s.vendor, s.account)))) if (!quota[k]) refreshQuota(k, { acknowledged: options.acknowledgeTermsRisk === true });
   attachEngine(d, { fieldNotes, seats, chairman, options });
   console.log(`[${slug}] started: ${seats.map((s) => `${s.label}/${s.lens}${s.model ? `/${s.model}` : ''}${s.effort ? `/${s.effort}` : ''}${s.account ? `@${s.account}` : ''}`).join(', ')}`);
   return slug;
@@ -503,6 +523,10 @@ function autoExport(d, target) {
 // interrupted one continued from its transcript).
 function attachEngine(d, { fieldNotes, seats, chairman, options, resume = null, synthesisOnly = false }) {
   const store = d.store;
+  // The request carried the terms acknowledgment, so this debate may also read that vendor's quota.
+  // A debate resumed or given a new chairman after the board recorded it may call it too: a
+  // transcript from before the acknowledgment existed has no flag to carry.
+  d.termsAcknowledged = options.acknowledgeTermsRisk === true;
   // A seat with a named account profile runs with that profile's CLI state directory (under the
   // OS user-data dir, logged in by the user); every other seat shares the CLI's real one.
   const call = FAKE ? fakeRunner({ consensus: FAKE_CONSENSUS }) : (vendor, prompt, sessionId, opts) =>
@@ -511,6 +535,7 @@ function attachEngine(d, { fieldNotes, seats, chairman, options, resume = null, 
       endpoint: opts.seat?.endpoint ? { url: opts.seat.endpoint, keyEnv: opts.seat.keyEnv || null } : null, // an API seat: where to send the round
       timeoutMs: opts.timeoutMs, prevCost: opts.prevCost, prevUsage: opts.prevUsage, model: opts.model || undefined, effort: opts.effort || undefined, tag: d.slug,
       allowLimitedIsolation: opts.allowLimitedIsolation,
+      acknowledgeTermsRisk: opts.acknowledgeTermsRisk === true || termsRecord.acknowledged(vendor),
       research: opts.research,
       keepSession: opts.keepSession === true,
       minimal: !!opts.seat?.mood?.hidden, // a hidden mood runs as cheaply as its vendor allows
@@ -524,7 +549,7 @@ function attachEngine(d, { fieldNotes, seats, chairman, options, resume = null, 
     const r = await call(vendor, ...rest);
     const key = keyOf(vendor, rest[2]?.seat?.account);
     if (!shuttingDown) {
-      if (readers[vendor] && !readers[vendor].stopped?.()) refreshQuota(key).then((q) => { if (!q && r.quota && !shuttingDown) setQuota(key, r.quota); });
+      if (readers[vendor] && !readers[vendor].stopped?.()) refreshQuota(key, { acknowledged: d.termsAcknowledged }).then((q) => { if (!q && r.quota && !shuttingDown) setQuota(key, r.quota); });
       else if (r.quota) setQuota(key, r.quota);
     }
     return r;
@@ -661,7 +686,7 @@ const server = http.createServer(async (req, res) => {
         runtime: { mode: FAKE ? 'demo' : 'live', dataDir: DEBATES_DIR, ...(legacyDataDirs.length ? { legacyDataDirs } : {}), diagnostics: diagnostics.status() },
         vendors: Object.entries(ADAPTERS).map(([vendor, a]) => ({
           vendor, kind: a.kind, label: a.label, colour: a.colour, usageUrl: a.usageUrl || null, quota: quota[vendor] || null, profiles: poolsByAccount(a), limitedIsolation: a.limitedIsolation === true, search: !!a.research,
-          pool: a.pool, catalogue: cat[vendor],
+          terms: termsRecord.status(vendor), pool: a.pool, catalogue: cat[vendor],
         })),
         moods: Object.fromEntries(Object.entries(MOODS).map(([k, v]) => [k, v])),
         colours: COLOURS,
@@ -682,6 +707,19 @@ const server = http.createServer(async (req, res) => {
     }
     const pm = p.match(/^\/api\/pools\/([a-z]+)$/);
     if (pm && req.method === 'POST') return json(res, 200, { pool: setPool(pm[1], await readBody(req)) });
+    // The person's acknowledgment of a vendor's terms notice, or its withdrawal. Only the board page
+    // records it; an agent sends options.acknowledgeTermsRisk with each request instead. Once given,
+    // the model list and quota are read, and the answer carries the new list for the card.
+    const tm = p.match(/^\/api\/terms\/([a-z]+)$/);
+    if (tm && req.method === 'POST') {
+      const body = await readBody(req);
+      if (!fromBoard(req)) return requestError(res, 403, 'Only the board records this acknowledgment. An agent request sends options.acknowledgeTermsRisk: true instead, once the person has agreed.', 'terms');
+      if (typeof body?.acknowledged !== 'boolean') throw new Error('acknowledged must be true or false.');
+      const terms = termsRecord.set(tm[1], body.acknowledged);
+      console.log(`[terms] ${ADAPTERS[tm[1]].label} terms notice ${body.acknowledged ? 'acknowledged on the board' : 'acknowledgment withdrawn'}`);
+      if (body.acknowledged) { catalogueReady = readCatalogue(); await catalogueReady; refreshQuota(tm[1]); }
+      return json(res, 200, { terms, catalogue: catalogue?.[tm[1]] || null });
+    }
     if (req.method === 'GET' && p === '/api/debates') return json(res, 200, { debates: await listDebates(), usage: usageStore.summary(FAKE) });
     if (req.method === 'POST' && p === '/api/debates/clear-finished') {
       const body = await readBody(req);
@@ -830,4 +868,4 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('uncaughtException', (e) => { diagnostics.write({ code: 'server-crash', action: 'unknown' }, e); console.error('[server] uncaught:', e); shutdown('uncaught error', 1); });
 process.on('unhandledRejection', (e) => { diagnostics.write({ code: 'server-crash', action: 'unknown' }, e); console.error('[server] unhandled rejection:', e); });
-for (const vendor of Object.keys(readers)) refreshQuota(vendor); // one read each at start: claude and agy -p /usage, the codex app-server
+for (const vendor of Object.keys(readers)) refreshQuota(vendor); // one read each at start: claude and agy -p /usage, the codex app-server; agy only once its terms notice is acknowledged

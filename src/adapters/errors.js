@@ -47,10 +47,12 @@ export function classifyError({ message = '', stdout = '', stderr = '', code = n
   if (code === 'PROVIDER_PROTOCOL') return { kind: 'policy', message: 'Provider output could not be validated. This seat is stopped for the review.', resetsAt: null, detail };
   if (code === 'OUTPUT_LIMIT') return { kind: 'policy', message: 'Provider output exceeded the local size limit. This seat is stopped for the review.', resetsAt: null, detail };
   if (code === 'ISOLATION_REQUIRED') return { kind: 'policy', message: 'Antigravity cannot disable all shared customizations or MCP discovery. Enable Allow limited isolation explicitly, or choose another provider.', resetsAt: null, detail };
+  if (code === 'TERMS_ACK_REQUIRED') return { kind: 'policy', message: `${label} was not called: its maker says wrapping it in third-party applications is unsupported on some plans and can put the account at risk. Acknowledge its notice from a ${label} card on the setup screen, or choose another provider.`, resetsAt: null, detail };
   if (/unknown (?:option|argument)|unexpected argument|unrecognized (?:option|argument)/i.test(text)) return { kind: 'compatibility', message: `${label} does not support a required CLI option. Update the CLI; Roundtable will not retry with weaker restrictions.`, resetsAt: null, detail };
   if (code === 'ENOENT' || /not found on PATH/i.test(text)) return { kind: 'missing', message: `${label} CLI not found on this machine.`, resetsAt: null, detail };
   if (code === 'KILLED') return { kind: 'killed', message: 'Stopped before it answered.', resetsAt: null, detail };
   if (code === 'TIMEOUT') return { kind: 'timeout', message: `${label} did not answer in time.`, resetsAt: null, detail };
+  if (code === 'STALL') return { kind: 'timeout', message: `${label}'s web search stalled: no progress for ${detail.match(/\d+ s/)?.[0] || 'a while'}.`, resetsAt: null, detail };
   if (code === 'CLI_FAILURE' && /idle timeout|timeout waiting for (?:SSE|stream)/i.test(text)) return {
     kind: 'timeout', message: `${label}'s provider connection stalled before completion.`, resetsAt: null, detail,
   };

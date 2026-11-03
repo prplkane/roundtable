@@ -57,7 +57,9 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   the chairman under the existing budget and time limits. It requires a completed, usable round.
 - **Network:** the browser loads the board, styles and fonts locally; it does not fetch a remote
   font stylesheet. Live provider traffic is the CLIs' own traffic and the endpoint traffic
-  above. The server listens on `127.0.0.1`. A debate sends its notes and relevant replies to the
+  above. Roundtable leaves VPN, proxy and system DNS configuration unchanged; provider
+  availability and regional connectivity remain external requirements. The server listens on
+  `127.0.0.1`. A debate sends its notes and relevant replies to the
   selected providers. Stateless mode limits the context Roundtable resends; it does not control
   provider logging or retention.
 - **On disk:** history defaults to the OS user-data folder, outside the checkout, with separate
@@ -124,6 +126,16 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   Notes sent by the client carry `source: agent`; board notes default to `source: human`.
   This is declared attribution, not an authenticated identity or proof of human approval.
   It grants no extra permissions. Legacy notes without a source retain their original label.
+- **Antigravity can put your Google account at risk.** Google's Antigravity FAQ says wrapping
+  `agy` inside third-party applications is not supported under consumer plans, and that
+  third-party access violates its Terms of Service and can lead to suspension or termination
+  of the account. Roundtable runs `agy -p` as a third-party application and cannot tell which
+  plan a login is on. So nothing is sent to `agy`, a call or a background read of its model
+  list, quota or credits, until the person acknowledges this: once on the board, recorded in
+  the data folder (`_terms.json`, only by the board page itself, never by the agent client),
+  or per agent request with `acknowledgeTermsRisk: true`. A live server refuses an Antigravity
+  seat, chairman or searcher without it, and the adapter refuses the call. `doctor` needs
+  `--acknowledge-terms-risk`. This is separate from the isolation consent below.
 - **Tool restrictions depend on the installed CLI.** Claude uses safe mode, an empty tool
   list, no MCP servers, MCP tools removed by name and no permission prompts. Codex ignores user configuration and rules,
   uses strict configuration, a read-only sandbox, no MCP servers, no web search and disabled
@@ -159,7 +171,8 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   it is expected to fail the call with an authentication error, which marks the pool down for
   the review; one that ignores it is expected to fall back to the built-in provider. A reconnect
   starts the answer again, and the interrupted attempt's tokens may be charged by the provider
-  without appearing in the reported usage.
+  without appearing in the reported usage. The stream-idle timer starts after response headers;
+  waiting for those headers is bounded by Roundtable's overall call limit.
   Codex also receives a short review-specific base prompt through a uniquely created temporary
   file, removed after the call. It contains no field notes or personal context. The tool flags,
   read-only sandbox and reported-tool guard apply independently of these instructions.
@@ -184,7 +197,11 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   still applies; malformed duplicates cannot bypass validation. No repair call is made.
   Every seat and the chairman receives that same bundle. Source text cannot authorize tools
   or human decisions. Failed or interrupted research stops before discussion and is never
-  automatically rerun; completed evidence is reused without fetching it again. Ordinary
+  automatically rerun, with one exception: a Codex searcher call that makes no progress for 40
+  seconds is stopped and started once more within the same time limit, and both attempts are
+  recorded. That retry is a fresh call with its own search-operation limit, so one research
+  step can run up to twice the configured count. Completed evidence is reused without
+  fetching it again. Ordinary
   discussion and verdict calls always retain the no-tools policy.
 
 ## The local HTTP boundary

@@ -38,6 +38,25 @@ There are no dependencies to install.
 Seat only the vendors you have a subscription for. One vendor is enough: you can seat it
 several times.
 
+### Provider availability and network access
+
+Some vendors, products or models are unavailable in certain regions or account plans.
+Check the vendor's current requirements for the service you use:
+
+- **OpenAI:** [ChatGPT supported countries](https://help.openai.com/en/articles/7947663-chatgpt-supported-countries)
+  for a ChatGPT login, or [API supported countries](https://help.openai.com/en/articles/5347006-openai-api-supported-countries-and-territories)
+  for an OpenAI API endpoint.
+- **Anthropic:** [supported regions](https://www.anthropic.com/supported-countries).
+- **Google Antigravity:** [geographical availability in the FAQ](https://antigravity.google/docs/faq).
+
+Choose a provider available to your account and region. A supported location and successful
+login do not guarantee reliable replies: local networks, proxies, VPN settings or regional
+provider infrastructure can still interrupt a connection. A route-specific failure alone
+does not establish an intentional regional or IP restriction.
+
+Roundtable leaves your VPN, proxy and DNS configuration unchanged. For repeated stalls, use
+the [connection checks](#regional-availability-and-stalled-connections) below.
+
 ### Claude (Anthropic)
 
 ```bash
@@ -76,6 +95,38 @@ A browser opens. Sign in with the ChatGPT account that holds your subscription.
 
 ### Antigravity (Google)
 
+**Read this first: your Google account.** Google's
+[Antigravity FAQ](https://antigravity.google/docs/faq) describes headless `agy -p` as meant
+"for direct scripting and CI workflows". It says wrapping `agy` inside third-party coding
+agents or applications is not supported under consumer plans, and that using third-party
+software to access Antigravity violates its Terms of Service and can lead to suspension or
+termination of the account. Roundtable is a third-party application that runs `agy -p` for
+each Antigravity seat, chairman and searcher, and reads `agy models`, `/usage` and `/credits`
+for the board. It cannot tell which plan a login is on. Decide whether that suits your
+account before you continue; Claude, Codex or an API endpoint can take every role instead.
+
+So nothing is sent to `agy` until you acknowledge this:
+
+- **On the board**, a card set to Antigravity says **Account risk: read before using
+  Antigravity**. It opens the notice; **I understand, use it** records your acknowledgment
+  in the data folder (`_terms.json`), once for every board and later starts. Until then the
+  card's lamp reads **held**, **Open the table** opens the notice instead of the table, and
+  the server reads neither Antigravity's model list nor its quota. The same notice, opened
+  again from **Account risk acknowledged · review**, has **Withdraw**: no new background read
+  starts, and a review already running keeps its calls. When Google's wording is checked
+  again and the notice changes, the board asks again.
+- **An agent request** must send `options.acknowledgeTermsRisk: true` whenever a seat, the
+  chairman or the searcher is on Antigravity, and only once the person has agreed. An
+  acknowledgment on the board does not answer for an agent; the agent cannot record one
+  either. `roundtable agent status` shows the notice and its link under `providers[].terms`.
+  Without the option, a live server refuses the request, and the Antigravity adapter refuses
+  any call made without it.
+- **The diagnostic command** sends nothing to `agy` without `--acknowledge-terms-risk`: no
+  model list, no quota read, no live call. Only `agy --version` still runs.
+
+A review saved before this notice existed can be resumed once the board has acknowledged it.
+The demo shows and asks the same and records the answer in the demo folder; it calls nothing.
+
 Antigravity cannot be fully sealed off: it still loads your shared Antigravity customizations
 and discovers your MCP servers, and its web search cannot be switched off. Roundtable denies
 its file, command, URL and MCP tools and stops the call, without a retry, at the first tool it
@@ -100,7 +151,8 @@ Run `agy --version` to check that the command is available. Roundtable uses `agy
 Google seat.
 
 Roundtable reads Antigravity's remaining quota with `agy -p /usage`, which the CLI answers
-itself, with no model call and no conversation (agy 1.1.11 or later). It reads when the server
+itself, with no model call and no conversation (agy 1.1.11 or later), and only once its terms
+notice is acknowledged (above). It reads when the server
 starts, on **Refresh status**, after each Antigravity reply and when a debate ends. A read that
 gives no answer within 30 seconds counts as a timeout. The limits come per model group (Gemini;
 Claude and GPT; Gemini 4 Argon on some plans), each with a weekly window and usually a 5-hour
@@ -121,12 +173,17 @@ npm run doctor
 ```
 
 For each vendor it prints where the CLI was found, its version, the models and thinking levels
-you can pick, and the remaining quota where the vendor reports one. Nothing is spent. To also
-confirm each login with one tiny call, add `--live`:
+you can pick, and the remaining quota where the vendor reports one. Nothing is spent, but this
+does not test whether a model reply can complete over your current connection. To also check
+each available CLI with one tiny model call, add `--live` (this uses provider quota):
 
 ```bash
 npm run doctor -- --live
 ```
+
+Antigravity's model list, quota and live call stay **held** in this output until you add
+`--acknowledge-terms-risk`, which is the same acknowledgment as on the board (see the
+Antigravity notice above); its live call also needs `--allow-limited-isolation`.
 
 A vendor that says "logged in NO" needs the login step above again.
 
@@ -613,7 +670,8 @@ effort, since finding and quoting sources needs little reasoning. Each CLI searc
 other tool kept off: Codex turns on only its web search, Claude gets WebSearch as its only
 tool, and Antigravity, whose web search is always on, keeps its other tools denied. An
 Antigravity searcher has the same limited isolation as an Antigravity seat, and its card says
-so. An API endpoint
+so. It also needs the same terms acknowledgment (see Antigravity under section 2), and an
+agent request with an Antigravity searcher sends `acknowledgeTermsRisk: true` too. An API endpoint
 has no search tool and is not offered.
 This is one additional subscription call, included in the quota projection and vendor budget.
 The setup estimate also reserves 12,000 input tokens for shared evidence in each discussion
@@ -647,6 +705,17 @@ combined text fits 1,200 characters. All entries must still pass validation, inc
 duplicates, and the response must contain at most eight entries before deduplication.
 Different query strings and fragments remain distinct URLs. This cleanup is local and makes
 no extra model call; repeated sources do not discard an otherwise usable search result.
+
+A Codex search can stop making progress while its process remains open. Roundtable stops a
+Codex searcher call that makes no progress for 40 seconds (its own "Reconnecting" notices do not
+count) and starts it once more if at least 30 seconds of the searcher's time limit remain.
+This recovery does not identify or fix the cause of the stall. Both attempts share one limit, both are
+recorded, and the stalled one's usage stays unknown, since Codex reports none for it. The retry
+is a fresh call with its own search limit, so one research step can run up to twice the
+configured number of searches; each attempt's row in the record says how many it ran. A stall
+is noticed after 40 seconds and a retry needs 30 more, so a time limit under about 75 seconds
+leaves no room for one. A Codex token cap can also refuse the retry, since the stalled attempt's
+spending is unknown.
 
 Research failure or interruption ends the review before discussion. Check the details and
 provider usage before explicitly starting a new review. Resume never repeats unfinished
@@ -798,6 +867,23 @@ does not cancel model work on the server. If the page reports an expired launch 
 unsent notes and reload. A failed history load says **unavailable**, with **Retry history**;
 it does not claim your records are gone. A setup-load failure offers **Reload**.
 
+### Regional availability and stalled connections
+
+A provider can accept a connection and then stop delivering the reply. Repeated reconnects,
+partial replies or timeouts can therefore occur even with a valid login and a green status
+lamp. Increasing the time limit or retrying does not establish that the connection is healthy.
+
+1. Check the vendor's current regional availability and service status for your product and
+   account. You can choose another available vendor for a seat or chairman.
+2. Compare a small direct CLI call using the same account, terminal and network. A real model
+   call uses quota. If it also stalls outside Roundtable, investigate the provider or network
+   path before changing review limits. A successful direct call alone does not rule out an
+   intermittent connection problem.
+3. If needed, temporarily compare another network you normally use, then restore your settings.
+   Keep this a diagnostic comparison, not a requirement to enable a VPN for every user.
+   Save the Roundtable error log and record the OS, Node and CLI versions, failure time and
+   whether the direct call also failed. Exclude credentials and private review content.
+
 ### Error logs
 
 Codex calls disable analytics and telemetry exports, shell snapshots and unlimited connection
@@ -805,17 +891,19 @@ retries for that process only. After a complete answer and valid usage arrive, R
 the CLI one second to exit and then terminates a stuck process while preserving the result.
 It continues checking tool policy and stream validity during that grace period. A partial
 answer, missing usage or a failed turn cannot use this shortcut. Timeouts before completion
-remain failures with unknown spending where the provider reported none; they are not retried
-automatically. Search and reconnect stages in the error details help distinguish these from
-slow model replies. These controls do not guarantee the provider's availability.
+remain failures with unknown spending where the provider reported none. Ordinary seat and
+chairman timeouts are not retried automatically; the searcher's bounded restart is described
+above. Search and reconnect stages in the error details help distinguish these from slow
+model replies. These controls do not guarantee the provider's availability.
 
 A Codex reply streams over SSE through a provider entry Roundtable names per call, pointing at
-the same ChatGPT backend with the same login. When the stream stays silent for the idle limit,
-(call limit − 15 s) ÷ 3 between 10 s and 300 s, so 95 s at the default five-minute call limit,
-the CLI reconnects and starts the answer again, at most twice; once those are used up the call
-fails as a stalled connection, before the call limit. The provider may charge the interrupted
-attempts' tokens without their appearing in usage. Raising the call limit lengthens the idle
-limit with it, so long silent reasoning at high effort is served by a longer call limit. Every
+the same ChatGPT backend with the same login. After response headers arrive, a stream that
+stays silent for the idle limit can trigger a reconnect, starting the answer again at most
+twice. The idle limit is (call limit − 15 s) ÷ 3, between 10 s and 300 s: 95 s at the default
+five-minute call limit. This timer does not cover waiting for the response headers;
+Roundtable's overall call limit still bounds the process. The provider may charge interrupted
+attempts without including them in the reported usage. Raising the call limit also lengthens
+the idle limit, allowing more time for silent reasoning. Every
 reconnect the CLI reports is counted: a reply that came after one carries a
 **reconnected ×N** mark on its card, and the count is saved with the attempt, where failure
 details, error logs and the agent state show it. The markdown transcript does not carry it.
@@ -824,7 +912,8 @@ Provider failure **Details** show whether output arrived, the last observed stag
 and idle time, and the exit code when available. A timeout after reasoning is evidence that
 the call started; it does not identify why the provider stalled. Save the error log before
 retrying. A complete usage report received before the stall still counts, while missing
-usage continues to block capped calls. Timeouts are never automatically retried.
+usage continues to block capped calls. Ordinary seat and chairman timeouts are not
+automatically retried.
 
 Errors include a reference such as `RT-0123456789abcdef`. **Save error log**, available on
 setup and review screens, downloads a JSON file you can share for diagnosis. Note what you
@@ -887,6 +976,7 @@ there is no current snapshot. Refresh with an authenticated JSON `POST /api/pref
 | Demo debates | `demo/` in the same user-data folder, unless the override is set |
 | Retained usage statistics | `_usage.json` in the data folder; counters and model IDs, without review text |
 | Measured quota rates and entered pool figures | `_calibration.json` and `_pools.json` in the live data folder; demo names include `.fake` |
+| Your acknowledgment of Antigravity's terms notice | `_terms.json` in the live data folder (`_terms.fake.json` in the demo folder): when, and which notice |
 | Saved setup preferences | browser local storage, separate for each host and port |
 | Account profiles | `%USERPROFILE%\.roundtable\homes` on Windows, `~/Library/Application Support/roundtable/homes` on macOS, `~/.local/share/roundtable/homes` on Linux |
 | Decision records you exported | the folder you chose |

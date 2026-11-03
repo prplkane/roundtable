@@ -1,11 +1,13 @@
-// node src/doctor.js [--live] [--profile <name>] [--vendor <name>] [--allow-limited-isolation]
+// node src/doctor.js [--live] [--profile <name>] [--vendor <name>] [--allow-limited-isolation] [--acknowledge-terms-risk]
 //
 // What this machine can seat. Per vendor: the binary and where it was found, its version, the
 // models and effort levels the setup screen will offer, the live pool read where one exists
 // (codex, agy), and, with --live, one trivial model call through the adapter: logged in or not,
 // what it answered, whether it reached for tools (the guard must see false on a plain reply),
 // tokens and the quota it reported (claude). --profile <name> prints how to log that profile
-// in for each vendor.
+// in for each vendor. A vendor with a terms notice (config.js terms: Antigravity) is sent nothing,
+// not its model list or pool read either, without --acknowledge-terms-risk; only its CLI's
+// --version still runs.
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ADAPTERS } from './adapters/config.js';
@@ -36,11 +38,12 @@ const flag = (name) => { const i = process.argv.indexOf(`--${name}`); return i >
 async function main() {
   const live = process.argv.includes('--live');
   const allowLimitedIsolation = process.argv.includes('--allow-limited-isolation');
+  const acknowledgeTermsRisk = process.argv.includes('--acknowledge-terms-risk');
   const profile = flag('profile');
   const only = flag('vendor');
   const { vendorCatalogue } = await import('./adapters/catalogue.js');
   const { adapters, quotaReaders } = await import('./adapters/index.js');
-  const catalogue = await vendorCatalogue();
+  const catalogue = await vendorCatalogue(ADAPTERS.agy.terms && !acknowledgeTermsRisk ? { agyModels: async () => [] } : {});
   console.log(`roundtable doctor  (${process.platform}, node ${process.version}, data dir ${dataDir()})`);
   console.log(live ? 'live: one trivial model call per vendor' : 'static only; add --live for one trivial model call per vendor');
   for (const [vendor, a] of Object.entries(ADAPTERS)) {
@@ -53,23 +56,29 @@ async function main() {
       console.log(`  isolation  ${a.isolation}`);
       continue;
     }
+    const held = !!a.terms && !acknowledgeTermsRisk;
+    const heldLine = `held: nothing is sent to ${a.binary} without --acknowledge-terms-risk`;
     let bin = null;
     try { bin = resolveBinary(a.binary, a.npmBin); console.log(`  binary     ${bin.prefix.length ? `${bin.prefix[0]} (via node)` : bin.file}`); } catch (e) { console.log(`  binary     NOT FOUND: ${e.message}`); }
     if (bin) console.log(`  version    ${await version(bin, vendor)}`);
     const c = catalogue[vendor];
-    console.log(`  models     ${c.models.length ? c.models.map((m) => m.id).join(', ') : '(free text; the CLI lists none)'}${c.defaultModel ? `  default: ${c.defaultModel}` : ''}`);
+    if (held) console.log(`  models     ${heldLine}`);
+    else console.log(`  models     ${c.models.length ? c.models.map((m) => m.id).join(', ') : '(free text; the CLI lists none)'}${c.defaultModel ? `  default: ${c.defaultModel}` : ''}`);
     console.log(`  efforts    ${c.efforts.join(', ')}${c.defaultEffort ? `  default: ${c.defaultEffort}` : ''}${c.effortInModel ? '  (a model id may carry the level)' : ''}`);
     console.log(`  read-only  ${a.readOnly}`);
     console.log(`  isolation  ${a.isolation}`);
-    if (quotaReaders[vendor]) {
+    if (a.terms) console.log(`  terms      ${a.terms.notice} (${a.terms.url}, checked ${a.terms.read})`);
+    if (held && quotaReaders[vendor]) console.log(`  pool read  ${heldLine}`);
+    else if (quotaReaders[vendor]) {
       const q = bin ? await quotaReaders[vendor]() : null;
       console.log(`  pool read  ${q ? q.windows.map((w) => `${w.label} ${(w.used * 100).toFixed(0)}% used`).join(', ') + (q.plan ? ` (plan ${q.plan})` : '') : 'no figure (not logged in, or the read failed)'}`);
     } else console.log(`  pool read  ${a.quota === 'per-call' ? 'rides on each reply (shown with --live)' : `none headless; usage page ${a.usageUrl}`}`);
-    if (live && bin && a.limitedIsolation && !allowLimitedIsolation) console.log('  live call  skipped: Antigravity has limited isolation. Add --allow-limited-isolation to consent, or use another provider.');
-    if (live && bin && (!a.limitedIsolation || allowLimitedIsolation)) {
+    if (live && bin && held) console.log(`  live call  skipped: ${heldLine}, and then only if your plan allows it`);
+    else if (live && bin && a.limitedIsolation && !allowLimitedIsolation) console.log('  live call  skipped: Antigravity has limited isolation. Add --allow-limited-isolation to consent, or use another provider.');
+    if (live && bin && !held && (!a.limitedIsolation || allowLimitedIsolation)) {
       const t0 = Date.now();
       try {
-        const r = await adapters[vendor]('Reply with exactly the word pong.', null, { timeoutMs: 180_000, cwd: path.join(dataDirectory(), '_doctor', vendor), allowLimitedIsolation });
+        const r = await adapters[vendor]('Reply with exactly the word pong.', null, { timeoutMs: 180_000, cwd: path.join(dataDirectory(), '_doctor', vendor), allowLimitedIsolation, acknowledgeTermsRisk });
         console.log(`  logged in  yes (${Date.now() - t0} ms)  reply: ${JSON.stringify(r.text.slice(0, 40))}  session: ${r.sessionId}`);
         console.log(`  usedTools  ${r.usedTools}`);
         const cost = r.usage?.cost ?? r.cost;

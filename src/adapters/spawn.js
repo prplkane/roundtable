@@ -65,18 +65,22 @@ export function registerCall(tag = null) {
 
 // Run a CLI once. Resolves with {stdout, stderr, code, ms}; rejects on timeout (code TIMEOUT),
 // on a kill through killAll (code KILLED) or on a spawn error.
-export function runProcess({ file, prefix }, args, { stdin = null, cwd, timeoutMs = 300_000, env, tag = null, onStdout, completionGraceMs = null, maxOutputBytes = 8 * 1024 * 1024 } = {}) {
+// stallMs: stop the process once it has made no progress for this long (code STALL), for a call
+// whose provider keeps the connection busy while producing nothing (the CLI's own idle limit
+// then never fires). progressAt: when the caller last saw progress (the adapter leaves out a
+// CLI's reconnect notices); without it, any output counts. 0: no such limit.
+export function runProcess({ file, prefix }, args, { stdin = null, cwd, timeoutMs = 300_000, env, tag = null, onStdout, completionGraceMs = null, maxOutputBytes = 8 * 1024 * 1024, stallMs = 0, progressAt = null } = {}) {
   return new Promise((resolve, reject) => {
     const t0 = Date.now();
     const child = spawn(file, [...prefix, ...args], { cwd, env, windowsHide: true, detached: !WIN, stdio: ['pipe', 'pipe', 'pipe'] });
     let out = '', err = '', done = false, outputBytes = 0, stdoutBytes = 0, stderrBytes = 0, firstOutputMs, lastOutputAt = t0;
-    let completed = false, completionTimer;
+    let completed = false, completionTimer, stallTimer;
     const progress = (outcome, exitCode) => safeProgress({ elapsedMs: Date.now() - t0, timeoutMs, stdoutBytes, stderrBytes,
       firstOutputMs, idleMs: Date.now() - lastOutputAt, outcome, exitCode });
-    const finish = (fn) => { if (done) return; done = true; clearTimeout(timer); clearTimeout(completionTimer); live.delete(child); fn(); };
+    const finish = (fn) => { if (done) return; done = true; clearTimeout(timer); clearTimeout(completionTimer); clearInterval(stallTimer); live.delete(child); fn(); };
     live.set(child, { tag, onKill: () => finish(() => reject(Object.assign(new Error('killed: the debate was stopped or the server shut down'), { code: 'KILLED', stdout: out, stderr: err, ms: Date.now() - t0, progress: progress('cancelled') }))) });
     const stop = (e) => finish(() => {
-      const metadata = progress(e.code === 'TOOL_POLICY' ? 'policy' : e.code === 'OUTPUT_LIMIT' ? 'output-limit' : e.code === 'CLI_FAILURE' ? 'provider-error' : 'protocol');
+      const metadata = progress(e.code === 'TOOL_POLICY' ? 'policy' : e.code === 'OUTPUT_LIMIT' ? 'output-limit' : e.code === 'CLI_FAILURE' ? 'provider-error' : e.code === 'STALL' ? 'timeout' : 'protocol');
       killTree(child);
       reject(Object.assign(e, { stdout: out, stderr: err, ms: metadata.elapsedMs, progress: metadata }));
     });
@@ -110,6 +114,9 @@ export function runProcess({ file, prefix }, args, { stdin = null, cwd, timeoutM
       killTree(child);
       reject(Object.assign(new Error(`timed out after ${timeoutMs} ms`), { code: 'TIMEOUT', stdout: out, stderr: err, ms: metadata.elapsedMs, progress: metadata }));
     }), timeoutMs);
+    if (stallMs > 0) stallTimer = setInterval(() => {
+      if (!completed && Date.now() - (progressAt?.() ?? lastOutputAt) >= stallMs) stop(Object.assign(new Error(`no progress for ${Math.round(stallMs / 1000)} s`), { code: 'STALL' }));
+    }, Math.min(1000, stallMs));
     child.on('error', (e) => finish(() => reject(Object.assign(e, { stdout: out, stderr: err, ms: Date.now() - t0, progress: progress('spawn-error') }))));
     child.on('close', (code) => finish(() => resolve({ stdout: out, stderr: err, code, ms: Date.now() - t0, progress: progress('exited', code) })));
     child.stdin.on('error', () => {}); // CLI may exit before reading stdin

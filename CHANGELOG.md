@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.6.1
+
+### Security and usage
+
+- Require acknowledgment of Antigravity's account-risk notice before provider calls, model
+  lists or quota reads. Google's [FAQ](https://antigravity.google/docs/faq) says third-party
+  wrappers are unsupported under consumer plans and third-party access can lead to account
+  suspension or termination. The board records the acknowledgment locally; it can be
+  withdrawn and is requested again when the notice is updated.
+- **Upgrading Antigravity workflows:** agent requests now need
+  `options.acknowledgeTermsRisk: true`, after the person agrees. `doctor` needs
+  `--acknowledge-terms-risk` for anything beyond `agy --version`. These are separate from
+  limited-isolation consent. See the [setup guide](docs/workflow.md#antigravity-google).
+
+### Review fixes
+
+- Stop a Codex searcher call after 40 seconds without progress and allow one fresh attempt
+  when at least 30 seconds remain. Both attempts share the searcher's time limit and are
+  recorded. Reconnect notices do not count as progress. Missing usage from the first attempt
+  remains unknown and can block the second under a token cap. Each attempt has its own
+  search-operation limit. This bounds recovery; it does not repair a failing network route.
+
+### Documentation
+
+- Explain provider regional availability, the limits of login/status checks, and how to
+  investigate stalled connections. Clarify that Roundtable leaves VPN, proxy and DNS settings
+  unchanged; network comparisons are optional diagnostics.
+- Clarify that Codex's stream-idle timer does not cover every connection stage. Roundtable's
+  overall call limit still applies while the CLI waits for a response to begin.
+
 ## 0.6.0
 
 ### Review fixes

@@ -27,6 +27,9 @@ test('debate request: bounds on rounds, seats, options and caps', () => {
   rejects((b) => { b.options.unattended = 'yes'; }, /unattended/);
   rejects((b) => { b.options.strictTools = false; }, /cannot be disabled/);
   rejects((b) => { b.options.allowLimitedIsolation = 'yes'; }, /allowLimitedIsolation/);
+  rejects((b) => { b.options.acknowledgeTermsRisk = 'yes'; }, /acknowledgeTermsRisk/);
+  const acknowledged = base(); acknowledged.options.acknowledgeTermsRisk = true;
+  assert.equal(validateDebateRequest(acknowledged, { adapters: ADAPTERS }).options.acknowledgeTermsRisk, true);
   const unattended = base(); unattended.options.unattended = true;
   assert.equal(validateDebateRequest(unattended, { adapters: ADAPTERS }).options.unattended, true);
   rejects((b) => { b.options.wallClockMs = 10; }, /wallClockMs/);

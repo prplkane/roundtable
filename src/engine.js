@@ -22,6 +22,9 @@ import { researchSettings, researchPrompt, researchSources } from './research.js
 // Failure kinds after which calling the same login again in this debate only fails again
 // (adapters/errors.js classifies them; kept here so the engine stays free of adapter imports).
 const POOL_FATAL = new Set(['quota', 'auth', 'missing']);
+// A searcher call that went silent (adapter code STALL) is started once more when at least this
+// much of the searcher's time limit remains: a whole passing search takes 18-28 s.
+export const SEARCH_RETRY_MIN_MS = 30_000;
 
 
 export const DEFAULTS = {
@@ -184,7 +187,9 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
 
   async function callSeat(seat, prompt, round, kind, projection = {}, { isChairman = false } = {}) {
     if (policyBlocked(seat)) return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false, error: 'This seat is stopped after a provider-policy failure. Check its earlier failure details.', kind: 'policy', skipped: true, fresh: true, attemptId: null };
-    let retrying = null; // what a second attempt is called: 'network retry' or 'rate-limit retry'
+    let retrying = null; // what a second attempt is called: 'network retry', 'rate-limit retry' or 'search retry'
+    // one time limit for the searcher, however many attempts it takes
+    const searchEnds = kind === 'research' ? now() + opts.research.timeoutMs : null;
     for (let attemptNo = 1; ; attemptNo++) {
       // checked before a retry too: another seat may have benched this login during the pause
       const down = downOf(seat);
@@ -198,7 +203,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       if (expired()) return { ok: false, text: '', usage: { ...EMPTY_USAGE }, reported: false,
         error: 'the wall clock ran out before the call', kind: 'killed', cancelReason: 'wall-clock', fresh: !resumes || seat.sessionId == null, attemptId: null };
       const action = retrying || (kind === 'reprompt' ? 're-prompt' : kind);
-      const what = ['verdict', 'research'].includes(action) ? action : `${action} of ${isChairman ? 'the chairman' : seat.lens}`;
+      const what = ['verdict', 'research', 'search retry'].includes(action) ? action : `${action} of ${isChairman ? 'the chairman' : seat.lens}`;
       if (!isChairman) projection = oneCall(seat, round);
       // Check and reserve synchronously at the dispatch boundary. A retry sees the failed
       // attempt's reported usage and every other call still in flight; seat calls also leave
@@ -222,9 +227,11 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       const attemptId = newId();
       reserved.set(attemptId, projection);
       record({ type: 'attempt-start', attemptId, round, kind, seat: pub(seat), fresh: !resumes || seat.sessionId == null });
-      let res = await callOnce(seat, prompt, kind === 'research');
+      let res = await callOnce(seat, prompt, kind === 'research', searchEnds);
       const attempt = { type: 'attempt', attemptId, round, kind, seat: pub(seat), fresh: res.fresh, usage: res.reported ? res.usage : null,
         ...(res.progress ? { progress: res.progress } : {}), ...(res.systemCode ? { systemCode: res.systemCode } : {}),
+        // each searcher attempt keeps its own count: a retried search has its own limit
+        ...(kind === 'research' && Number.isInteger(res.searches) ? { searches: res.searches } : {}),
         ...(res.reported ? {} : { unknown: true, ms: res.usage.ms,
           ...(res.usage.cost != null ? { cost: res.usage.cost } : {}), ...(res.usage.raw?.cost != null ? { rawCost: res.usage.raw.cost } : {}) }),
         ...(res.ok ? {} : { errorKind: res.kind, ...(res.cancelReason ? { cancelReason: res.cancelReason } : {}) }) };
@@ -234,8 +241,10 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       fire('attempt', attempt);
       checkInterrupted();
       const throttled = !res.ok && res.kind === 'throttled';
-      const retry = kind !== 'research' && !res.ok && attemptNo === 1 && !expired() && !stopRequested && !(finishRequested && !isChairman)
-        && (res.kind === 'network' || throttled && res.resetsAt != null && res.resetsAt < deadlineAt);
+      // a search that went silent is started once more, inside the searcher's one time limit
+      const stalled = kind === 'research' && !res.ok && res.systemCode === 'STALL' && searchEnds - now() >= SEARCH_RETRY_MIN_MS;
+      const retry = !res.ok && attemptNo === 1 && !expired() && !stopRequested && !(finishRequested && !isChairman)
+        && (stalled || kind !== 'research' && (res.kind === 'network' || throttled && res.resetsAt != null && res.resetsAt < deadlineAt));
       // the attempt row keeps `throttled`; everything after it sees the quota failure it became,
       // and the card and the out banner say why the wait was not taken
       if (throttled && !retry) {
@@ -245,8 +254,8 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       }
       if (!res.ok && POOL_FATAL.has(res.kind)) markDown(seat, res);
       if (retry) {
-        retrying = throttled ? 'rate-limit retry' : 'network retry';
-        await pause(throttled ? Math.max(0, res.resetsAt - now()) : opts.networkRetryMs);
+        retrying = stalled ? 'search retry' : throttled ? 'rate-limit retry' : 'network retry';
+        await pause(stalled ? 0 : throttled ? Math.max(0, res.resetsAt - now()) : opts.networkRetryMs);
         continue;
       }
       return { ...res, attemptId };
@@ -265,7 +274,8 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     });
   }
 
-  async function callOnce(seat, prompt, researching = false) {
+  // searchEnds: when the searcher's time limit runs out, so a retried search gets only what is left
+  async function callOnce(seat, prompt, researching = false, searchEnds = null) {
     const t0 = now();
     const cancellation = () => interruptRequested ? 'interrupted' : stopRequested ? 'human' : deadlineHit ? 'wall-clock' : finishRequested && seat.id !== 'chairman' ? 'finish' : null;
     const cancellationText = (reason) => reason === 'interrupted' ? 'interrupted by server shutdown' : reason === 'human' ? 'stopped by the user' : reason === 'finish' ? 'discussion ended for the verdict' : 'stopped: the wall clock ran out during the call';
@@ -282,8 +292,8 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     try {
       // prevCost: the session's last cumulative cost reading, so a resumed call is charged only
       // its own part even after a server restart (adapters/common.js).
-      const res = await runner(seat.vendor, prompt, sessionId, { timeoutMs: researching ? opts.research.timeoutMs : opts.callTimeoutMs,
-        ...(researching ? { research: opts.research } : {}), signal: controller.signal, seat, model: seat.model, effort: seat.effort, allowLimitedIsolation: opts.allowLimitedIsolation === true,
+      const res = await runner(seat.vendor, prompt, sessionId, { timeoutMs: researching ? Math.max(1, searchEnds != null ? searchEnds - now() : opts.research.timeoutMs) : opts.callTimeoutMs,
+        ...(researching ? { research: opts.research } : {}), signal: controller.signal, seat, model: seat.model, effort: seat.effort, allowLimitedIsolation: opts.allowLimitedIsolation === true, acknowledgeTermsRisk: opts.acknowledgeTermsRisk === true,
         // only a seat in resume memory needs its CLI to save the session for the next round
         keepSession: resumes && !researching && seat.id !== 'chairman',
         prevCost: sessionId ? seat.lastRawCost : undefined, prevUsage: sessionId ? seat.lastRawUsage : undefined });
@@ -305,7 +315,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       if (e.usedTools || e.kind === 'policy') seat.sessionId = null;
       return { ok: false, text: '', usage, reported: !!e.usage, error, progress: safeProgress(e.progress),
         ...(researching && Number.isInteger(e.research?.searches) && e.research.searches >= 0 && e.research.searches <= 9 ? { searches: e.research.searches } : {}),
-        systemCode: ['TIMEOUT', 'KILLED', 'TOOL_POLICY', 'OUTPUT_LIMIT', 'PROVIDER_PROTOCOL', 'CLI_EXIT', 'CLI_FAILURE', 'ISOLATION_REQUIRED', 'RESEARCH_LIMIT', 'RESEARCH_INVALID', 'ENOENT', 'EACCES', 'EPERM'].includes(e.code) ? e.code : undefined,
+        systemCode: ['TIMEOUT', 'STALL', 'KILLED', 'TOOL_POLICY', 'OUTPUT_LIMIT', 'PROVIDER_PROTOCOL', 'CLI_EXIT', 'CLI_FAILURE', 'ISOLATION_REQUIRED', 'TERMS_ACK_REQUIRED', 'RESEARCH_LIMIT', 'RESEARCH_INVALID', 'ENOENT', 'EACCES', 'EPERM'].includes(e.code) ? e.code : undefined,
         kind: e.usedTools ? 'policy' : kind, usedTools: !!e.usedTools, cancelReason, resetsAt: e.resetsAt || null, timedOut: !cancelReason && kind === 'timeout', fresh: sessionId == null };
     }
   }

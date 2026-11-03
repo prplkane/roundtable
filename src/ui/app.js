@@ -181,7 +181,7 @@ async function setup() {
   const chair = $('chairman');
   for (const v of vendors) {
     VENDOR_LABEL[v.vendor] = v.label;
-    VENDOR_META[v.vendor] = { kind: v.kind, usageUrl: v.usageUrl, pool: v.pool, catalogue: v.catalogue, colour: v.colour, profiles: v.profiles, limitedIsolation: v.limitedIsolation === true };
+    VENDOR_META[v.vendor] = { kind: v.kind, usageUrl: v.usageUrl, pool: v.pool, catalogue: v.catalogue, colour: v.colour, profiles: v.profiles, limitedIsolation: v.limitedIsolation === true, terms: v.terms || null };
     if (v.quota) S.quota[v.vendor] = v.quota;
     chair.insertAdjacentHTML('beforeend', `<option value="${v.vendor}">${esc(v.label)}</option>`);
     if (v.search) $('searcher-vendor').insertAdjacentHTML('beforeend', `<option value="${v.vendor}">${esc(v.label)}</option>`);
@@ -480,7 +480,7 @@ function seatRow(s, i) {
       <label class="f"><span class="label">Key var</span><input class="flat keyenv" aria-label="Key environment variable" value="${esc(s.keyEnv || '')}" placeholder="none (local server)" title="The NAME of the environment variable that holds the key, set in the shell roundtable was started from. Never the key itself."></label>` : ''}
       <div class="f"><span class="label help-label" data-help="effort" tabindex="0" aria-describedby="help-effort">Effort</span><span class="pips ${hidden ? 'locked' : ''}">${pipsHtml(s.vendor, s.effort, s.model)}</span><select class="effort" hidden>${effortOptions(s.vendor, s.effort, s.model)}</select></div>
       <span class="seat-note lamp-note ${lamp.cls === 'danger' || lamp.cls === 'warn' ? lamp.cls : ''}">${esc(lamp.note)}</span>
-      ${isoNote(s.vendor)}
+      ${isoNote(s.vendor)}${termsNote(s.vendor)}
       ${api ? '' : `<details class="seat-more"><summary>Login profile${s.account ? `: ${esc(s.account)}` : ''}</summary><input class="flat account" aria-label="Login profile" value="${esc(s.account || '')}" placeholder="none: your usual login" title="A second login of this CLI, for example a work subscription; node src/doctor.js shows how to log a profile in"></details>`}
     </div>
   </article>`;
@@ -572,7 +572,7 @@ function renderChair() {
   $('chairman-model').hidden = !picker.other;
   $('chairman-model').placeholder = api ? 'model id (required)' : 'model id';
   $('chair-pips').innerHTML = pipsHtml(v, $('chairman-effort').value, $('chairman-model').value.trim());
-  $('chair-iso').innerHTML = isoNote(v);
+  $('chair-iso').innerHTML = isoNote(v) + termsNote(v);
   updateLamps();
   restoreFocus();
 }
@@ -583,6 +583,69 @@ function renderChair() {
 const isoNote = (vendor) => (VENDOR_META[vendor]?.limitedIsolation
   ? '<span class="seat-note warn iso-note help-label" data-help="isolation" tabindex="0" aria-describedby="help-isolation">Limited isolation: your Antigravity customizations and MCP servers still load</span>' : '');
 const isolationAccepted = () => [...draftSeats(), draftChairman(), searcherOn() ? draftSearcher() : null].some((s) => VENDOR_META[s?.vendor]?.limitedIsolation);
+
+// A vendor whose own docs say wrapping its CLI is unsupported on some plans (config.js terms,
+// src/terms.js). The card that runs on it opens the notice; until the person acknowledges it
+// there, the server sends nothing to that CLI and the table does not open with it. The
+// acknowledgment is kept by the server, so every board and the next start know it.
+const termsNote = (vendor) => {
+  const t = VENDOR_META[vendor]?.terms;
+  if (!t) return '';
+  return t.acknowledgedAt
+    ? `<button type="button" class="seat-note warn terms-note" data-terms="${esc(vendor)}">Account risk acknowledged · review</button>`
+    : `<button type="button" class="seat-note danger terms-note" data-terms="${esc(vendor)}">Account risk: read before using ${esc(VENDOR_LABEL[vendor])}</button>`;
+};
+const termsCards = () => [...draftSeats(), draftChairman(), searcherOn() ? draftSearcher() : null].filter((s) => VENDOR_META[s?.vendor]?.terms);
+const termsPending = () => [...new Set(termsCards().map((s) => s.vendor))].filter((v) => !VENDOR_META[v].terms.acknowledgedAt);
+const termsAccepted = () => termsCards().length > 0 && !termsPending().length;
+
+let termsVendor = null;
+function openTerms(vendor) {
+  const t = VENDOR_META[vendor]?.terms;
+  if (!t) return;
+  termsVendor = vendor;
+  const label = VENDOR_LABEL[vendor];
+  $('vendor-terms-title').textContent = `${label} in a third-party app`;
+  $('vendor-terms-notice').textContent = t.notice;
+  $('vendor-terms-what').textContent = `Roundtable runs the ${label} CLI for every seat, chairman or searcher card set to ${label}, and reads its model list and remaining quota. Until you acknowledge this, it sends nothing to that CLI. Roundtable cannot tell which plan your login is on: check your plan's terms, or choose another provider.`;
+  $('vendor-terms-link').href = t.url;
+  $('vendor-terms-link').textContent = `Read the FAQ (${new URL(t.url).host})`;
+  $('vendor-terms-state').textContent = t.acknowledgedAt ? `You acknowledged this on ${new Date(t.acknowledgedAt).toLocaleDateString()}. Withdrawing it stops new reads; a review already running keeps its calls.` : '';
+  $('vendor-terms-state').hidden = !t.acknowledgedAt;
+  $('vendor-terms-confirm').hidden = !!t.acknowledgedAt;
+  $('vendor-terms-withdraw').hidden = !t.acknowledgedAt;
+  $('vendor-terms-error').hidden = true;
+  $('vendor-terms').showModal();
+}
+async function answerTerms(acknowledged) {
+  const vendor = termsVendor;
+  if (!vendor) return;
+  const buttons = ['vendor-terms-confirm', 'vendor-terms-withdraw', 'vendor-terms-cancel'].map($);
+  for (const b of buttons) b.disabled = true;
+  if (acknowledged) $('vendor-terms-confirm').textContent = 'Reading the model list…';
+  $('vendor-terms-error').hidden = true;
+  try {
+    // acknowledging waits for the CLI's model list, a network call of up to 30 s
+    const out = await requestJson(`/api/terms/${vendor}`, { acknowledged }, 45_000);
+    VENDOR_META[vendor].terms = out.terms;
+    if (out.catalogue) {
+      VENDOR_META[vendor].catalogue = out.catalogue;
+      const list = $(`models-${vendor}`);
+      if (list) list.innerHTML = (out.catalogue.models || []).map((m) => `<option value="${esc(m.id)}">${esc(m.label)}</option>`).join('');
+    }
+    $('vendor-terms').close();
+    renderSeats(); renderChair(); renderSearcher(); requestPreflight({ fresh: true });
+  } catch (e) {
+    $('vendor-terms-error').textContent = e.message; $('vendor-terms-error').hidden = false;
+  } finally {
+    for (const b of buttons) b.disabled = false;
+    $('vendor-terms-confirm').textContent = 'I understand, use it';
+  }
+}
+document.addEventListener('click', (ev) => { const note = ev.target.closest?.('.terms-note'); if (note) openTerms(note.dataset.terms); });
+$('vendor-terms-confirm').addEventListener('click', () => answerTerms(true));
+$('vendor-terms-withdraw').addEventListener('click', () => answerTerms(false));
+$('vendor-terms').addEventListener('cancel', (event) => { if ($('vendor-terms-cancel').disabled) event.preventDefault(); });
 
 // ---------- the searcher ----------
 // Not a seat: one call before round 0 that gathers cited sources from its query alone. A card
@@ -620,7 +683,7 @@ function renderSearcher() {
   $('searcher-pips').innerHTML = pipsHtml(v, $('searcher-effort').value, $('searcher-model').value.trim());
   const lamp = poolLamp(v, searcherAccount(), $('searcher-model').value.trim());
   $('searcher-lamp').className = `lamp ${lamp.cls}`; $('searcher-lamp').title = lamp.note;
-  $('searcher-iso').innerHTML = isoNote(v);
+  $('searcher-iso').innerHTML = isoNote(v) + termsNote(v);
   restoreFocus();
 }
 
@@ -893,7 +956,7 @@ async function start() {
   const body = {
     fieldNotes, seats: draftSeats(),
     chairman: draftChairman(),
-    options: { critiqueRounds: Number($('critique-rounds').value), autoContinueMs: Number($('auto').value) * 1000, wallClockMs: Number($('wall').value) * 60000, memory: $('memory').value, unattended: $('unattended').checked, allowLimitedIsolation: isolationAccepted(), budget: budgetBody(),
+    options: { critiqueRounds: Number($('critique-rounds').value), autoContinueMs: Number($('auto').value) * 1000, wallClockMs: Number($('wall').value) * 60000, memory: $('memory').value, unattended: $('unattended').checked, allowLimitedIsolation: isolationAccepted(), acknowledgeTermsRisk: termsAccepted(), budget: budgetBody(),
       ...(searcherOn() ? { research: { vendor: $('searcher-vendor').value, query: $('research-query').value.trim(), maxSearches: Number($('research-searches').value), timeoutMs: Number($('research-time').value) * 1000,
         model: $('searcher-model').value.trim(), effort: $('searcher-effort').value, account: searcherAccount() } } : {}) },
   };
@@ -912,6 +975,10 @@ async function start() {
     showSetupError({ ...issue, message: issue.message + errorReference({ id }) });
     return;
   }
+  // A card on a vendor whose terms notice is not acknowledged: ask now, rather than send a table
+  // the server would refuse. The person opens the table again once they have answered.
+  const unacknowledged = termsPending();
+  if (unacknowledged.length) { openTerms(unacknowledged[0]); return; }
   // Confirm a known unavailable provider only after the form itself is valid.
   const red = [...S.draft.map((s) => ({ name: `${VENDOR_LABEL[s.vendor]} (${s.lens})`, l: poolLamp(s.vendor, seatAccount(s), s.model) })),
     { name: `the chairman (${VENDOR_LABEL[$('chairman').value]})`, l: poolLamp($('chairman').value, chairAccount(), $('chairman-model').value.trim()) },

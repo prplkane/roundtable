@@ -12,6 +12,11 @@ supports the same workflow for agents and scripts.
 **Requirements:** Node.js 22 or newer. No runtime dependencies. Live reviews use installed
 Claude, Codex or Antigravity CLIs, or an OpenAI-compatible endpoint for a local or hosted model.
 
+**Provider availability:** some vendors or models are unavailable in certain regions. Regional
+network paths can also interrupt replies even when login succeeds. Check the
+[availability and network guidance](docs/workflow.md#provider-availability-and-network-access)
+before your first live review.
+
 **Status:** early preview for developers. Feedback from real workflows is welcome.
 
 ## How a review works
@@ -51,6 +56,13 @@ the terminal to stop the server.
 Install and sign in to a supported CLI, or configure an OpenAI-compatible endpoint using
 the [provider setup guide](docs/workflow.md). CLI seats use your existing logins; hosted API
 endpoints have separate billing.
+
+**Antigravity and your Google account:** Google's [Antigravity FAQ](https://antigravity.google/docs/faq)
+says wrapping `agy` inside third-party applications is not supported under consumer plans,
+and that third-party access can lead to suspension or termination of the account. Roundtable
+runs `agy -p` in that way. It sends nothing to `agy`, not even a model-list or quota read,
+until you acknowledge this once on an Antigravity card; an agent request must send
+`options.acknowledgeTermsRisk: true` itself. Check your plan's terms, or use another provider.
 
 ```bash
 npm run doctor
