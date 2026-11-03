@@ -239,7 +239,7 @@
     <span id="st-round"></span>
     <span id="st-seats"></span>
     <span id="st-elapsed"></span>
-    <span class="end">v0.6.0</span>
+    <span class="end">v0.6.1</span>
     <button class="statusline-link" id="save-diagnostics" type="button">Save error log</button>
   </footer>
 </div>
@@ -250,6 +250,17 @@
     <p>Local transcripts and working files will be removed permanently. Exported files and usage statistics are kept.</p>
     <p class="error" id="delete-history-error" role="alert" hidden></p>
     <div class="row"><button class="btn" id="delete-history-cancel" value="cancel" autofocus>Cancel</button><button class="btn btn-danger" id="delete-history-confirm" type="button">Delete</button></div>
+  </form>
+</dialog>
+<dialog id="vendor-terms" aria-labelledby="vendor-terms-title" aria-describedby="vendor-terms-notice">
+  <form method="dialog">
+    <h2 id="vendor-terms-title">Third-party app notice</h2>
+    <p id="vendor-terms-notice"></p>
+    <p id="vendor-terms-what"></p>
+    <p><a id="vendor-terms-link" href="#" target="_blank" rel="noopener noreferrer">Read the FAQ</a></p>
+    <p class="seat-note" id="vendor-terms-state" hidden></p>
+    <p class="error" id="vendor-terms-error" role="alert" hidden></p>
+    <div class="row"><button class="btn" id="vendor-terms-cancel" value="cancel" autofocus>Not now</button><button class="btn btn-danger" id="vendor-terms-withdraw" type="button" hidden>Withdraw</button><button class="btn btn-primary" id="vendor-terms-confirm" type="button">I understand, use it</button></div>
   </form>
 </dialog>
 <script type="module" src="/ui/app.js"></script>

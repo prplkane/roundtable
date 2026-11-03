@@ -1,5 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { loginInstructions } from '../src/doctor.js';
 
 test('loginInstructions name the profile directory and the login command per vendor and platform', () => {
@@ -10,4 +14,19 @@ test('loginInstructions name the profile directory and the login command per ven
   const nix = loginInstructions('codex', 'alt', { platform: 'linux', env: {}, homedir: '/home/u' });
   assert.match(nix[1], /^\s+CODEX_HOME="\/home\/u\/.local\/share\/roundtable\/homes\/alt\/codex" codex login$/);
   assert.match(loginInstructions('agy', 'x', { platform: 'linux', env: {}, homedir: '/h' })[0], /no state-directory variable/);
+});
+
+test('doctor shows the Antigravity terms notice and sends agy nothing without --acknowledge-terms-risk', { timeout: 30_000 }, () => {
+  // no CLI on PATH, so nothing but node itself can run whatever the doctor decides
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^path$/i.test(k)));
+  env.PATH = mkdtempSync(path.join(os.tmpdir(), 'rt-no-cli-'));
+  env.ROUNDTABLE_DEBATES_DIR = mkdtempSync(path.join(os.tmpdir(), 'rt-doctor-'));
+  const doctor = (...args) => execFileSync(process.execPath, ['src/doctor.js', '--vendor', 'agy', ...args], { env, encoding: 'utf8', windowsHide: true, timeout: 20_000 });
+  const held = doctor('--live');
+  assert.match(held, /terms {6}Google's Antigravity FAQ says .+ \(https:\/\/antigravity\.google\/docs\/faq, checked \d{4}-\d{2}-\d{2}\)/);
+  assert.match(held, /models {5}held: nothing is sent to agy without --acknowledge-terms-risk/);
+  assert.match(held, /pool read {2}held: nothing is sent to agy/);
+  const given = doctor('--acknowledge-terms-risk');
+  assert.match(given, /terms {6}Google's Antigravity FAQ/, 'the notice is shown either way');
+  assert.doesNotMatch(given, /held:/);
 });

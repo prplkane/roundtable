@@ -45,6 +45,11 @@
 //  isolation   what keeps an instance from inheriting shared context.
 //              Every instance also runs in its own empty working directory (store.seatDir), so
 //              no project file, project memory or project entry is shared between instances.
+//  terms       { url, read, notice }: the vendor's own docs say wrapping its CLI in a third-party
+//              application is unsupported or against its terms on some plans. Nothing is sent to
+//              the CLI, a call's or a background read's, until the person acknowledges `notice`
+//              (src/terms.js). `read` is the date the vendor's wording was checked; a later date
+//              asks everyone again.
 
 // Codex features that hand the model a tool (codex features list, CLI 0.162.1). Unknown names
 // are ignored by the CLI, so a renamed feature degrades to the wrapper's after-the-fact check.
@@ -62,14 +67,13 @@ export const CODEX_NO_TELEMETRY = ['-c', 'analytics.enabled=false', '-c', 'otel.
 // Shell snapshots serve no purpose for seats with shell tools disabled.
 export const CODEX_RUNTIME = ['-c', 'features.unbounded_connection_retries=false', '-c', 'features.shell_snapshot=false'];
 // How a Codex reply is streamed. The built-in `openai` provider is a reserved id that exposes no
-// idle or reconnect setting; its WebSocket transport has a record of hangs (openai/codex issues
-// 13710, 18723, 22156), and the CLI's documented stream-idle default, 300 s, equals Roundtable's
-// default call limit, so the CLI's own recovery could never run before the call was killed. A
+// idle or reconnect setting. The CLI's documented stream-idle default, 300 s, equals Roundtable's
+// default call limit, so the CLI's own recovery cannot run before that deadline. A
 // provider entry of our own, pointing at the same ChatGPT backend with the same login, streams
 // over SSE with an idle limit that fits inside the call limit and a bounded number of reconnects.
 // A reconnect starts the answer again, and the interrupted attempt's tokens may be charged
-// without being reported. Measured 2026-11-01: stalls happened with one call running too, so
-// this is not a concurrency fix; a stall inside a hosted web search did not trip the idle limit.
+// without being reported. The idle timer starts after response headers; it does not cover every
+// connection stage or identify a stall's cause. The outer call deadline remains the final bound.
 // Every key is in the CLI's configuration reference, and all were accepted by CLI 0.162.1 under
 // --strict-config, where an unknown key fails the call; that a custom provider may use the
 // ChatGPT login is demonstrated, not documented (SECURITY.md).
@@ -78,7 +82,7 @@ export const CODEX_STREAM_RECONNECTS = 2;
 const CODEX_STREAM_MARGIN_MS = 15_000; // process start, prewarm (a model-list refresh can take 5 s), first token
 // Never above the CLI's own default; the floor matters only for call limits under 45 s.
 export const CODEX_STREAM_IDLE_RANGE = [10_000, 300_000];
-// (call limit - margin) / (reconnects + 1): every reconnect runs before Roundtable's own deadline.
+// Divide the available stream time among attempts; the outer deadline can still interrupt one.
 export const codexStreamIdleMs = (timeoutMs = 300_000) => Math.min(CODEX_STREAM_IDLE_RANGE[1],
   Math.max(CODEX_STREAM_IDLE_RANGE[0], Math.floor((timeoutMs - CODEX_STREAM_MARGIN_MS) / (CODEX_STREAM_RECONNECTS + 1))));
 export const codexStream = (timeoutMs) => ['-c', `model_provider="${CODEX_PROVIDER}"`, ...Object.entries({
@@ -275,6 +279,10 @@ export const ADAPTERS = {
       },
       searchIds: (e) => (codexSearch(e) ? [e.item.id] : []),
       foreignTool: (events) => codexTools(events.filter((e) => !codexSearch(e))),
+      // Stop a search that reports no progress for 40 seconds. This is a local recovery policy,
+      // not a guarantee about provider latency or the cause of a stall. Reconnect notices do not
+      // count as progress; the engine permits at most one fresh attempt within the same deadline.
+      stallMs: 40_000,
     },
     quota: 'app-server',
     usageUrl: 'https://chatgpt.com/settings/usage',
@@ -292,6 +300,15 @@ export const ADAPTERS = {
     // an agy seat read-only is the deny list and the reported-tool guard, not plan mode.
     args: ['--output-format', 'json', '--mode', 'plan', '--disable-slash-commands', ...AGY_DENY_TOOLS],
     limitedIsolation: true,
+    // Google's Antigravity FAQ: headless `agy -p` is for direct scripting and CI, wrapping agy in
+    // third-party applications is not supported under consumer plans, and third-party access can
+    // lead to suspension or termination of the account. Roundtable cannot tell which plan a
+    // login is on (`/usage` names none), so every Antigravity user is asked.
+    terms: {
+      url: 'https://antigravity.google/docs/faq',
+      read: '2026-11-02',
+      notice: 'Google\'s Antigravity FAQ says wrapping agy inside third-party applications such as Roundtable is not supported under consumer plans, and that using third-party software to access Antigravity breaks its Terms of Service and can lead to suspension or termination of your account.',
+    },
     home: null, // no documented environment variable for agy's state directory
     isolation: 'limited isolation: session settings deny documented tools; MCP discovery and shared customization loading cannot be disabled',
     resume: (id, base) => [...base, '--conversation', id],

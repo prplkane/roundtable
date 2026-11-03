@@ -149,6 +149,7 @@ export function makeAdapter(name, overrides = {}) {
     const observer = research ? researchObserver(research, searching.searchIds) : null;
     const guard = searching ? searching.foreignTool : cfg.usedTools; // search allowed, every other tool still stops the call
     if (cfg.limitedIsolation && !opts.allowLimitedIsolation) throw Object.assign(new Error('Explicit consent to limited isolation is required.'), { code: 'ISOLATION_REQUIRED' });
+    if (cfg.terms && opts.acknowledgeTermsRisk !== true) throw Object.assign(new Error(`The person has not acknowledged ${cfg.label}'s terms notice.`), { code: 'TERMS_ACK_REQUIRED' });
     bin ??= cfg.bin || resolveBinary(cfg.binary, cfg.npmBin); // cfg.bin: a test's fake CLI
     // One time limit for the process and for the argv derived from it (cfg.stream).
     const timeoutMs = research ? Math.min(research.timeoutMs, opts.timeoutMs ?? research.timeoutMs) : opts.timeoutMs ?? 300_000;
@@ -163,6 +164,10 @@ export function makeAdapter(name, overrides = {}) {
     if (opts.home && cfg.home) { mkdirSync(opts.home, { recursive: true }); home = { env: cfg.home.env, dir: opts.home }; }
     if (opts.cwd) mkdirSync(opts.cwd, { recursive: true }); // a missing cwd makes spawn fail with ENOENT
     let pendingLine = '', processError = null, res, eventCount = 0, stage = 'waiting', hasReply = false, terminalUsage = false, reconnects = 0;
+    // the last event that moved the call on: a CLI's reconnect or retry notice says it has been
+    // waiting, so the searcher's silence limit counts on through it
+    let progressAt = Date.now();
+    const notice = (event) => event?.type === 'error' && /reconnect|retry|stream.*disconnect/i.test(event.message || '');
     const inspect = (chunk) => {
       pendingLine += chunk;
       let end;
@@ -173,6 +178,7 @@ export function makeAdapter(name, overrides = {}) {
         let event;
         try { event = JSON.parse(line); } catch { throw Object.assign(new Error('Provider emitted an invalid JSON event.'), { code: 'PROVIDER_PROTOCOL' }); }
         eventCount++;
+        if (!notice(event)) progressAt = Date.now();
         if (event?.type === 'turn.completed' || event?.type === 'result' || event?.event === 'result') stage = 'completed';
         else if (event?.item?.type === 'reasoning' || event?.message?.content?.some?.((c) => c?.type === 'thinking')) stage = 'reasoning';
         else if (event?.item?.type === 'agent_message' || event?.type === 'assistant') stage = 'reply';
@@ -184,7 +190,7 @@ export function makeAdapter(name, overrides = {}) {
             cacheRead: event.usage?.cached_input_tokens, cacheWrite: event.usage?.cache_write_input_tokens, thinking: event.usage?.reasoning_output_tokens });
           // the CLI's "Reconnecting... n/m": the stream stalled and the answer starts again; counted
           // into the saved progress so a recovered stall stays visible (retry notices set the stage only)
-          if (event?.type === 'error' && /reconnect|retry|stream.*disconnect/i.test(event.message || '')) { stage = 'reconnecting'; if (/reconnect/i.test(event.message)) reconnects++; }
+          if (notice(event)) { stage = 'reconnecting'; if (/reconnect/i.test(event.message)) reconnects++; }
           if (event?.type === 'turn.failed') {
             stage = 'provider-error';
             throw Object.assign(new Error(String(event.error?.message || 'Codex reported a failed turn.').slice(0, 1000)), { code: 'CLI_FAILURE' });
@@ -201,6 +207,7 @@ export function makeAdapter(name, overrides = {}) {
       // opts.minimal: the seat runs as cheaply as the vendor allows (cfg.minimalEnv, if any)
       stdin, cwd: opts.cwd, timeoutMs, env: { ...cleanEnv(home), ...(opts.minimal && cfg.minimalEnv) }, tag: opts.tag ?? null,
       onStdout: inspect, completionGraceMs: cfg.completionGraceMs,
+      stallMs: searching?.stallMs || 0, progressAt: () => progressAt, // the searcher only: a search that went silent (config.js)
     }); } catch (e) { processError = e; res = { stdout: e.stdout || '', stderr: e.stderr || '', code: null, ms: e.ms || 0, progress: e.progress }; }
     // A last event need not end in a newline. Validate it too; a truncated tail must not
     // turn an earlier partial answer into a successful reply.

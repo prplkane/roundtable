@@ -77,6 +77,11 @@ test('the JSON agent checks without calls, answers grouped questions, rejects st
     assert.equal((await fetch(`${srv.base}/api/preview`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })).status, 401);
     const setup = await agent('status');
     assert.equal(setup.exit, 0); assert.equal(setup.result.mode, 'demo');
+    const agyProvider = setup.result.providers.find((p) => p.vendor === 'agy');
+    assert.match(agyProvider.terms.notice, /not supported under consumer plans/, 'status shows the agent the notice to put to the person');
+    assert.equal(agyProvider.terms.url, 'https://antigravity.google/docs/faq');
+    assert.equal(agyProvider.terms.acknowledgedOnBoard, false);
+    assert.equal(setup.result.providers.find((p) => p.vendor === 'claude').terms, undefined);
     const preview = await agent('check', [], body);
     assert.equal(preview.exit, 0); assert.equal(preview.result.plannedCalls, 7);
     assert.equal((await fetch(`${srv.base}/api/debates`).then((r) => r.json())).debates.length, 0);
@@ -116,6 +121,10 @@ test('the JSON agent checks without calls, answers grouped questions, rejects st
     assert.ok(help.recipe?.lenses && help.recipe?.context, 'the help carries the small-review recipe');
     assert.match(help.recipe.isolation, /options\.allowLimitedIsolation=true/);
     assert.match(help.recipe.isolation, /user has agreed/);
+    assert.match(help.recipe.terms, /options.acknowledgeTermsRisk=true/);
+    assert.match(help.recipe.terms, /only when they have agreed/);
+    assert.match(help.recipe.terms, /board does not answer for an agent request/);
+    assert.match(help.recipe.research, /acknowledgeTermsRisk/);
 
     // Resume before round zero, stop at a gate, then reload from disk. All three CLI note
     // paths retain their source; a direct board-style request still defaults to human.
@@ -910,4 +919,104 @@ test('a retired model is refused at debate start, with what to use instead', { t
   } finally {
     srv.child.kill();
   }
+});
+
+test('live preview and start refuse every Antigravity role without consent, before creating a review', { timeout: 30_000 }, async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rt-live-terms-'));
+  const emptyPath = path.join(root, 'empty-bin');
+  mkdirSync(emptyPath);
+  // Exercise the live HTTP boundary with no vendor executable available. Tests must never
+  // use the developer's installed CLIs, logins or provider network connections.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^path$/i.test(key)));
+  const port = await freePort();
+  const child = spawn(process.execPath, ['src/server.js', '--no-open'], {
+    env: { ...env, PATH: emptyPath, PORT: String(port), ROUNDTABLE_DEBATES_DIR: root },
+    stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+  });
+  let log = '';
+  child.stdout.setEncoding('utf8').on('data', (text) => { log += text; });
+  child.stderr.setEncoding('utf8').on('data', (text) => { log += text; });
+  try {
+    const deadline = Date.now() + 15_000;
+    while (!/roundtable: http/.test(log)) {
+      if (child.exitCode != null || Date.now() > deadline) throw new Error(`Test server failed to start: ${log}`);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    const base = `http://127.0.0.1:${port}`;
+    const token = /token ([0-9a-f]{32})/.exec(log)[1];
+    const post = (route, body) => fetch(`${base}${route}`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': token }, body: JSON.stringify(body),
+    });
+    for (const role of ['seat', 'chairman', 'searcher']) {
+      const body = {
+        fieldNotes: { decision: 'Synthetic consent boundary', options: ['Trial', 'Wait'] },
+        seats: [{ vendor: 'claude', lens: 'risk' }, { vendor: 'codex', lens: 'cost' }],
+        chairman: { vendor: 'codex' }, options: { critiqueRounds: 0, allowLimitedIsolation: true },
+      };
+      if (role === 'seat') body.seats[0].vendor = 'agy';
+      if (role === 'chairman') body.chairman.vendor = 'agy';
+      if (role === 'searcher') body.options.research = { vendor: 'agy', query: 'Synthetic public question', maxSearches: 1, timeoutMs: 30_000 };
+      for (const route of ['/api/preview', '/api/debates']) {
+        const refused = await post(route, body);
+        assert.equal(refused.status, 400, `${role}: ${route}`);
+        assert.match((await refused.json()).error, /acknowledgeTermsRisk/, `${role}: consent is the refusal`);
+      }
+      body.options.acknowledgeTermsRisk = true;
+      const preview = await post('/api/preview', body);
+      assert.equal(preview.status, 200, `${role}: explicit consent permits validation`);
+      assert.equal((await preview.json()).valid, true);
+    }
+    assert.deepEqual((await fetch(`${base}/api/debates`).then((r) => r.json())).debates, []);
+  } finally { child.kill(); }
+});
+
+test('only the board records the Antigravity terms acknowledgment; until then nothing checks or reads agy', { timeout: 30_000 }, async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rt-terms-server-'));
+  const srv = await startFakeServer(root);
+  const token = { 'content-type': 'application/json', 'x-roundtable-token': srv.token };
+  const vendors = async () => (await fetch(`${srv.base}/api/seats`).then((r) => r.json())).vendors;
+  const seats = async () => Object.fromEntries((await vendors()).map((v) => [v.vendor, v.terms]));
+  const quotas = async () => Object.fromEntries((await vendors()).map((v) => [v.vendor, v.quota]));
+  const lamp = async () => (await fetch(`${srv.base}/api/preflight`, { method: 'POST', headers: token, body: JSON.stringify({ pools: ['agy'], fresh: true }) }).then((r) => r.json())).pools[0];
+  const answer = (headers, body) => fetch(`${srv.base}/api/terms/agy`, { method: 'POST', headers: { ...token, ...headers }, body: JSON.stringify(body) });
+  try {
+    const before = await seats();
+    assert.equal(before.claude, null); assert.equal(before.codex, null);
+    assert.equal(before.agy.acknowledgedAt, null);
+    assert.equal(before.agy.url, 'https://antigravity.google/docs/faq');
+    const held = await lamp();
+    assert.equal(held.kind, 'terms'); assert.equal(held.state, 'warn');
+    assert.match(held.note, /nothing is sent to agy until you acknowledge/);
+    // the start-up quota reads ran for the other vendors, never for Antigravity
+    let start = null;
+    for (let i = 0; i < 40 && !start?.claude; i++) { start = await quotas(); if (!start.claude) await new Promise((r) => setTimeout(r, 50)); }
+    assert.ok(start.claude, 'the start-up read ran'); assert.equal(start.agy, null, 'no Antigravity quota read before the acknowledgment');
+
+    const refused = await answer({}, { acknowledged: true });
+    assert.equal(refused.status, 403, 'the agent client and scripts cannot record it for the machine');
+    assert.match((await refused.json()).error, /acknowledgeTermsRisk/);
+    const browserHeaders = { origin: srv.base, 'sec-fetch-site': 'same-origin' };
+    assert.equal((await answer(browserHeaders, { acknowledged: true })).status, 403, 'browser-like headers without the page cookie are not the board');
+    const page = await fetch(`${srv.base}/`);
+    const board = { ...browserHeaders, cookie: /rt_board=[0-9a-f]{32}/.exec(page.headers.get('set-cookie') || '')[0] };
+    assert.equal((await answer(board, { acknowledged: 'yes' })).status, 400);
+    assert.equal((await fetch(`${srv.base}/api/terms/claude`, { method: 'POST', headers: { ...token, ...board }, body: '{"acknowledged":true}' })).status, 400, 'no notice to acknowledge');
+    assert.equal((await seats()).agy.acknowledgedAt, null, 'nothing was recorded by a refused request');
+
+    const given = await answer(board, { acknowledged: true });
+    assert.equal(given.status, 200);
+    const out = await given.json();
+    assert.ok(Number.isFinite(out.terms.acknowledgedAt));
+    assert.ok(out.catalogue && Array.isArray(out.catalogue.models), 'the card gets the model list read once acknowledged');
+    assert.equal(JSON.parse(readFileSync(path.join(root, '_terms.fake.json'), 'utf8')).agy.read, out.terms.read, 'demo answers stay in the demo folder');
+    assert.equal((await seats()).agy.acknowledgedAt, out.terms.acknowledgedAt);
+    assert.notEqual((await lamp()).kind, 'terms');
+    let read = null;
+    for (let i = 0; i < 40 && !read; i++) { read = (await quotas()).agy; if (!read) await new Promise((r) => setTimeout(r, 50)); }
+    assert.ok(read?.windows?.length, 'acknowledged: the quota read starts');
+
+    assert.equal((await answer(board, { acknowledged: false })).status, 200);
+    assert.equal((await seats()).agy.acknowledgedAt, null);
+    assert.equal((await lamp()).kind, 'terms', 'withdrawn: held again');
+  } finally { srv.child.kill(); }
 });

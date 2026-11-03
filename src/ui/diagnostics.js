@@ -1,5 +1,5 @@
 const CODES = new Set(['browser-network', 'browser-timeout', 'browser-response', 'browser-error', 'browser-rejection', 'browser-stream', 'browser-validation']);
-const ACTIONS = new Set(['setup', 'history', 'delete', 'clear-finished', 'preflight', 'create', 'events', 'continue', 'finish', 'stop', 'hold', 'resume', 'export', 'synthesize', 'accept', 'pools', 'diagnostics', 'pick-folder', 'unknown']);
+const ACTIONS = new Set(['setup', 'history', 'delete', 'clear-finished', 'preflight', 'create', 'events', 'continue', 'finish', 'stop', 'hold', 'resume', 'export', 'synthesize', 'accept', 'pools', 'terms', 'diagnostics', 'pick-folder', 'unknown']);
 const KEY = 'roundtable.diagnostics';
 
 export function requestAction(url, write = false) {
@@ -8,6 +8,7 @@ export function requestAction(url, write = false) {
   if (url === '/api/preflight') return 'preflight';
   if (url.startsWith('/api/diagnostics')) return 'diagnostics';
   if (url.startsWith('/api/pools/')) return 'pools';
+  if (url.startsWith('/api/terms/')) return 'terms';
   const action = url.split('/').at(-1);
   return ACTIONS.has(action) ? action : 'unknown';
 }

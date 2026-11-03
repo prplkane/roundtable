@@ -202,7 +202,7 @@ test('CLI adapters preserve unknown usage and known costs, including error resul
       const run = makeAdapter(name, { bin: { file: process.execPath, prefix: [fixture] } });
       for (const mode of ['missing', 'empty', 'partial', 'zero']) {
         process.env.FAKE_USAGE = mode;
-        const r = await run('hello', null, { timeoutMs: 20_000, allowLimitedIsolation: true });
+        const r = await run('hello', null, { timeoutMs: 20_000, allowLimitedIsolation: true, acknowledgeTermsRisk: true });
         if (mode === 'zero') assert.equal(r.usage.input, 0, name);
         else {
           assert.equal(r.usage, null, `${name}: ${mode}`);
@@ -372,11 +372,11 @@ test('tool-use guard: each adapter rejects reported tools and accepts a plain re
       const run = makeAdapter(name, { bin });
       process.env.FAKE_SHAPE = name;
       delete process.env.FAKE_TOOLS;
-      const plain = await run('hello', null, { cwd, timeoutMs: 20_000, allowLimitedIsolation: true });
+      const plain = await run('hello', null, { cwd, timeoutMs: 20_000, allowLimitedIsolation: true, acknowledgeTermsRisk: true });
       assert.equal(plain.usedTools, false, `${name}: a plain reply`);
       assert.match(plain.text, /^STANCE:/);
       process.env.FAKE_TOOLS = '1';
-      await assert.rejects(run('hello', null, { cwd, timeoutMs: 20_000, allowLimitedIsolation: true }), (e) => e.code === 'TOOL_POLICY' && e.usedTools === true && !e.text);
+      await assert.rejects(run('hello', null, { cwd, timeoutMs: 20_000, allowLimitedIsolation: true, acknowledgeTermsRisk: true }), (e) => e.code === 'TOOL_POLICY' && e.usedTools === true && !e.text);
     }
   } finally { delete process.env.FAKE_SHAPE; delete process.env.FAKE_TOOLS; }
   // the detectors on captured shapes
@@ -409,7 +409,7 @@ test('split tool events stop a hanging CLI before its timeout, including server 
       process.env.FAKE_PRELUDE = JSON.stringify(event) + '\n';
       process.env.FAKE_SLEEP = '10000';
       const run = makeAdapter(name, { bin: { file: process.execPath, prefix: [path.resolve('test/fixtures/fake-cli.mjs')] } });
-      await assert.rejects(run('synthetic question', null, { timeoutMs: 3000, allowLimitedIsolation: true }),
+      await assert.rejects(run('synthetic question', null, { timeoutMs: 3000, allowLimitedIsolation: true, acknowledgeTermsRisk: true }),
         (e) => e.code === 'TOOL_POLICY' && e.kind === 'policy' && e.usedTools && e.usage === null && !e.text);
     }
   } finally { for (const k of ['FAKE_SHAPE', 'FAKE_PRELUDE', 'FAKE_SLEEP']) delete process.env[k]; }
@@ -437,6 +437,11 @@ test('a truncated final event or unsuccessful exit cannot promote an earlier mes
 test('limited isolation requires explicit opt-in and malformed or oversized output fails closed', async () => {
   const bin = { file: process.execPath, prefix: [path.resolve('test/fixtures/fake-cli.mjs')] };
   await assert.rejects(makeAdapter('agy', { bin })('q'), (e) => e.code === 'ISOLATION_REQUIRED' && e.kind === 'policy');
+  // Google's terms notice is its own consent: isolation alone, or anything but true, is refused before a spawn
+  for (const acknowledgeTermsRisk of [undefined, false, 'yes', 1]) {
+    await assert.rejects(makeAdapter('agy', { bin: { file: path.resolve('no-such-cli'), prefix: [] } })('q', null, { allowLimitedIsolation: true, acknowledgeTermsRisk }),
+      (e) => e.code === 'TERMS_ACK_REQUIRED' && e.kind === 'policy' && /Antigravity was not called/.test(e.message) && /account at risk/.test(e.message));
+  }
   process.env.FAKE_PRELUDE = '{broken event}\n';
   process.env.FAKE_SLEEP = '10000';
   try {

@@ -345,7 +345,7 @@ test('an Antigravity searcher may use search_web only, each step counted once, a
   const bin = { file: process.execPath, prefix: [path.resolve('test/fixtures/fake-cli.mjs')] };
   const run = makeAdapter('agy', { bin });
   const agy = { ...settings, vendor: 'agy' };
-  const consent = { research: agy, allowLimitedIsolation: true };
+  const consent = { research: agy, allowLimitedIsolation: true, acknowledgeTermsRisk: true };
   try {
     process.env.FAKE_SHAPE = 'agy'; process.env.FAKE_TEXT = sourceText;
     process.env.FAKE_PRELUDE = [agyStep(2, 'search_web', 'ACTIVE'), agyStep(2, 'search_web')].join('\n') + '\n';
@@ -353,7 +353,8 @@ test('an Antigravity searcher may use search_web only, each step counted once, a
     assert.equal(result.research.searches, 1);
     assert.equal(result.usedTools, false);
     await assert.rejects(run('q', null, { research: agy }), (e) => e.code === 'ISOLATION_REQUIRED');
-    await assert.rejects(run('ordinary debate', null, { allowLimitedIsolation: true }), (e) => e.code === 'TOOL_POLICY'); // a seat's search is a tool
+    await assert.rejects(run('q', null, { research: agy, allowLimitedIsolation: true }), (e) => e.code === 'TERMS_ACK_REQUIRED'); // the searcher too
+    await assert.rejects(run('ordinary debate', null, { allowLimitedIsolation: true, acknowledgeTermsRisk: true }), (e) => e.code === 'TOOL_POLICY'); // a seat's search is a tool
     process.env.FAKE_SLEEP = '10000';
     for (const [prelude, code] of [
       [agyStep(2, 'view_file', 'ACTIVE'), 'TOOL_POLICY'],

@@ -71,6 +71,7 @@ export function validateDebateRequest(body, { adapters }) {
   if (options_.memory === 'resume' && [...body.seats, body.chairman].some((s) => s && adapters[s.vendor]?.kind === 'api')) fail('memory', 'resume needs a session to continue, and an API endpoint seat has none; use stateless');
   if (o.strictTools != null) { if (o.strictTools !== true) fail('strictTools', 'the debate tool guard cannot be disabled'); options_.strictTools = true; }
   if (o.allowLimitedIsolation != null) { if (typeof o.allowLimitedIsolation !== 'boolean') fail('allowLimitedIsolation', 'true or false'); options_.allowLimitedIsolation = o.allowLimitedIsolation; }
+  if (o.acknowledgeTermsRisk != null) { if (typeof o.acknowledgeTermsRisk !== 'boolean') fail('acknowledgeTermsRisk', 'true or false'); options_.acknowledgeTermsRisk = o.acknowledgeTermsRisk; }
   if (o.unattended != null) { if (typeof o.unattended !== 'boolean') fail('unattended', 'true or false'); options_.unattended = o.unattended; }
   if (o.budget != null) {
     if (typeof o.budget !== 'object' || Array.isArray(o.budget)) fail('budget', 'an object');
