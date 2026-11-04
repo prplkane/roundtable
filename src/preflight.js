@@ -95,7 +95,7 @@ export function lamp({ vendor, installed, loggedIn, quota, account = null, model
     return { state: 'ok', kind: null, note: `ready · ${text}` };
   }
   if (loggedIn === null) return { state: 'warn', kind: 'unknown', note: 'login not checked: this CLI has no status command' };
-  return { state: 'ok', kind: null, note: 'logged in · quota shows after the first call' };
+  return { state: 'ok', kind: null, note: 'logged in · quota unavailable' };
 }
 
 export async function checkPool({ vendor, account = null, key }, { resolve, status, quota, now = Date.now() }) {

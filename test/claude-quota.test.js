@@ -95,7 +95,7 @@ test('the reader runs the seats\' lockdown with slash commands on, from an empty
   assert.equal(read.stopped(), null);
 });
 
-test('the reader stops itself on an answer that is not shown free, and on a timeout; no limit lines is no figure, not a stop', async () => {
+test('the reader stops itself on an answer that is not shown free, and on a timeout', async () => {
   const resolve = () => ({ file: 'claude', prefix: [] }), cwd = mkdtempSync(path.join(os.tmpdir(), 'rt-claude-usage-'));
   let runs = 0;
   const warned = [];
@@ -115,15 +115,21 @@ test('the reader stops itself on an answer that is not shown free, and on a time
   const garbled = claudeQuotaReader({ cwd, resolve, warn: () => {}, run: async () => ({ stdout: 'Loading...\n', code: 0 }) });
   assert.equal(await garbled(), null);
   assert.match(garbled.stopped(), /no JSON answer/);
+});
 
-  // API billing, not signed in or reworded text: free, but no limits to read; reading after every
-  // reply would only log a failure each time, so reads stop and each reply's figure is used
-  let noLimitRuns = 0;
-  const noLimits = claudeQuotaReader({ cwd, resolve, warn: () => {}, run: async () => { noLimitRuns++; return { stdout: `notice\n${JSON.stringify({ ...ANSWER, result: 'You are using an API key; no plan limits apply.' })}\n`, code: 0 }; } });
-  assert.equal(await noLimits(), null);
-  assert.equal(await noLimits(), null);
-  assert.equal(noLimitRuns, 1);
-  assert.match(noLimits.stopped(), /shows no plan limits.*each Claude reply's own figure is used/);
+test('a proven-free /usage answer without limits allows the next normal read to recover', async () => {
+  const resolve = () => ({ file: 'claude', prefix: [] }), cwd = mkdtempSync(path.join(os.tmpdir(), 'rt-claude-usage-'));
+  for (const result of ['Current session: unavailable', 'You are using an API key; no plan limits apply.', '']) {
+    let runs = 0;
+    const read = claudeQuotaReader({ cwd, resolve, warn: () => assert.fail('a free empty result must not disable quota reads'),
+      run: async () => ({ stdout: `notice\n${JSON.stringify(++runs === 1 ? { ...ANSWER, result } : ANSWER)}\n`, code: 0 }) });
+    assert.equal(await read(), null, 'missing limits are unknown, not zero');
+    assert.equal(read.stopped(), null);
+    assert.equal(runs, 1, 'no automatic retry');
+    assert.deepEqual((await read()).windows.map((w) => [w.label, w.used]), [['5h', 0.53], ['7d', 0.57], ['7d Fable', 0.75]]);
+    assert.equal(runs, 2, 'a later refresh succeeds without restarting the reader');
+    assert.equal(read.stopped(), null);
+  }
   // an error answer is no figure this time; the next read may work
   const failed = claudeQuotaReader({ cwd, resolve, warn: () => {}, run: async () => ({ stdout: JSON.stringify({ ...ANSWER, is_error: true, result: 'Could not fetch usage' }), code: 0 }) });
   assert.equal(await failed(), null);

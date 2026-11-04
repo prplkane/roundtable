@@ -804,7 +804,10 @@ test('history cleanup protects live calls, preserves exports and statistics, and
   try {
     assert.equal((await list()).debates.length, 56, 'history cleanup includes sessions beyond the former 50-row limit');
     assert.equal((await fetch(`${srv.base}/api/debates/saved-0/delete`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 401);
-    assert.equal((await fetch(`${srv.base}/api/debates/clear-finished`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token, origin: 'https://foreign.example' }, body: JSON.stringify({ ids }) })).status, 403);
+    for (const route of ['/api/debates/clear', '/api/debates/clear-finished']) {
+      assert.equal((await fetch(`${srv.base}${route}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ids }) })).status, 401);
+      assert.equal((await fetch(`${srv.base}${route}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token, origin: 'https://foreign.example' }, body: JSON.stringify({ ids }) })).status, 403);
+    }
     assert.equal((await fetch(`${srv.base}/api/debates/saved-0/delete`)).status, 405);
     const exported = await post('/api/debates/saved-0/export', { target });
     assert.equal(exported.status, 200);
@@ -816,9 +819,10 @@ test('history cleanup protects live calls, preserves exports and statistics, and
     const activeId = (await created.json()).slug, activeRoute = `/api/debates/${activeId}`;
     await readEvents(await fetch(`${srv.base}${activeRoute}/events`), (e) => e.type === 'gate');
     assert.equal((await post(`${activeRoute}/delete`)).status, 409, 'waiting for answers is still active');
-    assert.equal((await post('/api/debates/clear-finished', { ids: ['saved-0', activeId] })).status, 409);
+    assert.equal((await post('/api/debates/clear', { ids: ['saved-0', 'interrupted', activeId] })).status, 409);
     assert.ok(existsSync(path.join(root, 'saved-0', 'transcript.jsonl')), 'a refused batch removes nothing');
-    assert.equal((await post('/api/debates/clear-finished', { ids: ['saved-0', 'interrupted'] })).status, 409);
+    assert.ok(existsSync(path.join(root, 'interrupted', 'transcript.jsonl')));
+    assert.equal((await post('/api/debates/clear-finished', { ids: ['saved-0', 'interrupted'] })).status, 409, 'the older endpoint keeps its finished-only contract');
 
     assert.equal((await post('/api/debates/saved-0/synthesize')).status, 200);
     assert.equal((await post('/api/debates/saved-0/delete')).status, 409, 'manual chairman calls are protected');
@@ -837,12 +841,16 @@ test('history cleanup protects live calls, preserves exports and statistics, and
     assert.equal((await post('/api/debates/saved-0/delete')).status, 200);
     assert.equal((await watching).at(-1).type, 'deleted', 'other open tabs learn that the record was deleted');
     assert.equal((await fetch(`${srv.base}/api/debates/saved-0/state`)).status, 404, 'the cached session is removed too');
-    assert.equal((await post('/api/debates/clear-finished', { ids: ids.slice(1) })).status, 200);
+    assert.equal((await post('/api/debates/clear-finished', { ids: ['saved-1'] })).status, 200);
+    const selected = [...ids.slice(2), 'interrupted'];
+    const cleared = await post('/api/debates/clear', { ids: selected });
+    assert.equal(cleared.status, 200);
+    assert.deepEqual((await cleared.json()).deleted, selected, 'Clear removes the full confirmed finished and interrupted selection');
     const after = await list();
     assert.deepEqual(after.usage, before.usage);
-    assert.equal(after.debates.length, 2);
+    assert.equal(after.debates.length, 1);
     assert.equal(after.debates.find((d) => d.slug === activeId).state, 'running');
-    assert.equal(after.debates.find((d) => d.slug === 'interrupted').state, 'interrupted');
+    assert.equal(existsSync(path.join(root, 'interrupted')), false);
     assert.deepEqual(readFileSync(exportPaths.path), exportBytes);
     assert.deepEqual(readFileSync(exportPaths.indexPath), indexBytes);
     assert.equal(readFileSync(path.join(root, '_pools.json'), 'utf8'), '{}');

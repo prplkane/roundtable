@@ -8,7 +8,7 @@ const CODES = new Set(['request-failed', 'provider-failed', 'call-cancelled', 'r
   'transcript-warning', 'status-failed', 'storage-failed', 'server-crash', 'server-start',
   'browser-network', 'browser-timeout', 'browser-response', 'browser-error', 'browser-rejection', 'browser-stream', 'browser-validation']);
 export const BROWSER_CODES = new Set([...CODES].filter((c) => c.startsWith('browser-')));
-const ACTIONS = new Set(['setup', 'pick-folder', 'history', 'delete', 'clear-finished', 'preflight', 'preview', 'create', 'events', 'state', 'continue', 'finish', 'stop', 'hold',
+const ACTIONS = new Set(['setup', 'pick-folder', 'history', 'delete', 'clear', 'clear-finished', 'preflight', 'preview', 'create', 'events', 'state', 'continue', 'finish', 'stop', 'hold',
   'resume', 'export', 'synthesize', 'accept', 'pools', 'terms', 'diagnostics', 'catalogue', 'quota', 'calibration', 'startup', 'unknown']);
 const KINDS = new Set(['quota', 'throttled', 'auth', 'missing', 'network', 'timeout', 'killed', 'format', 'budget', 'policy', 'compatibility', 'other']);
 const SYSTEM_CODES = new Set(['STALL', 'ENOENT', 'EACCES', 'EPERM', 'ENOSPC', 'EIO', 'EISDIR', 'EROFS', 'EMFILE', 'ENFILE',

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.2
+
+- Simplify model names to default and lightest annotations, removing inferred plan restrictions.
+- Let Claude's next quota refresh recover after a free `/usage` answer without limits.
+  Keep the safeguards for answers that may have called a model.
+- Show the latest quota on every provider card and replace the first-call promise with
+  "quota unavailable" when no figure is known.
+- Make Clear include interrupted sessions as well as finished ones. Running reviews and
+  reviews waiting for input remain protected, with the full selection checked before deletion.
+- Remove deletion success banners from the history list.
+- Clarify that usage statistics describe your own agents' Roundtable calls, stay on your
+  machine, and are not sent to Roundtable's developers. Document restarting after updates.
+
 ## 0.6.1
 
 ### Security and usage

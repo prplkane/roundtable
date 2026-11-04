@@ -1,6 +1,6 @@
 {
   "name": "@prplkane/roundtable",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Local decision reviews with coding-agent CLIs, human input, budget checks and Markdown records.",
   "keywords": [
     "claude",

@@ -2,7 +2,7 @@ import { rollup, hasUsableRound, positions } from '/src/engine.js';
 import { optionLabel } from '/src/contract.js';
 import { poolKey, poolVendor, poolAccount, hostKey, seatKind, initialSeatVendors, nextSeatLens, fillMissingSeatLenses, seatSetupIssue, hiddenMood, lightestModel, keyEnvName, HIDDEN_MOODS } from '/src/seats.js';
 import { avatar } from '/ui/avatars.js';
-import { modelsForPlan, modelsByCapability, retired, quotaWindows, quotaGroup, modelEfforts } from '/src/adapters/models.js';
+import { modelsByCapability, retired, quotaWindows, quotaGroup, modelEfforts } from '/src/adapters/models.js';
 import { project, projectedWindows, unknownUsageMessage } from '/src/estimate.js';
 import { PREFLIGHT_TTL_MS, lamp as preflightLamp } from '/src/preflight.js';
 import { createBrowserDiagnostics, requestAction } from '/ui/diagnostics.js';
@@ -380,26 +380,18 @@ function chairEffortOptions() {
 // teal Antigravity. Two seats of one vendor share it and differ by number, lens and avatar.
 const vendorColour = (vendor) => VENDOR_META[vendor]?.colour || 'ink';
 
-// The model picker for one login: capability order, with plan restrictions beside each model
-// and a separate custom-id mode. Antigravity lists one entry per model; its effort
+// The model picker: capability order, simple names and a separate custom-id mode.
+// Antigravity lists one entry per model; its effort
 // pips pick the variant. Returns { html, other } (other: show the free-text id field).
 const familyOf = (vendor, model) => (VENDOR_META[vendor]?.catalogue?.families || []).find((f) => model === f.id || String(model).startsWith(`${f.id}-`));
-function modelPicker(vendor, account, value, idAttr = '', custom = false) {
+function modelPicker(vendor, value, idAttr = '', custom = false) {
   const cat = VENDOR_META[vendor]?.catalogue || {};
-  const plan = S.preflight[poolKey(vendor, (account || '').trim(), !!VENDOR_META[vendor]?.profiles)]?.plan || null;
-  let current, groups;
-  if (vendor === 'agy') {
-    const fam = familyOf(vendor, value);
-    current = fam ? fam.id : value ? '__other' : '';
-    groups = [{ label: 'Models · most capable first', items: modelsByCapability(cat.families || []) }];
-  } else {
-    const g = modelsForPlan(vendor, plan, cat.models || []);
-    current = !value ? '' : [...g.onPlan, ...g.above, ...g.unknown].some((m) => m.id === value) ? value : '__other';
-    groups = [{ label: 'Models · most capable first', items: modelsByCapability([...g.onPlan, ...g.above, ...g.unknown]) }];
-  }
+  const models = modelsByCapability(vendor === 'agy' ? cat.families || [] : cat.models || []);
+  const selected = vendor === 'agy' ? familyOf(vendor, value)?.id || value : value;
+  let current = !value ? '' : models.some((m) => m.id === selected) ? selected : '__other';
   if (custom) current = '__other';
   const opt = (m) => `<option value="${esc(m.id)}" ${m.id === current ? 'selected' : ''}>${esc(m.label)}${m.note ? ` · ${esc(m.note)}` : ''}</option>`;
-  const html = `<select class="flat model-pick" ${idAttr} aria-label="Model"><option value="">default${cat.defaultLabel ? ` (${esc(cat.defaultLabel)})` : ' model'}</option>${groups.filter((g) => g.items.length).map((g) => `<optgroup label="${esc(g.label)}">${g.items.map(opt).join('')}</optgroup>`).join('')}<option value="__other" ${current === '__other' ? 'selected' : ''}>Custom model ID…</option></select>`;
+  const html = `<select class="flat model-pick" ${idAttr} aria-label="Model"><option value="">default</option>${models.length ? `<optgroup label="Models · most capable first">${models.map(opt).join('')}</optgroup>` : ''}<option value="__other" ${current === '__other' ? 'selected' : ''}>Custom model ID…</option></select>`;
   return { html, other: current === '__other' };
 }
 // A picked model as the id to send: an Antigravity model takes its effort as the suffix.
@@ -423,7 +415,7 @@ function pipsHtml(vendor, chosen, model = '') {
 // The lamp: the pre-flight answer for the seat's pool when there is one (installed, logged in,
 // quota; authenticated POST /api/preflight), else what the quota alone says. model: the seat's,
 // for a quota in groups (agy), where only its group's windows count. The server's answer is for
-// the whole pool, so its quota part is redone here for this model.
+// the whole pool, so its quota part is redone here with the latest figure for this model.
 function poolLamp(vendor, account, model = '') {
   const terms = VENDOR_META[vendor]?.terms;
   if (terms && !terms.acknowledgedAt) return { cls: 'warn', kind: 'terms', note: 'Review the account notice before using this provider.' };
@@ -432,19 +424,16 @@ function poolLamp(vendor, account, model = '') {
   const q = S.quota[key];
   if (S.preflighting) return { cls: 'idle', note: 'checking…' };
   if (pf) {
-    const own = q?.groups && pf.installed && pf.loggedIn !== false ? preflightLamp({ vendor, installed: true, loggedIn: pf.loggedIn, quota: q, account, model }) : null;
+    const own = q && pf.installed && pf.loggedIn !== false && !['busy', 'check-failed'].includes(pf.kind)
+      ? preflightLamp({ vendor, installed: true, loggedIn: pf.loggedIn, quota: q, account, model }) : null;
     const at = own ? { ...pf, ...own } : pf;
     const stale = pf.stale || pf.checkedAt != null && Date.now() - pf.checkedAt >= PREFLIGHT_TTL_MS;
     return { cls: stale && at.state === 'ok' ? 'warn' : at.state,
-      note: at.note + (stale && pf.checkedAt != null ? ' · last check is old; use Refresh status' : ''), kind: at.kind };
+      note: at.note + (stale && pf.checkedAt != null ? ' · refresh status' : ''), kind: at.kind };
   }
-  const windows = quotaWindows(q, [model]);
-  if (!windows.length) return { cls: 'idle', note: 'not checked yet' };
-  const worst = windows.reduce((a, w) => (w.used > a.used ? w : a));
-  const text = windows.map((w) => `${w.label} ${pct(w.used)}`).join(' · ');
-  if (worst.used >= 1) return { cls: 'danger', note: `quota used up (${worst.label})${worst.resetsAt ? `, resets ${untilText(worst.resetsAt * 1000)}` : ''}` };
-  if (worst.used >= 0.9) return { cls: 'warn', note: `quota nearly used: ${text}` };
-  return { cls: 'ok', note: `ready · ${text}` };
+  if (!quotaWindows(q, [model]).length) return { cls: 'idle', note: 'not checked yet' };
+  const own = preflightLamp({ vendor, installed: true, loggedIn: null, quota: q, account, model });
+  return { cls: own.state, note: own.note, kind: own.kind };
 }
 
 // A custom mood that is a hidden mood's code word: its avatar, and the cheapest model and effort.
@@ -465,7 +454,7 @@ function seatRow(s, i) {
   const n = same.length > 1 ? ` ${same.indexOf(s) + 1}` : '';
   const lamp = poolLamp(s.vendor, seatAccount(s), s.model);
   // an endpoint seat has no catalogue: the model id is typed, and the card says it is required
-  const picker = api ? { html: '', other: true } : modelPicker(s.vendor, s.account, s.model || '', '', s.customModel);
+  const picker = api ? { html: '', other: true } : modelPicker(s.vendor, s.model || '', '', s.customModel);
   const gone = retired(s.vendor, (s.model || '').trim());
   const issue = S.seatIssue?.seatIndex === i ? S.seatIssue : null;
   const invalid = (field) => issue?.field === field ? 'aria-invalid="true"' : '';
@@ -524,8 +513,10 @@ function requestPreflight({ fresh = false } = {}) {
       const times = pools.map((p) => p.checkedAt).filter((t) => t != null);
       S.preflightCheckedAt = times.length ? Math.min(...times) : Date.now();
       S.preflightEndpoints = epSig;
-      const newPlan = pools.some((p) => p.plan && S.preflight[p.key]?.plan !== p.plan);
-      for (const p of pools) { S.preflight[p.key] = p; if (p.quota) S.quota[p.key] = p.quota; }
+      for (const p of pools) {
+        S.preflight[p.key] = p;
+        if (p.quota && (p.quota.at ?? 0) >= (S.quota[p.key]?.at ?? 0)) S.quota[p.key] = p.quota;
+      }
       if (S.initialDraft) {
         const unchanged = JSON.stringify(S.draft) === S.initialDraft;
         S.initialDraft = null; // choose once; a refresh never replaces an existing table
@@ -538,8 +529,6 @@ function requestPreflight({ fresh = false } = {}) {
           }
         }
       }
-      // the model pickers group by plan: redraw them once a plan is known (not while typing)
-      if (newPlan && !$('seats').contains(document.activeElement)) { S.preflighting = false; renderSeats(); renderChair(); return; }
     } catch (e) {
       if (revision === preflightRevision) S.preflightError = e.message || 'Could not refresh status. Try Refresh status again.';
     } finally {
@@ -577,7 +566,7 @@ function renderChair() {
   $('chair-kind').textContent = seatKind(VENDOR_META[v], $('chairman-endpoint').value);
   $('chair-kind').classList.toggle('api', api);
   $('chair-api').hidden = !api; $('chair-profile').hidden = api;
-  const picker = api ? { html: '', other: true } : modelPicker(v, $('chairman-account').value, $('chairman-model').value.trim(), 'id="chair-model-pick"', S.customChairModel);
+  const picker = api ? { html: '', other: true } : modelPicker(v, $('chairman-model').value.trim(), 'id="chair-model-pick"', S.customChairModel);
   $('chair-model-slot').innerHTML = picker.html;
   $('chairman-model').hidden = !picker.other;
   $('chairman-model').placeholder = api ? 'model id (required)' : 'model id';
@@ -707,7 +696,7 @@ function renderSearcher() {
   $('searcher-card').style.setProperty('--seat', `var(--seat-${vendorColour(v)})`);
   $('searcher-avatar').innerHTML = avatar('searcher');
   $('searcher-profile').hidden = !VENDOR_META[v]?.profiles; // no login profiles for a CLI without a state directory
-  const picker = modelPicker(v, searcherAccount(), $('searcher-model').value.trim(), 'id="searcher-model-pick"', S.customSearcherModel);
+  const picker = modelPicker(v, $('searcher-model').value.trim(), 'id="searcher-model-pick"', S.customSearcherModel);
   $('searcher-model-slot').innerHTML = picker.html;
   $('searcher-model').hidden = !picker.other;
   $('searcher-model').setAttribute('list', `models-${v}`);
@@ -1077,9 +1066,9 @@ function showSetup() {
 // The debates on disk, newest first: status, the pick, size, and a link to each board.
 const STATE_CLASS = { running: 'warn', interrupted: 'warn', accepted: 'ok', recommended: 'info', 'no verdict': 'danger', corrupt: 'danger' };
 const STATE_LABEL = { running: 'live', interrupted: 'interrupted', accepted: 'accepted', recommended: 'recommended', split: 'split', stopped: 'stopped', 'no verdict': 'no verdict', corrupt: 'needs repair' };
+const deletableHistory = (entry) => ['finished', 'interrupted'].includes(entry.state);
 let recentRevision = 0;
 let historyEntries = [], historySelection = null, historyBusy = false;
-function historyNotice(message) { $('history-notice').textContent = message; $('history-notice').hidden = !message; }
 async function loadRecent() {
   const revision = ++recentRevision;
   let list;
@@ -1087,13 +1076,13 @@ async function loadRecent() {
   catch (e) {
     if (revision !== recentRevision) return;
     $('recent-count').textContent = 'unavailable';
-    historyEntries = []; $('clear-finished').disabled = true; $('recent-foot').hidden = true;
+    historyEntries = []; $('clear-history').disabled = true; $('recent-foot').hidden = true;
     $('recent-list').innerHTML = `<div class="empty"><span role="alert">Could not load history. ${esc(e.message)}</span><button class="btn btn-small" id="retry-recent" type="button">Retry history</button></div>`;
     return;
   }
   if (revision !== recentRevision) return;
   historyEntries = list;
-  $('clear-finished').disabled = historyBusy || !list.some((d) => d.state === 'finished');
+  $('clear-history').disabled = historyBusy || !list.some(deletableHistory);
   $('recent-count').textContent = list.length ? `${list.length} on this machine` : '';
   $('recent-foot').hidden = true;
   if (!list.length) {
@@ -1105,7 +1094,7 @@ async function loadRecent() {
     const pick = d.status === 'accepted' ? d.accepted : ['no consensus', 'no pick', 'no verdict'].includes(d.recommended) ? '' : d.recommended;
     const cost = d.cost != null ? ` · $${d.cost.toFixed(2)}${d.costPartial ? '+' : ''}` : '';
     const tag = d.state === 'corrupt' ? 'div' : 'a';
-    const deletable = ['finished', 'interrupted'].includes(d.state);
+    const deletable = deletableHistory(d);
     return `<div class="history-row"><${tag} class="debate-row" ${tag === 'a' ? `href="#${esc(d.slug)}"` : ''} title="${esc(d.decision)}">
       <span class="data">${esc(d.date)}</span>
       <span class="debate-title">${esc(d.decision)}</span>
@@ -1124,17 +1113,16 @@ async function loadRecent() {
 
 function confirmHistoryDeletion(id = null) {
   if (historyBusy) return;
-  const selected = id ? historyEntries.filter((d) => d.slug === id && ['finished', 'interrupted'].includes(d.state))
-    : historyEntries.filter((d) => d.state === 'finished').slice(0, 1000);
+  const selected = historyEntries.filter((d) => deletableHistory(d) && (!id || d.slug === id)).slice(0, 1000);
   if (!selected.length) return;
   historySelection = { ids: selected.map((d) => d.slug), bulk: !id };
-  $('delete-history-title').textContent = id ? 'Delete session?' : `Clear ${selected.length} finished session${selected.length === 1 ? '' : 's'}?`;
-  $('delete-history-detail').textContent = id ? selected[0].decision : 'Only these finished sessions will be removed. Running and interrupted sessions are kept.';
+  $('delete-history-title').textContent = id ? 'Delete session?' : `Clear ${selected.length} session${selected.length === 1 ? '' : 's'}?`;
+  $('delete-history-detail').textContent = id ? selected[0].decision : 'Finished and interrupted sessions will be removed. Running sessions are kept.';
   $('delete-history-error').hidden = true;
   $('delete-history-confirm').textContent = id ? 'Delete session' : 'Clear';
   $('delete-history').showModal();
 }
-$('clear-finished').addEventListener('click', (ev) => { ev.preventDefault(); confirmHistoryDeletion(); });
+$('clear-history').addEventListener('click', (ev) => { ev.preventDefault(); confirmHistoryDeletion(); });
 $('delete-history').addEventListener('cancel', (event) => { if (historyBusy) event.preventDefault(); });
 $('delete-history-confirm').addEventListener('click', async () => {
   if (!historySelection || historyBusy) return;
@@ -1142,8 +1130,7 @@ $('delete-history-confirm').addEventListener('click', async () => {
   historyBusy = true; $('delete-history-confirm').disabled = $('delete-history-cancel').disabled = true;
   $('delete-history-error').hidden = true;
   try {
-    const result = await requestJson(bulk ? '/api/debates/clear-finished' : `/api/debates/${ids[0]}/delete`, bulk ? { ids } : {});
-    historyNotice(`Deleted ${result.deleted.length} session${result.deleted.length === 1 ? '' : 's'}. Exported files and usage statistics were kept.`);
+    await requestJson(bulk ? '/api/debates/clear' : `/api/debates/${ids[0]}/delete`, bulk ? { ids } : {});
     $('delete-history').close(); historySelection = null;
   } catch (error) {
     $('delete-history-error').textContent = error.message; $('delete-history-error').hidden = false;
@@ -1163,7 +1150,7 @@ function openBoard(slug) {
   const es = new EventSource(`/api/debates/${slug}/events`);
   es.onmessage = (m) => {
     const event = JSON.parse(m.data);
-    if (event.type === 'deleted') { closeBoard(); historyNotice('This session was deleted in another tab. Exported files and usage statistics were kept.'); location.hash = ''; return; }
+    if (event.type === 'deleted') { closeBoard(); location.hash = ''; return; }
     S.connected = true; handle(event);
   };
   es.onerror = () => { if (S.connected !== false) clientDiagnostics.report('browser-stream', 'events'); S.connected = false; renderGate(); renderBanners(); };

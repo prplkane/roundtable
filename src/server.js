@@ -721,9 +721,10 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { terms, catalogue: catalogue?.[tm[1]] || null });
     }
     if (req.method === 'GET' && p === '/api/debates') return json(res, 200, { debates: await listDebates(), usage: usageStore.summary(FAKE) });
-    if (req.method === 'POST' && p === '/api/debates/clear-finished') {
+    if (req.method === 'POST' && (p === '/api/debates/clear' || p === '/api/debates/clear-finished')) {
       const body = await readBody(req);
-      return json(res, 200, deleteSessions(body?.ids, true));
+      // Keep the older endpoint's finished-only contract for existing clients.
+      return json(res, 200, deleteSessions(body?.ids, p === '/api/debates/clear-finished'));
     }
     const deletion = p.match(/^\/api\/debates\/([^/]+)\/delete$/);
     if (req.method === 'POST' && deletion) { await readBody(req); return json(res, 200, deleteSessions([deletion[1]])); }
