@@ -7,6 +7,7 @@ export const PUBLIC = [
   /^LICENSE$/,
   /^package\.json$/,
   /^docs\/workflow\.md$/,
+  /^skills\/roundtable\/SKILL\.md$/,
   /^scripts\/[\w.-]+\.mjs$/,
   /^src\/[\w./-]+\.(js|html|css|svg)$/,
   /^test\/[\w./-]+\.(js|mjs)$/,

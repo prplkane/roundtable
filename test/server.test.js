@@ -507,7 +507,7 @@ test('fake server end to end: three seats, gates answered through the API, trans
     assert.equal(seatsApi.vendors.find((v) => v.vendor === 'api').profiles, true, 'API pools are per endpoint host');
     assert.equal(seatsApi.defaults.memory, 'stateless');
     assert.equal(seatsApi.defaults.critiqueRounds, 1, 'the default review has one critique round');
-    assert.deepEqual(seatsApi.runtime, { mode: 'demo', dataDir: debatesDir, diagnostics: { available: true, dropped: 0 } });
+    assert.deepEqual(seatsApi.runtime, { mode: 'demo', dataDir: debatesDir, cataloguePending: false, diagnostics: { available: true, dropped: 0 } });
     assert.ok(srv.log().includes(`data: ${debatesDir}`));
     const page = await fetch(`${srv.base}/`).then((r) => r.text());
     assert.match(page, /id="run-mode"/);

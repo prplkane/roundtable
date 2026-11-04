@@ -9,7 +9,7 @@ const CODES = new Set(['request-failed', 'provider-failed', 'call-cancelled', 'r
   'browser-network', 'browser-timeout', 'browser-response', 'browser-error', 'browser-rejection', 'browser-stream', 'browser-validation']);
 export const BROWSER_CODES = new Set([...CODES].filter((c) => c.startsWith('browser-')));
 const ACTIONS = new Set(['setup', 'pick-folder', 'history', 'delete', 'clear', 'clear-finished', 'preflight', 'preview', 'create', 'events', 'state', 'continue', 'finish', 'stop', 'hold',
-  'resume', 'export', 'synthesize', 'accept', 'pools', 'terms', 'diagnostics', 'catalogue', 'quota', 'calibration', 'startup', 'unknown']);
+  'resume', 'export', 'synthesize', 'accept', 'pools', 'terms', 'diagnostics', 'catalogue', 'quota', 'calibration', 'startup', 'shutdown', 'health', 'unknown']);
 const KINDS = new Set(['quota', 'throttled', 'auth', 'missing', 'network', 'timeout', 'killed', 'format', 'budget', 'policy', 'compatibility', 'other']);
 const SYSTEM_CODES = new Set(['STALL', 'ENOENT', 'EACCES', 'EPERM', 'ENOSPC', 'EIO', 'EISDIR', 'EROFS', 'EMFILE', 'ENFILE',
   'TOOL_POLICY', 'OUTPUT_LIMIT', 'PROVIDER_PROTOCOL', 'CLI_EXIT', 'CLI_FAILURE', 'ISOLATION_REQUIRED', 'TERMS_ACK_REQUIRED', 'RESEARCH_LIMIT', 'RESEARCH_INVALID',
@@ -24,6 +24,8 @@ export const diagnosticId = () => `RT-${randomBytes(8).toString('hex')}`;
 
 export function diagnosticAction(pathname) {
   if (pathname === '/api/seats') return 'setup';
+  if (pathname === '/api/health') return 'health';
+  if (pathname === '/api/shutdown') return 'shutdown';
   if (pathname === '/api/debates') return 'history';
   if (pathname === '/api/preflight') return 'preflight';
   if (pathname === '/api/preview') return 'preview';

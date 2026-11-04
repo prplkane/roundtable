@@ -4,9 +4,11 @@
 
 import { researchSettings } from './research.js';
 
-const LIMITS = {
+export const LIMITS = {
   decision: 2000, option: 200, options: [2, 12], field: 4000, exportTo: 1024, seats: [2, 8], message: 4000,
   critiqueRounds: [0, 8], autoContinueMs: [100, 600_000], questionWaitMs: [100, 600_000], wallClockMs: [60_000, 10_800_000], callTimeoutMs: [30_000, 1_800_000], endpoint: 500,
+  seatField: 200, mood: 400, answers: 8, questionId: 8, answer: 1200,
+  waitSeconds: [1, 30], port: [1, 65535],
 };
 export const BODY_LIMIT = 256 * 1024;
 const NOTE_FIELDS = ['constraints', 'reversibility', 'known', 'assumed', 'deadline'];
@@ -54,11 +56,11 @@ export function validateDebateRequest(body, { adapters }) {
   if (body.seats.length < LIMITS.seats[0] || body.seats.length > LIMITS.seats[1]) fail('seats', `${LIMITS.seats[0]} to ${LIMITS.seats[1]} seats`);
   for (const [i, s] of body.seats.entries()) {
     if (!s || typeof s !== 'object') fail(`seat ${i + 1}`, 'an object');
-    for (const k of ['vendor', 'lens', 'model', 'effort', 'account', 'colour', 'keyEnv']) str(s[k], `seat ${i + 1} ${k}`, 200);
+    for (const k of ['vendor', 'lens', 'model', 'effort', 'account', 'colour', 'keyEnv']) str(s[k], `seat ${i + 1} ${k}`, LIMITS.seatField);
     str(s.endpoint, `seat ${i + 1} endpoint`, LIMITS.endpoint);
-    if (s.mood != null && typeof s.mood !== 'string') str(s.mood.text, `seat ${i + 1} mood`, 400);
+    if (s.mood != null && typeof s.mood !== 'string') str(s.mood.text, `seat ${i + 1} mood`, LIMITS.mood);
   }
-  if (body.chairman != null) { for (const k of ['vendor', 'model', 'effort', 'account', 'keyEnv']) str(body.chairman[k], `chairman ${k}`, 200); str(body.chairman.endpoint, 'chairman endpoint', LIMITS.endpoint); }
+  if (body.chairman != null) { for (const k of ['vendor', 'model', 'effort', 'account', 'keyEnv']) str(body.chairman[k], `chairman ${k}`, LIMITS.seatField); str(body.chairman.endpoint, 'chairman endpoint', LIMITS.endpoint); }
 
   const o = body.options || {};
   const options_ = {};
@@ -92,11 +94,11 @@ export function validateMessage(body) {
   const out = { ...body, message: str(body.message, 'message', LIMITS.message) };
   if (body.source != null && !['human', 'agent'].includes(body.source)) fail('source', 'human or agent');
   out.source = body.source ?? 'human';
-  if (body.round != null) out.round = int(body.round, 'round', [0, 8]);
+  if (body.round != null) out.round = int(body.round, 'round', LIMITS.critiqueRounds);
   if (body.answers != null) {
-    if (!Array.isArray(body.answers) || body.answers.length > 8) fail('answers', 'a list of at most 8 answers');
+    if (!Array.isArray(body.answers) || body.answers.length > LIMITS.answers) fail('answers', `a list of at most ${LIMITS.answers} answers`);
     if (body.round == null) fail('round', 'required with answers');
-    out.answers = body.answers.map((a) => ({ id: str(a?.id, 'question id', 8, { required: true }), text: str(a?.text, 'answer', 1200) }));
+    out.answers = body.answers.map((a) => ({ id: str(a?.id, 'question id', LIMITS.questionId, { required: true }), text: str(a?.text, 'answer', LIMITS.answer) }));
   }
   return out;
 }

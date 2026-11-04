@@ -16,15 +16,20 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPTS = {
   start: ['src/server.js'], fake: ['src/server.js', '--fake'], doctor: ['src/doctor.js'],
   export: ['scripts/export.mjs'], debate: ['scripts/run-debate.mjs'], agent: ['scripts/agent.mjs'],
+  mcp: ['scripts/mcp.mjs'], setup: ['scripts/setup.mjs'], server: ['scripts/server.mjs'],
 };
 
 const args = process.argv.slice(2);
 const USAGE = ['roundtable [--port <n>] [--no-open]   the board, opened in your browser', 'roundtable fake [--port <n>]          the board with scripted seats, nothing spent',
   'roundtable doctor [--live]            what this machine can seat', 'roundtable export <slug> <dir>        write a decision record into a codebase',
   'roundtable debate [--token <hex>] ... one debate headless, body on stdin',
-  'roundtable agent --help              JSON commands for agents; no GUI needed'].join('\n');
+  'roundtable agent --help              JSON commands for agents; no GUI needed',
+  'roundtable setup --client codex      connect an assistant across projects (also claude, agy, all)',
+  'roundtable setup --help              inspect, update or remove that connection',
+  'roundtable server --help             check, start, stop or restart the hidden board',
+  'roundtable mcp                       MCP tools over stdio; starts the local server as needed'].join('\n');
 // help first, wherever it is on the line: a bare `--help` must never start the real server
-if (args[0] !== 'agent' && args.some((a) => a === 'help' || a === '--help' || a === '-h')) { console.log(USAGE); process.exit(0); }
+if (!['agent', 'setup', 'mcp', 'server'].includes(args[0]) && args.some((a) => a === 'help' || a === '--help' || a === '-h')) { console.log(USAGE); process.exit(0); }
 const cmd = args[0] && !args[0].startsWith('-') ? args.shift() : 'start';
 if (!SCRIPTS[cmd]) { console.error(`unknown command: ${cmd}\n\n${USAGE}`); process.exit(2); }
 const env = { ...process.env };

@@ -33,9 +33,79 @@ npm test
 
 There are no dependencies to install.
 
-After an update, stop the running server with Ctrl+C, start it again with `npm start` (or
-`npm run fake` for the demo), then refresh the browser. Refreshing the page alone does not
-load an updated server or model list.
+### Connect an assistant for every project
+
+Install once from a checkout: run `npm pack`, then `npm install -g` with the generated
+`.tgz` filename, then `roundtable setup --client codex`. Install the archive, since
+`npm install -g .` can create a link to the checkout that breaks when it moves. The published
+package, when available, can be installed with `npm install -g @prplkane/roundtable`.
+Setup points at the installed package, not the project where you next ask for a review.
+
+Choose `--client claude`, `--client agy`, repeat `--client`, or use `--client all` to connect
+all three. This explicitly installs a user-level MCP connection and the bundled Roundtable
+skill. No npm install hook changes assistant settings. Restart the assistant or reload its
+MCP connections after setup, then ask it to use Roundtable from any project.
+
+| Assistant | MCP configuration | Workflow skill |
+| --- | --- | --- |
+| Codex | `~/.codex/config.toml` | `~/.codex/skills/roundtable/SKILL.md` |
+| Claude Code | `~/.claude.json` | `~/.claude/skills/roundtable/SKILL.md` |
+| Antigravity app / CLI | `~/.gemini/config/mcp_config.json` | `~/.gemini/config/skills/roundtable/SKILL.md` |
+
+Codex uses `CODEX_HOME` when set. Claude uses `CLAUDE_CONFIG_DIR` when set, with
+`.claude.json` and `skills/roundtable/SKILL.md` inside that directory. `--home <directory>`
+selects an isolated test home and ignores both overrides. Antigravity's current app, CLI and
+IDE use the [shared configuration directory](https://antigravity.google/docs/mcp);
+the presence of an older `~/.gemini/antigravity/mcp_config.json` does not select it.
+For an older IDE, check the path shown by its MCP manager before configuring it manually.
+Setup preserves unrelated settings and comments in Codex's TOML, including dotted and
+quoted keys and multiline strings. It refuses an existing unmanaged Roundtable entry,
+an edited managed entry or skill,
+invalid configuration JSON, and linked configuration files. Resolve a conflict explicitly;
+setup does not overwrite custom edits. A private receipt under `~/.roundtable/integrations.json`
+records paths and hashes for checking, updating and removal. No configuration contents or
+credentials are copied into it. Missing managed files can be repaired by rerunning setup,
+or removed with `--remove`; present files with custom edits remain protected.
+Rerun setup after a package update to refresh the skill. Changing a profile override requires
+removing the old managed connection with its original profile first.
+
+```bash
+roundtable setup --client all --check
+roundtable setup --client codex --remove
+```
+
+`--check` reads the installed files and verifies their recorded hashes, MCP script and Node executable;
+it makes no model call. To test without a provider, use `--fake` with setup, or run
+`roundtable mcp --fake`. This uses the separate demo board on port 4748. Updates preserve
+the saved mode and port. Use setup's `--live` to switch explicitly to live port 4747, or
+`--fake` to switch to demo port 4748. `--port N` selects another
+loopback port; `roundtable mcp --no-start` requires an already running board. Every server
+needs its own data directory when more than one runs in the same mode (see Local data).
+
+The MCP adapter starts the board in the background when a tool needs it and leaves it
+running when a chat disconnects, so question timers and reviews continue. Starting the board
+checks provider status but starts no review. It never opens the browser. Use the returned
+board link to view or stop a review. The existing loopback token protects writes, and the
+adapter never prints it. Normal review content is returned to the assistant that invoked it.
+An unrelated service, incompatible API, different package version or wrong demo/live mode
+on the selected port is refused. An explicit `ROUNDTABLE_DEBATES_DIR` must match the running
+board. A lightweight health endpoint checks this without waiting for provider catalogues;
+temporary readiness failures are retried within 35 seconds, without retrying review writes.
+Configure the host's tool timeout to at least 90 seconds if it supports that setting:
+a wait can include two bounded state reads as well as the requested event wait.
+
+If an assistant says Roundtable is unavailable, run setup's `--check`, reload its connections,
+and confirm `roundtable_guide` appears among its tools. The installed skill also explains the
+`roundtable agent` CLI fallback. The repository's `AGENTS.md` does not install anything in
+other projects. Do not substitute ordinary subagents and call their result a Roundtable review.
+
+After an update, finish active reviews, run `roundtable server restart` (add `--fake` or
+`--port N` for that board), reload the assistant's MCP connection and refresh the browser.
+`roundtable server status` inspects the board; `stop` stops it. Stop/restart requires the
+launch token and matching server instance, and refuses active reviews or other writes.
+It never cancels a review to perform an update. Older boards without the health API must be
+stopped from their original terminal with Ctrl+C, or by stopping their known server process.
+Refreshing the browser alone does not reload server code.
 
 ## 2. Install and log in to each vendor
 
@@ -800,6 +870,26 @@ target another local server. `status --refresh` checks installed CLIs and cached
 `check` validates the request and estimates its size. Neither makes a model call. `start`,
 `answer`, `resume` and `verdict` can cause calls under the review's existing limits.
 
+Connected assistants use the same client through MCP. Start with `roundtable_guide` and
+`roundtable_status`, then `roundtable_check` and `roundtable_start` with `{ "review": ... }`.
+`roundtable_wait` takes `{ "id": "<review-id>" }`; after displaying questions it also takes
+`afterRound`. `roundtable_answer` takes `{ "id": "...", "round": 0, "answers": [...] }`.
+`roundtable_hold`, `roundtable_finish`, `roundtable_stop`, `roundtable_resume` and
+`roundtable_verdict` expose the corresponding controls. All tools have typed input schemas
+and return matching JSON text and `structuredContent`. No acceptance or export tool is exposed.
+
+MCP replies identify `service: "roundtable"`; a started review has an id and board URL.
+`nextAction` includes tool names and arguments for the question handoff. `completed` is true
+only when the review is done **and** the chairman's verdict is ready. A returned id, completed
+seat turn or timed-out wait is not completion. Keep waiting through `running` and `verdict`.
+If synthesis failed, was skipped or the review was interrupted, report that limitation instead
+of writing a replacement recommendation. `depth` reports planned critique rounds, attempted
+rounds and completed rounds (including separate critique counts). A completed round has a
+reply entry for every seat and at least one usable reply; an all-failed, invalid, PASS-only
+or prohibited-tool round is attempted, not completed. Mixed rounds may still contain failed
+seats, so report those limitations alongside depth. Report actual depth:
+consensus can stop early, and zero critique rounds means the seats did not answer each other.
+
 When `nextAction.type` is `ask_user`, the coordinator must actually ask `gate.questions`:
 
 1. Use the host's available question/input tool. If there is no form, ask in normal chat.
@@ -881,7 +971,7 @@ on stdin. Keep real request and answer files outside a public repository.
     { "vendor": "claude", "lens": "cost", "mood": { "preset": "builder" }, "model": "sonnet", "effort": "low" }
   ],
   "chairman": { "vendor": "claude", "model": "sonnet", "effort": "medium" },
-  "options": { "critiqueRounds": 0, "memory": "stateless", "budget": { "claude": { "tokens": 120000 } } }
+  "options": { "critiqueRounds": 1, "memory": "stateless", "budget": { "claude": { "tokens": 120000 } } }
 }
 ```
 
@@ -889,15 +979,18 @@ Attended requests can set `options.autoContinueMs` (default 15000) and `options.
 (default 120000), each from 100 to 600000 milliseconds. Both are ignored in unattended mode.
 The overall wall clock remains a hard limit, including response windows and extensions.
 
-### A small review, and how to choose its settings
+### Choose the review depth
 
 The cost of a review is the number of calls, not the length of the request. Each seat call
 carries the provider's own overhead before the field notes arrive, so one more seat or round
 costs far more than one more sentence of context. `agent --help` repeats this recipe:
 
-- **Size.** Two seats, `critiqueRounds` 0, `memory` stateless and a budget per vendor. That is
-  three calls: two seats and the verdict. Add a seat or a round only when the user asks for
-  depth.
+- **Size.** Normally use two seats, `critiqueRounds` 1 (the engine default), `memory` stateless
+  and a budget per vendor: up to five calls before any repairs. Use zero critique rounds for
+  a requested quick comparison and disclose that the seats will not respond to each other.
+  Two critique rounds can suit a requested deep review or several consequential trade-offs,
+  within the person's time and budget. Consensus may end early. Do not automatically start
+  a second review or exceed agreed limits because disagreement remains.
 - **Lenses.** Give every seat a different lens, taken from what the decision could get wrong:
   risk, cost, evidence, reversibility, long-term effects, user impact. Two seats with the same
   lens mostly agree, which wastes a call.
