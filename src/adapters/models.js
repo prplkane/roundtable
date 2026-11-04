@@ -1,5 +1,5 @@
 // Which models each vendor offers, and from which plan up. Pure and browser-safe: the setup
-// screen groups a seat's model picker by the plan the CLI reports for that login.
+// screen annotates a seat's model picker with the plan the CLI reports for that login.
 //
 // From the vendors' own pages; re-check when a vendor ships or retires a model:
 //   claude  https://code.claude.com/docs/en/model-config (aliases; Opus 5.5 is the default on Pro
@@ -20,21 +20,36 @@ export const PLANS = {
 // min: the lowest plan that includes the model; below: what it means under that plan.
 export const MODELS = {
   claude: [
+    { id: 'fable', label: 'Fable 5.1', min: 'max', below: 'may bill usage credits' },
     { id: 'opus', label: 'Opus 5.5', min: 'pro', note: 'the default' },
     { id: 'sonnet', label: 'Sonnet 5.5', min: 'pro' },
     // Pin the intended Haiku version instead of relying on the CLI alias.
     { id: 'claude-haiku-4-5', label: 'Haiku 4.5', min: 'pro', note: 'lightest' },
-    { id: 'fable', label: 'Fable 5.1', min: 'max', below: 'may bill usage credits' },
   ],
   codex: [
+    { id: 'gpt-6-astra', label: 'GPT-6 Astra', min: 'prolite', note: 'GPT-6 Pro' },
     { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol', min: 'plus' },
     { id: 'gpt-6-sol', label: 'GPT-6 Sol', min: 'plus' },
+    // Listed by Codex CLI 0.159+ and learn.chatgpt.com/docs/models. Plan access can vary.
+    { id: 'gpt-6.1-terra', label: 'GPT-6.1 Terra', note: 'plan varies' },
     // efforts: only where a model takes fewer levels than its vendor offers (`codex debug models`
     // supported_reasoning_levels: the Luna models stop at max)
     { id: 'gpt-6-luna', label: 'GPT-6 Luna', min: 'free', note: 'lightest', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
-    { id: 'gpt-6-astra', label: 'GPT-6 Astra', min: 'prolite', note: 'GPT-6 Pro' },
   ],
 };
+
+// Broad capability tiers for the picker, not a benchmark ranking across vendors.
+// Unknown models retain their provider order after the known families.
+export function modelsByCapability(models = []) {
+  const tier = (model) => {
+    const name = `${model.id} ${model.label || ''}`.toLowerCase();
+    for (const [pattern, rank] of [[/\b(fable|astra)\b/, 6], [/\b(opus|argon)\b|\bgemini\b.*\bpro\b/, 5], [/\b(sol|sonnet)\b/, 4], [/\bterra\b/, 3], [/\b(flash|120b)\b/, 2], [/\b(haiku|luna|20b)\b/, 1]]) {
+      if (pattern.test(name)) return rank;
+    }
+    return 0;
+  };
+  return models.slice().sort((a, b) => tier(b) - tier(a));
+}
 
 // The effort levels a model takes: its vendor's levels, narrowed where the table names fewer.
 // A model the table does not know (a typed id, the CLI default) keeps the vendor's levels.
@@ -58,13 +73,14 @@ export function planLabel(vendor, plan) { return PLANS[vendor]?.[plan]?.[1] || (
 export function modelsForPlan(vendor, plan, models = MODELS[vendor] || []) {
   const ranks = PLANS[vendor];
   const have = ranks?.[plan]?.[0];
-  const onPlan = [], above = [];
+  const onPlan = [], above = [], unknown = [];
   for (const m of models) {
     const need = ranks?.[m.min]?.[0];
-    if (have == null || need == null || have >= need) onPlan.push(m);
+    if (have != null && ranks && need == null) unknown.push(m);
+    else if (have == null || need == null || have >= need) onPlan.push(m);
     else above.push({ ...m, note: m.below || `needs ${planLabel(vendor, m.min)}` });
   }
-  return { onPlan, above, plan: planLabel(vendor, plan) };
+  return { onPlan, above, unknown, plan: planLabel(vendor, plan) };
 }
 
 export function retired(vendor, id) {

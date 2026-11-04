@@ -129,13 +129,23 @@ export function verdictView(text, options = []) {
   };
 }
 
+// Visible search draft only: private context and discussion answers are never copied here.
+export function defaultSearchQuery(fieldNotes = {}) {
+  const question = String(fieldNotes.decision || '').trim();
+  const options = (fieldNotes.options || []).map((option) => String(option).trim()).filter(Boolean);
+  return [question, options.length ? `Options to investigate:\n${options.map((option) => `- ${option}`).join('\n')}` : ''].filter(Boolean).join('\n\n');
+}
+
+export function verdictHeadline(view) {
+  return view.pick === 'none' ? 'NO SINGLE OPTION RECOMMENDED' : view.option ? view.option.toLocaleUpperCase() : '';
+}
+
 // Copy the conclusion from source data, not the DOM: no hidden tooltips, seat cards or paths.
 export function verdictResultText(text, options = [], question = '') {
   const v = verdictView(text, options);
   if (!v.parsed) return String(text || '').trim();
   const parts = question.trim() ? [question.trim(), ''] : [];
-  parts.push('Answer', v.answer || 'No conclusion text was provided.');
-  if (v.pick) parts.push('', v.pick === 'none' ? 'No single option recommended.' : `Suggested option: ${v.option}`);
+  parts.push('Answer', ...(verdictHeadline(v) ? [verdictHeadline(v)] : []), v.answer || 'No conclusion text was provided.');
   if (v.reasons.length) parts.push('', 'Why', v.reasons.join('\n\n'));
   const list = (title, items) => { if (items.length) parts.push('', title, ...items.map((item) => `- ${item}`)); };
   list('Main reservation', v.dissent);

@@ -16,6 +16,15 @@
 
 ### Review fixes
 
+- Restore GPT-6.1 Terra in the Codex picker and order model families from stronger to lighter,
+  keeping plan restrictions visible. Custom model IDs remain editable instead of reverting to Default.
+- Align card controls and effort indicators; put provider warnings in an expandable row.
+  Refresh the status after an account notice is acknowledged or withdrawn.
+- Start the searcher query from the question and options, with a preview and an editable custom query.
+  Other context and discussion answers stay out of research.
+- Put the chairman's recommended option above its answer in bold uppercase. Rename history's
+  cleanup action to Clear; its confirmation still identifies the finished sessions to remove.
+
 - Stop a Codex searcher call after 40 seconds without progress and allow one fresh attempt
   when at least 30 seconds remain. Both attempts share the searcher's time limit and are
   recorded. Reconnect notices do not count as progress. Missing usage from the first attempt

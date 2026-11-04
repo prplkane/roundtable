@@ -2,7 +2,7 @@ import { rollup, hasUsableRound, positions } from '/src/engine.js';
 import { optionLabel } from '/src/contract.js';
 import { poolKey, poolVendor, poolAccount, hostKey, seatKind, initialSeatVendors, nextSeatLens, fillMissingSeatLenses, seatSetupIssue, hiddenMood, lightestModel, keyEnvName, HIDDEN_MOODS } from '/src/seats.js';
 import { avatar } from '/ui/avatars.js';
-import { modelsForPlan, retired, quotaWindows, quotaGroup, modelEfforts } from '/src/adapters/models.js';
+import { modelsForPlan, modelsByCapability, retired, quotaWindows, quotaGroup, modelEfforts } from '/src/adapters/models.js';
 import { project, projectedWindows, unknownUsageMessage } from '/src/estimate.js';
 import { PREFLIGHT_TTL_MS, lamp as preflightLamp } from '/src/preflight.js';
 import { createBrowserDiagnostics, requestAction } from '/ui/diagnostics.js';
@@ -15,7 +15,7 @@ import { loaderMarkup } from '/ui/loader.js';
 import { noteRecord, noteLabel } from '/src/notes.js';
 import { progressText } from '/src/progress.js';
 import { unlock as unlockSound, setSound, soundEnabled, playCue } from '/ui/sound.js';
-import { groupQuestions, answerMessage, stopExplanation, cancellationReason, remainingWindow, argumentHtml, ceremonyOutcome, verdictView, verdictResultText } from '/src/review-view.js';
+import { groupQuestions, answerMessage, stopExplanation, cancellationReason, remainingWindow, argumentHtml, ceremonyOutcome, verdictView, verdictResultText, verdictHeadline, defaultSearchQuery } from '/src/review-view.js';
 
 const $ = (id) => document.getElementById(id);
 const helpNotes = installHelp();
@@ -226,6 +226,10 @@ async function setup() {
   $('unattended').checked = settings.options?.unattended === true;
   const research = settings.options?.research;
   $('research-query').value = research?.query || '';
+  $('research-query-mode').value = settings.researchQueryMode === 'decision' || !research?.query ? 'decision' : 'custom';
+  syncResearchQuery();
+  $('notes').addEventListener('input', syncResearchQuery);
+  $('research-query-mode').addEventListener('change', () => { syncResearchQuery(); $('research-query').focus(); });
   $('research-searches').value = research?.maxSearches || 4;
   $('research-time').value = (research?.timeoutMs || 120000) / 1000;
   // a new searcher starts on its vendor's lightest model at low effort; a saved one keeps its own
@@ -264,7 +268,7 @@ async function setup() {
     if (S.draft.length <= 2) { $('seats-error').textContent = 'A table needs at least two seats.'; return; }
     S.draft.splice(Number(btn.closest('.seat').dataset.i), 1); renderSeats();
   });
-  chair.addEventListener('change', () => { $('chairman-model').value = ''; chairEffortOptions(); renderChair(); renderProjection(); });
+  chair.addEventListener('change', () => { S.customChairModel = false; $('chairman-model').value = ''; chairEffortOptions(); renderChair(); renderProjection(); });
   $('chair-card').addEventListener('input', () => { S.initialChair = false; });
   $('chair-card').addEventListener('change', () => { S.initialChair = false; });
   $('chair-pips').addEventListener('click', (ev) => {
@@ -279,7 +283,8 @@ async function setup() {
   $('chair-card').addEventListener('change', (ev) => {
     if (ev.target.id !== 'chair-model-pick') return;
     const v = ev.target.value;
-    if (v === '__other') { $('chairman-model').value = ''; renderChair(); $('chairman-model').focus(); return; }
+    S.customChairModel = v === '__other';
+    if (S.customChairModel) { $('chairman-model').value = ''; renderChair(); $('chairman-model').focus(); return; }
     const p = pickedModel($('chairman').value, v, $('chairman-effort').value);
     $('chairman-model').value = p.model; if (p.effort !== undefined) $('chairman-effort').value = p.effort || '';
     renderChair(); renderProjection();
@@ -301,7 +306,8 @@ async function setup() {
   $('searcher-vendor').addEventListener('change', () => { lightSearcher($('searcher-vendor').value); renderSearcher(); renderProjection(); requestPreflight(); });
   $('searcher-card').addEventListener('change', (ev) => {
     if (ev.target.id !== 'searcher-model-pick') return;
-    if (ev.target.value === '__other') { $('searcher-model').value = ''; renderSearcher(); $('searcher-model').hidden = false; $('searcher-model').focus(); return; }
+    S.customSearcherModel = ev.target.value === '__other';
+    if (S.customSearcherModel) { $('searcher-model').value = ''; renderSearcher(); $('searcher-model').focus(); return; }
     const p = pickedModel($('searcher-vendor').value, ev.target.value, $('searcher-effort').value);
     $('searcher-model').value = p.model; if (p.effort !== undefined) $('searcher-effort').value = p.effort || '';
     renderSearcher(); renderProjection();
@@ -374,25 +380,26 @@ function chairEffortOptions() {
 // teal Antigravity. Two seats of one vendor share it and differ by number, lens and avatar.
 const vendorColour = (vendor) => VENDOR_META[vendor]?.colour || 'ink';
 
-// The model picker for one login: the vendor's models grouped by the plan its CLI reported
-// (pre-flight), "other id…" for anything else. Antigravity lists one entry per model; its effort
+// The model picker for one login: capability order, with plan restrictions beside each model
+// and a separate custom-id mode. Antigravity lists one entry per model; its effort
 // pips pick the variant. Returns { html, other } (other: show the free-text id field).
 const familyOf = (vendor, model) => (VENDOR_META[vendor]?.catalogue?.families || []).find((f) => model === f.id || String(model).startsWith(`${f.id}-`));
-function modelPicker(vendor, account, value, idAttr = '') {
+function modelPicker(vendor, account, value, idAttr = '', custom = false) {
   const cat = VENDOR_META[vendor]?.catalogue || {};
   const plan = S.preflight[poolKey(vendor, (account || '').trim(), !!VENDOR_META[vendor]?.profiles)]?.plan || null;
   let current, groups;
   if (vendor === 'agy') {
     const fam = familyOf(vendor, value);
     current = fam ? fam.id : value ? '__other' : '';
-    groups = [{ label: 'On your account', items: cat.families || [] }];
+    groups = [{ label: 'Models · most capable first', items: modelsByCapability(cat.families || []) }];
   } else {
     const g = modelsForPlan(vendor, plan, cat.models || []);
-    current = !value ? '' : [...g.onPlan, ...g.above].some((m) => m.id === value) ? value : '__other';
-    groups = [{ label: g.plan ? `On your plan (${g.plan})` : 'Models', items: g.onPlan }, { label: g.plan ? 'Needs a higher plan' : '', items: g.above }];
+    current = !value ? '' : [...g.onPlan, ...g.above, ...g.unknown].some((m) => m.id === value) ? value : '__other';
+    groups = [{ label: 'Models · most capable first', items: modelsByCapability([...g.onPlan, ...g.above, ...g.unknown]) }];
   }
+  if (custom) current = '__other';
   const opt = (m) => `<option value="${esc(m.id)}" ${m.id === current ? 'selected' : ''}>${esc(m.label)}${m.note ? ` · ${esc(m.note)}` : ''}</option>`;
-  const html = `<select class="flat model-pick" ${idAttr} aria-label="Model"><option value="">default${cat.defaultLabel ? ` (${esc(cat.defaultLabel)})` : ' model'}</option>${groups.filter((g) => g.items.length).map((g) => `<optgroup label="${esc(g.label)}">${g.items.map(opt).join('')}</optgroup>`).join('')}<option value="__other" ${current === '__other' ? 'selected' : ''}>other id…</option></select>`;
+  const html = `<select class="flat model-pick" ${idAttr} aria-label="Model"><option value="">default${cat.defaultLabel ? ` (${esc(cat.defaultLabel)})` : ' model'}</option>${groups.filter((g) => g.items.length).map((g) => `<optgroup label="${esc(g.label)}">${g.items.map(opt).join('')}</optgroup>`).join('')}<option value="__other" ${current === '__other' ? 'selected' : ''}>Custom model ID…</option></select>`;
   return { html, other: current === '__other' };
 }
 // A picked model as the id to send: an Antigravity model takes its effort as the suffix.
@@ -409,7 +416,7 @@ function pickedModel(vendor, picked, effort) {
 function pipsHtml(vendor, chosen, model = '') {
   const levels = (vendor === 'agy' && familyOf(vendor, model)?.levels) || modelEfforts(vendor, model, VENDOR_META[vendor]?.catalogue?.efforts || []);
   const at = levels.indexOf(chosen);
-  return levels.map((l, i) => `<button type="button" class="pip ${i <= at ? 'on' : ''}" data-level="${l}" title="${l}" aria-label="Effort ${l}" aria-pressed="${l === chosen}"></button>`).join('')
+  return '<span class="pip-buttons">' + levels.map((l, i) => `<button type="button" class="pip ${i <= at ? 'on' : ''}" data-level="${l}" title="${l}" aria-label="Effort ${l}" aria-pressed="${l === chosen}"></button>`).join('') + '</span>'
     + `<span class="pip-label">${esc(chosen || defaultEffortLabel(vendor))}</span>`;
 }
 
@@ -418,6 +425,8 @@ function pipsHtml(vendor, chosen, model = '') {
 // for a quota in groups (agy), where only its group's windows count. The server's answer is for
 // the whole pool, so its quota part is redone here for this model.
 function poolLamp(vendor, account, model = '') {
+  const terms = VENDOR_META[vendor]?.terms;
+  if (terms && !terms.acknowledgedAt) return { cls: 'warn', kind: 'terms', note: 'Review the account notice before using this provider.' };
   const key = poolKey(vendor, account, !!VENDOR_META[vendor]?.profiles);
   const pf = S.preflight[key];
   const q = S.quota[key];
@@ -442,6 +451,7 @@ function poolLamp(vendor, account, model = '') {
 const seatHidden = (s) => (s.mood === 'custom' ? hiddenMood(s.moodText) : null);
 function lockHidden(s) {
   if (!seatHidden(s)) return;
+  s.customModel = false;
   const lightest = lightestModel(s.vendor, VENDOR_META[s.vendor]?.catalogue?.models);
   if (lightest) s.model = lightest;
   s.effort = 'low';
@@ -455,7 +465,7 @@ function seatRow(s, i) {
   const n = same.length > 1 ? ` ${same.indexOf(s) + 1}` : '';
   const lamp = poolLamp(s.vendor, seatAccount(s), s.model);
   // an endpoint seat has no catalogue: the model id is typed, and the card says it is required
-  const picker = api ? { html: '', other: true } : modelPicker(s.vendor, s.account, s.model || '');
+  const picker = api ? { html: '', other: true } : modelPicker(s.vendor, s.account, s.model || '', '', s.customModel);
   const gone = retired(s.vendor, (s.model || '').trim());
   const issue = S.seatIssue?.seatIndex === i ? S.seatIssue : null;
   const invalid = (field) => issue?.field === field ? 'aria-invalid="true"' : '';
@@ -479,8 +489,8 @@ function seatRow(s, i) {
       ${api ? `<label class="f"><span class="label">Endpoint</span><input class="flat endpoint" aria-label="Endpoint base URL" list="endpoints" value="${esc(s.endpoint || '')}" placeholder="http://localhost:11434/v1" title="The base URL of an OpenAI-compatible server, ending in /v1. Plain http only on this machine or a private network."></label>
       <label class="f"><span class="label">Key var</span><input class="flat keyenv" aria-label="Key environment variable" value="${esc(s.keyEnv || '')}" placeholder="none (local server)" title="The NAME of the environment variable that holds the key, set in the shell roundtable was started from. Never the key itself."></label>` : ''}
       <div class="f"><span class="label help-label" data-help="effort" tabindex="0" aria-describedby="help-effort">Effort</span><span class="pips ${hidden ? 'locked' : ''}">${pipsHtml(s.vendor, s.effort, s.model)}</span><select class="effort" hidden>${effortOptions(s.vendor, s.effort, s.model)}</select></div>
-      <span class="seat-note lamp-note ${lamp.cls === 'danger' || lamp.cls === 'warn' ? lamp.cls : ''}">${esc(lamp.note)}</span>
-      ${isoNote(s.vendor)}${termsNote(s.vendor)}
+      <span class="seat-note lamp-note ${lamp.cls === 'danger' || lamp.cls === 'warn' ? lamp.cls : ''}" title="${esc(lamp.note)}" tabindex="0">${esc(lamp.note)}</span>
+      ${cardNotices(s.vendor)}
       ${api ? '' : `<details class="seat-more"><summary>Login profile${s.account ? `: ${esc(s.account)}` : ''}</summary><input class="flat account" aria-label="Login profile" value="${esc(s.account || '')}" placeholder="none: your usual login" title="A second login of this CLI, for example a work subscription; node src/doctor.js shows how to log a profile in"></details>`}
     </div>
   </article>`;
@@ -542,17 +552,17 @@ function updateLamps() {
   $('refresh-status').textContent = S.preflighting ? 'Checking…' : 'Refresh status';
   $('preflight-status').textContent = S.preflighting ? 'Checking provider status…' : S.preflightError ||
     (S.preflightCheckedAt != null ? `Last check ${new Date(S.preflightCheckedAt).toLocaleTimeString()}` : '');
-  if (searcherOn()) { const lamp = poolLamp($('searcher-vendor').value, searcherAccount(), $('searcher-model').value.trim()); $('searcher-lamp').className = `lamp ${lamp.cls}`; $('searcher-lamp').title = lamp.note; }
+  if (searcherOn()) { const lamp = poolLamp($('searcher-vendor').value, searcherAccount(), $('searcher-model').value.trim()); $('searcher-lamp').className = `lamp ${lamp.cls}`; $('searcher-lamp').title = lamp.note; $('searcher-note').textContent = lamp.note; $('searcher-note').title = lamp.note; }
   $('seats').querySelectorAll('.seat').forEach((card) => {
     const s = S.draft[Number(card.dataset.i)]; if (!s) return;
     const l = poolLamp(s.vendor, seatAccount(s), s.model);
     const lampEl = card.querySelector('.lamp'); lampEl.className = `lamp ${l.cls}`; lampEl.title = l.note;
     const note = card.querySelector('.lamp-note');
-    if (note) { note.textContent = l.note; note.className = `seat-note lamp-note ${l.cls === 'danger' || l.cls === 'warn' ? l.cls : ''}`; }
+    if (note) { note.textContent = l.note; note.title = l.note; note.className = `seat-note lamp-note ${l.cls === 'danger' || l.cls === 'warn' ? l.cls : ''}`; }
   });
   const c = poolLamp($('chairman').value, chairAccount(), $('chairman-model').value.trim());
   $('chair-lamp').className = `lamp ${c.cls}`; $('chair-lamp').title = c.note;
-  $('chair-note').textContent = c.note; $('chair-note').className = `seat-note ${c.cls === 'danger' || c.cls === 'warn' ? c.cls : ''}`;
+  $('chair-note').textContent = c.note; $('chair-note').title = c.note; $('chair-note').className = `seat-note lamp-note ${c.cls === 'danger' || c.cls === 'warn' ? c.cls : ''}`;
   S.startConfirm = null; $('start').disabled = !!S.startPending; $('start').textContent = S.startPending ? 'Opening…' : 'Open the table';
 }
 
@@ -567,12 +577,12 @@ function renderChair() {
   $('chair-kind').textContent = seatKind(VENDOR_META[v], $('chairman-endpoint').value);
   $('chair-kind').classList.toggle('api', api);
   $('chair-api').hidden = !api; $('chair-profile').hidden = api;
-  const picker = api ? { html: '', other: true } : modelPicker(v, $('chairman-account').value, $('chairman-model').value.trim(), 'id="chair-model-pick"');
+  const picker = api ? { html: '', other: true } : modelPicker(v, $('chairman-account').value, $('chairman-model').value.trim(), 'id="chair-model-pick"', S.customChairModel);
   $('chair-model-slot').innerHTML = picker.html;
   $('chairman-model').hidden = !picker.other;
   $('chairman-model').placeholder = api ? 'model id (required)' : 'model id';
   $('chair-pips').innerHTML = pipsHtml(v, $('chairman-effort').value, $('chairman-model').value.trim());
-  $('chair-iso').innerHTML = isoNote(v) + termsNote(v);
+  $('chair-iso').innerHTML = cardNotices(v);
   updateLamps();
   restoreFocus();
 }
@@ -595,6 +605,13 @@ const termsNote = (vendor) => {
     ? `<button type="button" class="seat-note warn terms-note" data-terms="${esc(vendor)}">Account risk acknowledged · review</button>`
     : `<button type="button" class="seat-note danger terms-note" data-terms="${esc(vendor)}">Account risk: read before using ${esc(VENDOR_LABEL[vendor])}</button>`;
 };
+function cardNotices(vendor) {
+  const meta = VENDOR_META[vendor] || {};
+  const count = Number(!!meta.limitedIsolation) + Number(!!meta.terms);
+  if (!count) return '<span class="card-notices-empty" aria-hidden="true"></span>';
+  const pending = meta.terms && !meta.terms.acknowledgedAt;
+  return `<details class="card-notices ${pending ? 'danger' : 'warn'}"><summary title="Expand provider warnings"><span aria-hidden="true">⚠</span> ${pending ? 'Review required' : 'Warnings'} · ${count}</summary><div class="card-notices-body">${isoNote(vendor)}${termsNote(vendor)}</div></details>`;
+}
 const termsCards = () => [...draftSeats(), draftChairman(), searcherOn() ? draftSearcher() : null].filter((s) => VENDOR_META[s?.vendor]?.terms);
 const termsPending = () => [...new Set(termsCards().map((s) => s.vendor))].filter((v) => !VENDOR_META[v].terms.acknowledgedAt);
 const termsAccepted = () => termsCards().length > 0 && !termsPending().length;
@@ -628,6 +645,9 @@ async function answerTerms(acknowledged) {
     // acknowledging waits for the CLI's model list, a network call of up to 30 s
     const out = await requestJson(`/api/terms/${vendor}`, { acknowledged }, 45_000);
     VENDOR_META[vendor].terms = out.terms;
+    // The old held/ready snapshot no longer describes this consent state. An ordinary
+    // card edit may replace the queued refresh, so invalidate it before any redraw.
+    for (const key of Object.keys(S.preflight)) if (poolVendor(key) === vendor) delete S.preflight[key];
     if (out.catalogue) {
       VENDOR_META[vendor].catalogue = out.catalogue;
       const list = $(`models-${vendor}`);
@@ -648,7 +668,7 @@ $('vendor-terms-withdraw').addEventListener('click', () => answerTerms(false));
 $('vendor-terms').addEventListener('cancel', (event) => { if ($('vendor-terms-cancel').disabled) event.preventDefault(); });
 
 // ---------- the searcher ----------
-// Not a seat: one call before round 0 that gathers cited sources from its query alone. A card
+// Not a seat: one call before round 0 that gathers cited sources from its visible query. A card
 // next to the chairman's, added and removed like a seat, with its own vendor, model, effort and
 // login. The vendor list holds only CLIs that can search with every other tool off (/api/seats).
 const DEFAULT_SEARCHER = 'codex'; // research.js: what an agent request without a vendor gets
@@ -660,6 +680,7 @@ function draftSearcher() {
 // The lightest model at low effort: finding and quoting sources needs little reasoning. An
 // Antigravity id carries its level, so its "low" is part of the model.
 function lightSearcher(vendor) {
+  S.customSearcherModel = false;
   const cat = VENDOR_META[vendor]?.catalogue || {};
   const model = lightestModel(vendor, cat.models || []) || '';
   const p = vendor === 'agy' ? pickedModel(vendor, familyOf(vendor, model)?.id || model, 'low') : { model, effort: (cat.efforts || []).includes('low') ? 'low' : '' };
@@ -667,7 +688,17 @@ function lightSearcher(vendor) {
 }
 function setSearcher(on) {
   $('searcher-wrap').hidden = !on; $('add-searcher').hidden = on;
+  syncResearchQuery();
   renderSearcher(); renderProjection(); requestPreflight();
+}
+function syncResearchQuery() {
+  const automatic = $('research-query-mode').value === 'decision';
+  const query = $('research-query');
+  query.readOnly = automatic;
+  if (automatic) query.value = defaultSearchQuery({ decision: $('notes').querySelector('[name="decision"]').value, options: S.options });
+  $('research-query-note').textContent = automatic
+    ? 'The question and options below will be used for web research. Choose Custom query to edit or remove private details. Other context and answers stay out.'
+    : 'Only this query is used for web research. Keep private details out. The searcher gathers evidence; it does not vote.';
 }
 function renderSearcher() {
   if (!searcherOn()) return;
@@ -676,14 +707,15 @@ function renderSearcher() {
   $('searcher-card').style.setProperty('--seat', `var(--seat-${vendorColour(v)})`);
   $('searcher-avatar').innerHTML = avatar('searcher');
   $('searcher-profile').hidden = !VENDOR_META[v]?.profiles; // no login profiles for a CLI without a state directory
-  const picker = modelPicker(v, searcherAccount(), $('searcher-model').value.trim(), 'id="searcher-model-pick"');
+  const picker = modelPicker(v, searcherAccount(), $('searcher-model').value.trim(), 'id="searcher-model-pick"', S.customSearcherModel);
   $('searcher-model-slot').innerHTML = picker.html;
   $('searcher-model').hidden = !picker.other;
   $('searcher-model').setAttribute('list', `models-${v}`);
   $('searcher-pips').innerHTML = pipsHtml(v, $('searcher-effort').value, $('searcher-model').value.trim());
   const lamp = poolLamp(v, searcherAccount(), $('searcher-model').value.trim());
   $('searcher-lamp').className = `lamp ${lamp.cls}`; $('searcher-lamp').title = lamp.note;
-  $('searcher-iso').innerHTML = isoNote(v) + termsNote(v);
+  $('searcher-note').textContent = lamp.note; $('searcher-note').title = lamp.note;
+  $('searcher-iso').innerHTML = cardNotices(v);
   restoreFocus();
 }
 
@@ -695,12 +727,14 @@ function renderOptions(focus = null) {
   $('options-editor').innerHTML = S.options.map((o, i) => `<span class="opt ${seen.get(o.trim().toLowerCase()) > 1 ? 'dup' : ''}" data-i="${i}"><b>opt-${i + 1}</b><input value="${esc(o)}" size="${Math.max(8, o.length + 1)}" aria-label="Option ${i + 1}" placeholder="${i === 0 ? 'Stay as we are' : i === 1 ? 'Change it' : 'Another option'}"><button type="button" class="opt-x" aria-label="Remove option ${i + 1}" ${S.options.length <= 2 ? 'hidden' : ''}>×</button></span>`).join('')
     + `<button type="button" class="btn btn-small opt-add" ${S.options.length >= 12 ? 'hidden' : ''}>+ option</button>`;
   if (focus != null) $('options-editor').querySelectorAll('.opt input')[focus]?.focus();
+  syncResearchQuery();
 }
 function wireOptions() {
   const ed = $('options-editor');
   ed.addEventListener('input', (ev) => {
     const chip = ev.target.closest('.opt'); if (!chip) return;
     S.options[Number(chip.dataset.i)] = ev.target.value;
+    syncResearchQuery();
     ev.target.size = Math.max(8, ev.target.value.length + 1);
     const seen = S.options.map((o) => o.trim().toLowerCase());
     ed.querySelectorAll('.opt').forEach((c, i) => c.classList.toggle('dup', !!seen[i] && seen.indexOf(seen[i]) !== seen.lastIndexOf(seen[i])));
@@ -758,7 +792,8 @@ function onSeatEdit(ev) {
   if (ev.target.classList.contains('model-pick')) {
     if (ev.type !== 'change') return;
     const v = ev.target.value;
-    if (v === '__other') { s.model = ''; renderSeats(); $('seats').querySelectorAll('.seat')[S.draft.indexOf(s)]?.querySelector('.model')?.focus(); return; }
+    s.customModel = v === '__other';
+    if (s.customModel) { s.model = ''; renderSeats(); $('seats').querySelectorAll('.seat')[S.draft.indexOf(s)]?.querySelector('.model')?.focus(); return; }
     Object.assign(s, pickedModel(s.vendor, v, s.effort));
     renderSeats(); renderProjection(); return;
   }
@@ -777,7 +812,7 @@ function onSeatEdit(ev) {
     const pre = ev.type === 'change' && ev.target.classList.contains('endpoint') && ENDPOINT_PRESETS.find((e) => e.url === s.endpoint.trim());
     if (pre?.keyEnv && !s.keyEnv.trim()) s.keyEnv = pre.keyEnv;
   }
-  if (s.vendor !== vendorBefore) { s.model = ''; s.effort = ''; lockHidden(s); renderSeats(); return; } // the catalogue changed
+  if (s.vendor !== vendorBefore) { s.customModel = false; s.model = ''; s.effort = ''; lockHidden(s); renderSeats(); return; } // the catalogue changed
   if (ev.type === 'change' && (ev.target.classList.contains('mood-text') || ev.target.classList.contains('mood'))) lockHidden(s);
   if (ev.type === 'change' && ev.target.classList.contains('mood-text')) { renderSeats(); renderProjection(); return; }
   // the avatar follows the mood, the lamp the login profile or the endpoint: redraw the cards (not while typing)
@@ -949,6 +984,11 @@ async function start() {
   unlockSound(); // inside the click, so the opening cue may play once the board is up
   clearSetupValidation();
   const f = $('notes');
+  const modelInputs = [...$('seats').querySelectorAll('.model:not([hidden])'), $('chairman-model'), ...(searcherOn() ? [$('searcher-model')] : [])];
+  const emptyModel = modelInputs.find((input) => !input.hidden && !input.value.trim());
+  if (emptyModel) { $('setup-error').textContent = 'Enter a model ID, or choose a model from the list.'; emptyModel.focus(); return; }
+  syncResearchQuery();
+  if (searcherOn() && $('research-query').value.length > 2000) { $('setup-error').textContent = 'The search query exceeds 2,000 characters. Choose Custom query and shorten it.'; $('research-query-mode').focus(); return; }
   const notes = {};
   for (const el of f.querySelectorAll('input[name], textarea[name]')) notes[el.name] = el.value.trim();
   notes.options = S.options.map((o) => o.trim()).filter(Boolean).join('\n');
@@ -964,7 +1004,7 @@ async function start() {
     localStorage.setItem('roundtable.notes', JSON.stringify(notes));
     localStorage.setItem('roundtable.seats', JSON.stringify(S.draft.map((s) => ({ ...s, keyEnv: keyEnvName(s.keyEnv) }))));
     localStorage.setItem('roundtable.budget', JSON.stringify(S.budget));
-    localStorage.setItem('roundtable.settings', JSON.stringify({ options: body.options, chairman: {
+    localStorage.setItem('roundtable.settings', JSON.stringify({ options: body.options, researchQueryMode: $('research-query-mode').value, chairman: {
       vendor: $('chairman').value, model: $('chairman-model').value, effort: $('chairman-effort').value,
       account: $('chairman-account').value, endpoint: $('chairman-endpoint').value, keyEnv: keyEnvName($('chairman-keyenv').value),
     } }));
@@ -1077,7 +1117,7 @@ async function loadRecent() {
   };
   const shown = S.showAllDebates ? list : list.slice(0, 5);
   $('recent-list').innerHTML = shown.map(row).join('');
-  // the list's foot: Show all on the left, Clear finished on the right, both quiet text actions
+  // the list's foot: Show all on the left, Clear on the right, both quiet text actions
   $('debates-more-slot').innerHTML = list.length > 5 ? `<button class="text-btn" id="debates-more" type="button">${S.showAllDebates ? 'Show the latest 5' : `Show all ${list.length}`}</button>` : '';
   $('recent-foot').hidden = false;
 }
@@ -1091,7 +1131,7 @@ function confirmHistoryDeletion(id = null) {
   $('delete-history-title').textContent = id ? 'Delete session?' : `Clear ${selected.length} finished session${selected.length === 1 ? '' : 's'}?`;
   $('delete-history-detail').textContent = id ? selected[0].decision : 'Only these finished sessions will be removed. Running and interrupted sessions are kept.';
   $('delete-history-error').hidden = true;
-  $('delete-history-confirm').textContent = id ? 'Delete session' : 'Clear finished';
+  $('delete-history-confirm').textContent = id ? 'Delete session' : 'Clear';
   $('delete-history').showModal();
 }
 $('clear-finished').addEventListener('click', (ev) => { ev.preventDefault(); confirmHistoryDeletion(); });
@@ -1417,8 +1457,8 @@ function renderVerdict() {
   const positions = Object.entries(finals).map(([label, lenses]) => `<li><strong>${esc(label)}</strong> · ${lenses.length} ${lenses.length === 1 ? 'seat' : 'seats'}<span class="hint">${esc(lenses.join(', '))}</span></li>`).join('');
   const detailsOpen = $('verdict-details')?.open;
   $('verdict-body').innerHTML = view.parsed
-    ? `<section class="section wide verdict-answer"><h3 class="label">${view.questions.needed.length ? 'Answer · clarification needed' : 'Answer'}</h3><p>${esc(view.answer || 'No conclusion text was provided.')}</p>
-         ${view.pick ? `<p class="hint verdict-pick">${view.pick === 'none' ? 'No single option recommended.' : `Suggested option: ${esc(view.option)}`}</p>` : ''}</section>
+    ? `<section class="section wide verdict-answer"><h3 class="label">${view.questions.needed.length ? 'Answer · clarification needed' : 'Answer'}</h3>
+         ${verdictHeadline(view) ? `<p class="verdict-pick"><strong>${esc(verdictHeadline(view))}</strong></p>` : ''}<p>${esc(view.answer || 'No conclusion text was provided.')}</p></section>
        ${view.reasons.length ? `<section class="section wide"><h3 class="label">Why</h3>${view.reasons.map((p) => `<p>${esc(p)}</p>`).join('')}</section>` : ''}
        ${section('Main reservation', view.dissent)}${section('What could change this', view.reconsider)}
        ${questionSection('Clarification needed from you', view.questions.needed, 'These answers could change the conclusion. The review is finished and will not continue automatically.', 'verdict-needed')}
@@ -1867,7 +1907,7 @@ $('theme').addEventListener('click', () => {
 try { if (localStorage.getItem('roundtable.theme') === 'night') document.documentElement.dataset.theme = 'night'; } catch {}
 renderTheme();
 
-// Panel folds start closed; the browser remembers one the person opened. Clear finished sits in
+// Panel folds start closed; the browser remembers one the person opened. Clear sits in
 // the debates summary, so its click must not toggle the fold (its handler prevents that).
 for (const [id, key] of [['recent', 'roundtable.debates'], ['projection-panel', 'roundtable.quota']]) {
   try { if (localStorage.getItem(key) === 'open') $(id).open = true; } catch {}

@@ -22,9 +22,9 @@ test('vendorCatalogue merges the agy list over the static hints; codex never quo
   assert.deepEqual(cat.agy.models, [{ id: 'gemini-4-argon-medium', label: 'Gemini 4 Argon (Medium)' }]);
   assert.equal(cat.agy.effortInModel, true);
   // claude and codex come from the plan table (adapters/models.js); agy is grouped by model
-  assert.deepEqual(cat.claude.models.map((m) => m.id), ['opus', 'sonnet', 'claude-haiku-4-5', 'fable']);
+  assert.deepEqual(cat.claude.models.map((m) => m.id), ['fable', 'opus', 'sonnet', 'claude-haiku-4-5']);
   assert.equal(cat.claude.defaultLabel, 'Opus 5.5');
-  assert.deepEqual(cat.codex.models.map((m) => m.id), ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6-astra']);
+  assert.deepEqual(cat.codex.models.map((m) => m.id), ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6-sol', 'gpt-6.1-terra', 'gpt-6-luna']);
   assert.deepEqual(cat.agy.families, [{ id: 'gemini-4-argon', label: 'Gemini 4 Argon', levels: ['medium'] }]);
   assert.match(cat.agy.pool, /Google/);
   // with nothing readable the static hints stand
@@ -38,6 +38,7 @@ test('models by plan: grouped for the plan the CLI reports; a retired id is name
   const plus = modelsForPlan('codex', 'plus');
   assert.deepEqual(plus.onPlan.map((m) => m.id), ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna']);
   assert.deepEqual(plus.above.map((m) => [m.id, m.note]), [['gpt-6-astra', 'needs Pro']]);
+  assert.deepEqual(plus.unknown.map((m) => m.id), ['gpt-6.1-terra'], 'a listed model is not a verified plan entitlement');
   assert.equal(modelsForPlan('codex', 'prolite').above.length, 0, 'Pro (prolite) has them all');
   assert.equal(modelsForPlan('codex', 'free').onPlan.map((m) => m.id).join(), 'gpt-6-luna');
   const pro = modelsForPlan('claude', 'pro');
@@ -48,4 +49,13 @@ test('models by plan: grouped for the plan the CLI reports; a retired id is name
   assert.equal(retired('codex', 'gpt-6.1-sol'), null);
   const fams = agyFamilies([{ id: 'gemini-4-argon-high', label: 'Gemini 4 Argon (High)' }, { id: 'gemini-4-argon-low', label: 'Gemini 4 Argon (Low)' }, { id: 'gpt-oss-120b-medium', label: 'GPT-OSS 120B (Medium)' }]);
   assert.deepEqual(fams, [{ id: 'gemini-4-argon', label: 'Gemini 4 Argon', levels: ['low', 'high'] }, { id: 'gpt-oss-120b', label: 'GPT-OSS 120B', levels: ['medium'] }]);
+});
+
+test('model pickers put stronger families first across plan groups and keep unknown models', async () => {
+  const { modelsByCapability, modelsForPlan } = await import('../src/adapters/models.js');
+  const plan = modelsForPlan('claude', 'pro');
+  assert.deepEqual(modelsByCapability([...plan.onPlan, ...plan.above]).map((m) => m.id), ['fable', 'opus', 'sonnet', 'claude-haiku-4-5']);
+  const mixed = ['gemini-4-flash', 'claude-haiku-4-5', 'claude-opus-5-5', 'gemini-4-argon', 'claude-sonnet-5-5', 'new-model'].map((id) => ({ id }));
+  assert.deepEqual(modelsByCapability(mixed).map((m) => m.id), ['claude-opus-5-5', 'gemini-4-argon', 'claude-sonnet-5-5', 'gemini-4-flash', 'claude-haiku-4-5', 'new-model']);
+  assert.equal(mixed[0].id, 'gemini-4-flash', 'sorting must not mutate the catalogue');
 });

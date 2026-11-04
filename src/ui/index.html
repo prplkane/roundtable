@@ -42,7 +42,7 @@
         <summary class="panel-title fold"><span>Debates</span><span class="hint" id="recent-count"></span></summary>
         <p class="history-notice" id="history-notice" role="status" hidden></p>
         <div id="recent-list" class="debates"></div>
-        <div class="debates-foot" id="recent-foot" hidden><span id="debates-more-slot"></span><button class="text-btn" id="clear-finished" type="button" disabled>Clear finished</button></div>
+        <div class="debates-foot" id="recent-foot" hidden><span id="debates-more-slot"></span><button class="text-btn" id="clear-finished" type="button" disabled>Clear</button></div>
       </details>
       <details class="local-data" id="local-data">
         <summary>Local data and backups</summary>
@@ -111,7 +111,7 @@
                 <label class="f"><span class="label">Key var</span><input id="chairman-keyenv" class="flat" placeholder="none (local server)" aria-label="Chairman key environment variable" title="The NAME of the environment variable that holds the key, set in the shell roundtable was started from. Never the key itself."></label>
               </div>
               <div class="f"><span class="label help-label" data-help="effort" tabindex="0" aria-describedby="help-effort">Effort</span><span class="pips" id="chair-pips"></span><select id="chairman-effort" class="effort" hidden><option value="">default</option></select></div>
-              <span class="seat-note" id="chair-note"></span>
+              <span class="seat-note lamp-note" id="chair-note" tabindex="0"></span>
               <span class="iso-slot" id="chair-iso"></span>
               <details class="seat-more" id="chair-profile"><summary>Login profile</summary><input id="chairman-account" class="flat" placeholder="none: your usual login" aria-label="Chairman login profile"></details>
             </div>
@@ -131,11 +131,13 @@
               <span class="lamp idle" id="searcher-lamp" title="not checked"></span>
             </div>
             <div class="seat-bd">
-              <p class="chair-role">Searches the web for your query once, before the first round, and gives every seat and the chairman the same cited sources. It sees only the query, never your notes, and never argues or votes.</p>
+              <p class="chair-role">Gathers web evidence before the first round and shares the same cited sources with every seat and the chairman. It investigates the question and options, without arguing or voting.</p>
+              <label class="f"><span class="label">Search</span><select id="research-query-mode" class="flat" aria-label="Search query source"><option value="decision">Use question and options</option><option value="custom">Custom query</option></select></label>
               <label class="f f-top"><span class="label">Query</span><textarea id="research-query" class="flat" maxlength="2000" rows="2" placeholder="What should be checked on the web?" aria-describedby="research-query-note"></textarea></label>
-              <span class="seat-note" id="research-query-note">Only this query is sent to the web. Keep private details out of it.</span>
+              <span class="seat-note" id="research-query-note">Review the query before starting. Other context and answers stay out of web research.</span>
               <div class="f"><span class="label help-label" data-help="effort" tabindex="0" aria-describedby="help-effort">Effort</span><span class="pips" id="searcher-pips"></span><input id="searcher-effort" type="hidden"></div>
               <div class="f"><span class="label help-label" data-help="searchLimits" tabindex="0" aria-describedby="help-searchLimits">Limits</span><span class="searcher-limits"><input id="research-searches" class="flat" type="number" min="1" max="8" value="4" aria-label="Search limit"> searches · <input id="research-time" class="flat" type="number" min="30" max="600" value="120" aria-label="Time limit in seconds"> s</span></div>
+              <span class="seat-note lamp-note" id="searcher-note" tabindex="0"></span>
               <span class="iso-slot" id="searcher-iso"></span>
               <details class="seat-more" id="searcher-profile"><summary>Login profile</summary><input id="searcher-account" class="flat" placeholder="none: your usual login" aria-label="Searcher login profile"></details>
             </div>

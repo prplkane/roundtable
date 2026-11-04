@@ -25,8 +25,9 @@ before your first live review.
    eight participants, called seats, and give each a perspective such as risk, cost or evidence.
    Seats can use different models or share the same provider.
 2. **Gather sources first (optional).** Add a searcher: one extra call, on the provider you
-   pick, that searches the web for a public question you write. Every seat and the chairman
-   then read the same cited sources. It never sees your notes and never argues or votes.
+   pick. Its query starts from your question and options; review it or write a custom query.
+   Every seat and the chairman then read the same cited sources. Other context and discussion
+   answers stay out of research. The searcher never argues or votes.
 3. **Collect independent positions.** Each seat answers before seeing the others' responses.
    The board then pauses for your input.
 4. **Discuss the differences.** A critique round lets seats review the previous replies and

@@ -249,7 +249,7 @@ export const ADAPTERS = {
     // CLI effort vocabulary; availability depends on the selected model and installed CLI.
     // ~/.codex/config.toml is not a source: --ignore-user-config keeps it from the seat.
     effortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-    modelHints: [], // the plan table in models.js stands in; the CLI has no list command
+    modelHints: [], // curated capability and plan hints in models.js; no catalogue refresh at startup
     pool: 'ChatGPT subscription',
     promptVia: 'stdin',
     output: 'jsonl',
