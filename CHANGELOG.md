@@ -1,6 +1,19 @@
 # Changelog
 
-## Unreleased
+## 0.6.3
+
+### Review workflow
+
+- Make attended checkpoints finite in both the browser and agent client: 15 seconds for a
+  correction window and two minutes for a question by default, configurable separately.
+  An unanswered window continues with unknowns intact; it never supplies an answer or accepts
+  the recommendation. The hard wall clock still applies.
+- Replace permanent holds on incidental browser clicks with bounded extensions while writing
+  or requesting More time. Show question countdowns, draw attention in the tab title, and
+  retain automatic-continuation notices after reload.
+- Return an explicit question handoff, answer template, deadline and commands to coordinating
+  agents. Add `agent hold` for a bounded extension and `wait --after-round` to await a response
+  without asking the same question again. Empty checkpoints need no user confirmation.
 
 ### Documentation
 

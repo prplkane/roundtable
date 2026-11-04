@@ -145,7 +145,8 @@
         </div>
         <div class="fields fields-row rules">
           <div class="field"><label class="label help-label" data-help="critique" tabindex="0" for="critique-rounds" aria-describedby="help-critique">Critique rounds</label><input id="critique-rounds" type="number" min="0" max="8" value="1" aria-describedby="help-critique"></div>
-          <div class="field"><label class="label help-label" data-help="auto" tabindex="0" for="auto" aria-describedby="help-auto">Auto-continue (s)</label><input id="auto" type="number" min="0.1" step="0.1" max="600" value="60" aria-describedby="help-auto"></div>
+          <div class="field"><label class="label help-label" data-help="auto" tabindex="0" for="auto" aria-describedby="help-auto">Review window (s)</label><input id="auto" type="number" min="0.1" step="0.1" max="600" value="15" aria-describedby="help-auto"></div>
+          <div class="field"><label class="label help-label" data-help="questionWait" tabindex="0" for="question-wait" aria-describedby="help-questionWait">Answer window (s)</label><input id="question-wait" type="number" min="0.1" step="0.1" max="600" value="120" aria-describedby="help-questionWait"></div>
           <div class="field"><label class="label help-label" data-help="wall" tabindex="0" for="wall" aria-describedby="help-wall">Wall clock (min)</label><input id="wall" type="number" min="1" max="180" value="30" aria-describedby="help-wall"></div>
           <div class="field"><label class="label help-label" data-help="memory" tabindex="0" for="memory" aria-describedby="help-memory">Memory</label><select id="memory" aria-describedby="help-memory"><option value="stateless">stateless: fresh call per round</option><option value="resume">resume: re-send the thread</option></select></div>
           <div class="field field-check"><label class="label help-label" data-help="unattended" tabindex="0" for="unattended" aria-describedby="help-unattended">Unattended</label><label class="check"><input id="unattended" type="checkbox" aria-describedby="help-unattended"><span class="switch" aria-hidden="true"></span><span class="switch-text" data-off="off" data-on="armed"></span></label></div>
@@ -185,9 +186,10 @@
 
       <section id="questions-panel" class="panel questions-panel" hidden aria-labelledby="questions-heading">
         <div class="panel-title"><span id="questions-heading">Questions for you</span><span id="questions-count" class="hint"></span></div>
-        <p class="hint">Answer here once. Identical questions share an answer; each answer goes to every seat with its question. Leave anything you do not know blank.</p>
+        <p class="hint">Your answers go to every seat. Leave anything you do not know blank. When the timer ends, the review continues with unanswered questions still unknown.</p>
+        <p id="question-timing" class="hint" aria-live="off"></p>
         <div id="question-inputs"></div>
-        <div class="row question-actions"><span id="answer-count" class="hint" role="status"></span><button class="btn btn-primary" id="send-answers" type="button">Send answers and continue</button></div>
+        <div class="row question-actions"><span id="answer-count" class="hint" role="status"></span><button class="btn" id="more-time" type="button">More time</button><button class="btn btn-primary" id="send-answers" type="button">Send answers and continue</button></div>
       </section>
 
       <section id="verdict" class="panel verdict" hidden>

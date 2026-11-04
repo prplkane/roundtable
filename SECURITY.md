@@ -125,6 +125,12 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   resume and verdict requests can make calls under the same budgets and limits as the board.
   Writes are never automatically retried. JSON output contains private review content; treat
   request files, answer files and saved command output like transcripts.
+  Attended response windows continue automatically after the configured interval. A timeout
+  records unanswered questions; it is not a human note, acceptance or a supplied fact. Reading
+  state never extends the window. The authenticated `hold` action grants a bounded extension
+  within the overall wall clock, and stale-round answers and extensions are refused. Browser
+  drafts are never submitted by a timer. Agent snapshots provide a question handoff and answer
+  template; the host agent is responsible for presenting the questions and collecting replies.
   Research snapshots project known fields only: fixed failure descriptions, bounded progress
   and validated source records. Raw CLI error text remains in board/transcript details, not
   the agent snapshot; saved older failures receive the same projection.

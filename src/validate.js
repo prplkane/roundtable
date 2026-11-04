@@ -6,7 +6,7 @@ import { researchSettings } from './research.js';
 
 const LIMITS = {
   decision: 2000, option: 200, options: [2, 12], field: 4000, exportTo: 1024, seats: [2, 8], message: 4000,
-  critiqueRounds: [0, 8], autoContinueMs: [100, 600_000], wallClockMs: [60_000, 10_800_000], callTimeoutMs: [30_000, 1_800_000], endpoint: 500,
+  critiqueRounds: [0, 8], autoContinueMs: [100, 600_000], questionWaitMs: [100, 600_000], wallClockMs: [60_000, 10_800_000], callTimeoutMs: [30_000, 1_800_000], endpoint: 500,
 };
 export const BODY_LIMIT = 256 * 1024;
 const NOTE_FIELDS = ['constraints', 'reversibility', 'known', 'assumed', 'deadline'];
@@ -64,7 +64,7 @@ export function validateDebateRequest(body, { adapters }) {
   const options_ = {};
   if (o.research != null) options_.research = researchSettings(o.research);
   if (o.critiqueRounds != null) options_.critiqueRounds = int(o.critiqueRounds, 'critiqueRounds', LIMITS.critiqueRounds);
-  for (const k of ['autoContinueMs', 'wallClockMs', 'callTimeoutMs']) if (o[k] != null) options_[k] = int(o[k], k, LIMITS[k]);
+  for (const k of ['autoContinueMs', 'questionWaitMs', 'wallClockMs', 'callTimeoutMs']) if (o[k] != null) options_[k] = int(o[k], k, LIMITS[k]);
   if (o.memory != null) { if (!['stateless', 'resume'].includes(o.memory)) fail('memory', 'stateless or resume'); options_.memory = o.memory; }
   // an endpoint seat has no thread at the vendor to continue, so `resume` prompts would reach it
   // with no context: refuse the table rather than run it on half-prompts

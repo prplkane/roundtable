@@ -58,11 +58,17 @@ export function reviewSnapshot(d) {
     ...(state.research ? { research: researchSnapshot(state.research) } : {}),
     ...(state.stopReason ? { explanation: stopExplanation(state.stopReason, state.stopContext) } : {}),
     actions: d.finished ? (!verdict || verdict.failed || verdict.skipped) && hasUsableRound(rounds, state.seats.length) ? ['verdict'] : []
-      : d.interrupted ? ['resume'] : status === 'error' ? [] : [gate ? 'answer' : 'wait', ...(d.debate?.canFinish() ? ['finish'] : []), 'stop'],
+      : d.interrupted ? ['resume'] : status === 'error' ? [] : [...(gate ? ['answer', 'hold'] : ['wait']), ...(d.debate?.canFinish() ? ['finish'] : []), 'stop'],
     // reopenCalls: the seats already agree, so empty answers end the discussion; any answer text
     // or message runs one more round at this many calls. Absent when answering cannot reopen.
-    gate: gate ? { round: gate.round, mode: gate.mode, stop: gate.stop, questions: groupQuestions(gate.questions),
+    gate: gate ? { round: gate.round, mode: gate.mode, reason: gate.reason, stop: gate.stop, questions: groupQuestions(gate.questions),
+      autoContinueAt: d.pending.autoContinueAt ?? null, timeoutBehavior: 'continue_without_answers',
       ...(gate.reopenable ? { reopenCalls: (state.seats || []).length } : {}) } : null,
+    nextAction: gate?.questions.length ? {
+      type: 'ask_user',
+      instruction: 'Ask gate.questions using your available user-input tool. If there is no form, ask in chat. Group overlapping questions without losing their IDs. Do not invent answers. Tell the user when the response window closes; unanswered questions remain unknown. Read status before submitting a reply because the review may have continued.',
+      answerTemplate: { round: gate.round, answers: groupQuestions(gate.questions).map((q) => ({ id: q.id, text: '' })) },
+    } : { type: gate || ['researching', 'running', 'verdict'].includes(status) ? 'wait' : status === 'done' ? 'report_result' : 'check_status' },
     replies: (rounds[lastRound] || []).map((r) => ({ lens: r.seat.lens, vendor: r.seat.vendor,
       status: cancellationReason(r, state.stopReason, lastRound) ? 'cancelled' : r.failed ? 'failed' : r.valid ? 'replied' : 'invalid',
       // a recovered stall on a complete reply: the provider connection was started again this many times

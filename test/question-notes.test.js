@@ -49,8 +49,9 @@ test('false questions neither block critique rounds nor add a final gate; real f
       assert.equal(state.stopReason, 'round-cap');
       assert.equal(calls.length, 2 * (critiqueRounds + 1) + 1, 'no retry or classifier model call');
       assert.deepEqual(gates.map((g) => [g.round, g.mode]), real
-        ? Array.from({ length: critiqueRounds + 1 }, (_, round) => [round, 'blocking'])
-        : [[0, 'blocking'], ...(critiqueRounds === 2 ? [[1, 'countdown']] : [])]);
+        ? Array.from({ length: critiqueRounds + 1 }, (_, round) => [round, 'countdown'])
+        : [[0, 'countdown'], ...(critiqueRounds === 2 ? [[1, 'countdown']] : [])]);
+      assert.ok(gates.every((g) => g.autoContinueMs === (real ? 120000 : 15000)), 'only real questions get the longer window');
       if (!real) assert.ok(gates.every((g) => g.questions.length === 0));
     }
   }
@@ -98,6 +99,23 @@ test('agent and human note sources reach seats, retries, chairman, saved rows, r
     assert.equal(noteLabel(rb.initialNotes[0]), 'Agent note');
     assert.equal(noteLabel(rb.initialNotes[1]), 'You said');
   }
+});
+
+test('automatic continuation records a timeout without inventing a human answer', async () => {
+  const rows = [], calls = [];
+  const state = await createDebate({ fieldNotes, seats, options: { critiqueRounds: 0 },
+    store: { append: (row) => rows.push(row) },
+    gate: async () => ({ action: 'continue', reason: 'input-timeout' }),
+    runner: async (vendor, prompt) => {
+      calls.push(prompt);
+      return response(prompt.startsWith('You are the chairman') ? verdict : reply(vendor, 'What is the deadline?'));
+    },
+  }).run();
+  assert.ok(state.verdict && !state.verdict.failed);
+  assert.deepEqual(rows.filter((r) => r.type === 'gate-timeout'), [{ type: 'gate-timeout', round: 0, unanswered: 2 }]);
+  assert.ok(!rows.some((r) => r.type === 'human'));
+  assert.match(calls.at(-1), /Automatic continuation is not a human answer or agreement/);
+  assert.match(calls.at(-1), /What is the deadline\?/);
 });
 
 test('a stop note keeps its source for a separately requested verdict, without starting one on Stop', async () => {

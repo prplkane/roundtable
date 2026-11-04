@@ -13,3 +13,6 @@ When asked to use Roundtable for a review, prefer `node src/cli.js agent` over G
 Read `docs/workflow.md`, section 8: check the local provider status, validate the JSON request,
 start only the requested review, and wait for questions or completion. Never invent answers,
 silently continue through questions, or accept a recommendation for the user.
+When `nextAction.type` is `ask_user`, present the questions with an available user-input tool,
+or ask in chat if no form is available. Include the response deadline. Read the current state
+before submitting an answer: the server may have continued with the questions unanswered.
