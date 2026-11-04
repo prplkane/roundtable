@@ -42,6 +42,31 @@ work well yet is listed under [Known issues](docs/workflow.md#known-issues).
 
 ## Quick start
 
+### Connect your assistant once
+
+Package the current checkout, install the generated archive globally, then connect your assistant:
+
+```bash
+npm pack
+npm install -g ./prplkane-roundtable-0.6.3.tgz
+roundtable setup --client codex
+```
+
+Use `--client claude`, `--client agy`, or `--client all` for the other supported assistants.
+Restart the assistant or reload its MCP connections. In any project, ask **"Use Roundtable
+to review this decision."** The installed MCP tools start the local board as needed, return
+questions to the coordinating assistant, and wait for the chairman's recommendation.
+You do not need to open this repository or start a browser for each review.
+
+Setup installs a user-level workflow skill and MCP connection. `roundtable setup --client codex
+--check` checks it; `--remove` removes its unchanged entries. After updating Roundtable, rerun
+setup to refresh the skill, and use `roundtable server restart` once active reviews finish.
+Installing the archive keeps the command working if you move or remove the checkout;
+`npm install -g .` can create a link back to it. Use the filename printed by `npm pack`.
+See [assistant setup](docs/workflow.md#connect-an-assistant-for-every-project)
+for paths, demo mode and troubleshooting. The first public npm release will also support
+`npm install -g @prplkane/roundtable`; until then use the checkout command above.
+
 ### Try the demo
 
 The demo uses scripted replies. It needs no provider account and makes no model calls.
@@ -120,7 +145,8 @@ node src/cli.js agent --help
 
 The JSON client provides `status`, `check`, `start`, `wait` and `answer` commands, plus controls
 to finish or stop a review. Questions remain paused until answered, explicitly skipped or
-the time limit expires. See the [agent workflow](docs/workflow.md#8-run-a-debate-without-the-browser)
+their answer window expires (two minutes by default). Silence continues with unknowns intact.
+See the [agent workflow](docs/workflow.md#8-run-a-debate-without-the-browser)
 for request examples and response fields.
 
 | Command | Purpose |
@@ -128,6 +154,9 @@ for request examples and response fields.
 | `npm run fake` | Open the scripted demo on port 4748. |
 | `npm start` | Open the live board on port 4747. |
 | `npm run doctor` | Check installed providers and available status without model calls. |
+| `roundtable setup --client all` | Connect MCP tools and the skill across projects for Codex, Claude and AGY. |
+| `roundtable server status` | Inspect the background board; `stop` and `restart` refuse active reviews. |
+| `roundtable mcp` | Serve the agent workflow over MCP stdio. |
 | `npm run export -- <debate> <folder>` | Export a decision record and update its index. |
 | `npm test` | Run offline unit and integration tests, without vendor CLIs or model calls. |
 

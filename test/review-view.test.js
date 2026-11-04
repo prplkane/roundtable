@@ -72,6 +72,28 @@ test('agent state: a unanimous round 0 says what answering would cost; other gat
   assert.equal(open.gate.reopenCalls, undefined);
 });
 
+test('agent depth counts usable rounds separately from completed failed attempts, live and replayed', async () => {
+  const { reviewSnapshot } = await import('../src/snapshot.js');
+  const seats = [{ vendor: 'claude', lens: 'risk' }, { vendor: 'codex', lens: 'cost' }];
+  const replies = (patch = {}) => seats.map((seat) => ({ seat, valid: true, parsed: {}, ...patch }));
+  const scenarios = [
+    { rounds: [replies(), replies({ failed: true })], attempted: 2, usable: 1, critiques: 0 },
+    { rounds: [replies(), replies({ parsed: { pass: true } })], attempted: 2, usable: 1, critiques: 0 },
+    { rounds: [replies(), replies({ usedTools: true }), replies({ toolFail: true })], attempted: 3, usable: 1, critiques: 0 },
+    { rounds: [replies(), replies({ valid: false })], attempted: 2, usable: 1, critiques: 0 },
+    { rounds: [replies(), replies().slice(0, 1)], attempted: 1, usable: 1, critiques: 0 },
+    { rounds: [replies(), [replies()[0], replies({ failed: true })[1]]], attempted: 2, usable: 2, critiques: 1 },
+  ];
+  for (const scenario of scenarios) {
+    const state = { seats, rounds: scenario.rounds, options: { critiqueRounds: 2 }, fieldNotes: { options: ['A', 'B'] } };
+    for (const source of [{ debate: { state } }, { rebuilt: state }]) {
+      const result = reviewSnapshot({ slug: 'synthetic', gen: 1, events: [], finished: true, ...source });
+      assert.deepEqual(result.depth, { plannedCritiqueRounds: 2, attemptedRounds: scenario.attempted,
+        attemptedCritiqueRounds: scenario.attempted - 1, completedRounds: scenario.usable, completedCritiqueRounds: scenario.critiques });
+    }
+  }
+});
+
 
 const CONCLUSION = `RECOMMENDATION: opt-1
 Run a small pilot if the change can be reversed.

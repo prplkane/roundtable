@@ -1,4 +1,4 @@
-import { rollup, hasUsableRound } from './engine.js';
+import { rollup, hasUsableRound, DEFAULTS } from './engine.js';
 import { groupQuestions, stopExplanation, cancellationReason } from './review-view.js';
 import { optionLabel, verdictSections } from './contract.js';
 import { safeProgress } from './progress.js';
@@ -54,15 +54,29 @@ export function reviewSnapshot(d) {
   return {
     schemaVersion: 1, id: d.slug, revision: `${d.gen}:${d.events.length - 1}`, status,
     decision: state.fieldNotes?.decision, options: state.fieldNotes?.options, round: state.round ?? lastRound,
+    depth: { plannedCritiqueRounds: state.options?.critiqueRounds ?? DEFAULTS.critiqueRounds,
+      attemptedRounds: rounds.filter((r) => r?.length === state.seats.length).length,
+      attemptedCritiqueRounds: rounds.slice(1).filter((r) => r?.length === state.seats.length).length,
+      completedRounds: rounds.filter((r) => hasUsableRound([r], state.seats.length)).length,
+      completedCritiqueRounds: rounds.slice(1).filter((r) => hasUsableRound([r], state.seats.length)).length },
     deadlineAt: state.deadlineAt, stopReason: state.stopReason || null,
     ...(state.research ? { research: researchSnapshot(state.research) } : {}),
     ...(state.stopReason ? { explanation: stopExplanation(state.stopReason, state.stopContext) } : {}),
     actions: d.finished ? (!verdict || verdict.failed || verdict.skipped) && hasUsableRound(rounds, state.seats.length) ? ['verdict'] : []
-      : d.interrupted ? ['resume'] : status === 'error' ? [] : [gate ? 'answer' : 'wait', ...(d.debate?.canFinish() ? ['finish'] : []), 'stop'],
+      : d.interrupted ? ['resume'] : status === 'error' ? [] : [...(gate ? ['answer', 'hold'] : ['wait']), ...(d.debate?.canFinish() ? ['finish'] : []), 'stop'],
     // reopenCalls: the seats already agree, so empty answers end the discussion; any answer text
     // or message runs one more round at this many calls. Absent when answering cannot reopen.
-    gate: gate ? { round: gate.round, mode: gate.mode, stop: gate.stop, questions: groupQuestions(gate.questions),
+    gate: gate ? { round: gate.round, mode: gate.mode, reason: gate.reason, stop: gate.stop, questions: groupQuestions(gate.questions),
+      autoContinueAt: d.pending.autoContinueAt ?? null, timeoutBehavior: 'continue_without_answers',
       ...(gate.reopenable ? { reopenCalls: (state.seats || []).length } : {}) } : null,
+    nextAction: gate?.questions.length ? {
+      type: 'ask_user',
+      instruction: 'Ask gate.questions using your available user-input tool. If there is no form, ask in chat. Group overlapping questions without losing their IDs. Do not invent answers. Tell the user when the response window closes; unanswered questions remain unknown. Read status before submitting a reply because the review may have continued.',
+      answerTemplate: { round: gate.round, answers: groupQuestions(gate.questions).map((q) => ({ id: q.id, text: '' })) },
+    } : { type: gate || ['researching', 'running', 'verdict'].includes(status) ? 'wait'
+      : status === 'done' && sections ? 'report_result' : 'report_incomplete',
+      ...(!gate && !['researching', 'running', 'verdict'].includes(status) && !(status === 'done' && sections)
+        ? { instruction: 'The review has no completed chairman recommendation. Report its actual status and available actions; do not invent a verdict or automatically start another model call.' } : {}) },
     replies: (rounds[lastRound] || []).map((r) => ({ lens: r.seat.lens, vendor: r.seat.vendor,
       status: cancellationReason(r, state.stopReason, lastRound) ? 'cancelled' : r.failed ? 'failed' : r.valid ? 'replied' : 'invalid',
       // a recovered stall on a complete reply: the provider connection was started again this many times

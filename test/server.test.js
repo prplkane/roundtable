@@ -17,9 +17,9 @@ const freePort = () => new Promise((resolve, reject) => {
   srv.on('error', reject);
 });
 
-async function startFakeServer(debatesDir) {
+async function startFakeServer(debatesDir, args = []) {
   const port = await freePort();
-  const child = spawn(process.execPath, ['src/server.js', '--fake'], { env: { ...process.env, PORT: String(port), ROUNDTABLE_DEBATES_DIR: debatesDir }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  const child = spawn(process.execPath, ['src/server.js', '--fake', ...args], { env: { ...process.env, PORT: String(port), ROUNDTABLE_DEBATES_DIR: debatesDir }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   let log = '';
   child.stdout.setEncoding('utf8').on('data', (d) => { log += d; });
   child.stderr.setEncoding('utf8').on('data', (d) => { log += d; });
@@ -60,6 +60,93 @@ async function readEvents(res, until, onEvent) {
   return events;
 }
 
+test('attended answer windows extend briefly, then continue with unknowns; unattended reviews never wait', { timeout: 60_000 }, async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rt-response-window-'));
+  const srv = await startFakeServer(root);
+  const cli = (args, body) => new Promise((resolve, reject) => {
+    const child = execFile(process.execPath, ['src/cli.js', 'agent', ...args, '--port', String(srv.port), ...(body ? ['--input', '-'] : [])],
+      { env: { ...process.env, ROUNDTABLE_TOKEN: '' }, windowsHide: true, timeout: 35000 }, (error, stdout) => {
+        try { resolve({ exit: error?.code || 0, ...JSON.parse(stdout) }); } catch { reject(error || new Error('No JSON response')); }
+      });
+    child.stdin.end(body ? JSON.stringify(body) : '');
+  });
+  const body = { fieldNotes: { decision: 'Synthetic response window', options: ['Trial', 'Wait'] },
+    seats: [{ vendor: 'claude', lens: 'risk' }, { vendor: 'codex', lens: 'cost' }],
+    options: { critiqueRounds: 0, autoContinueMs: 100, questionWaitMs: 5000 } };
+  try {
+    const started = await cli(['start'], body), id = started.id, route = `/api/debates/${id}`;
+    const waiting = await cli(['wait', '--id', id]);
+    assert.equal(waiting.nextAction.type, 'ask_user');
+    assert.equal(waiting.gate.questions.length, 1, 'matching questions share one input');
+    assert.equal(waiting.gate.reason, 'question');
+    const firstDeadline = waiting.gate.autoContinueAt;
+    const waitStarted = Date.now();
+    const pending = await cli(['wait', '--id', id, '--after-round', '0', '--seconds', '1']);
+    assert.ok(Date.now() - waitStarted >= 900, 'waiting for a displayed question does not busy-poll');
+    assert.equal(pending.nextAction.type, 'await_user');
+    assert.equal(pending.gate.autoContinueAt, firstDeadline, 'waiting does not renew the response window');
+    assert.match(pending.nextAction.waitCommand, /--after-round 0$/);
+    assert.equal((await cli(['hold', '--id', id], { round: 0, answers: [{ id: 'q1', text: 'Do not discard an answer.' }] })).status, 400);
+    assert.equal((await cli(['hold', '--id', id], { round: 1 })).status, 409, 'a stale extension cannot hold another round');
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const extended = await cli(['hold', '--id', id], { round: 0 });
+    assert.equal(extended.exit, 0);
+    assert.ok(extended.autoContinueAt > firstDeadline, 'an explicit request renews the answer window');
+    assert.ok(extended.autoContinueAt <= waiting.deadlineAt, 'more time respects the review limit');
+    const refreshed = await cli(['status', '--id', id]);
+    assert.equal(refreshed.gate.autoContinueAt, extended.autoContinueAt, 'reading state does not extend the timer');
+    const events = await readEvents(await fetch(`${srv.base}${route}/events`), (e) => e.type === 'done');
+    assert.equal(events.filter((e) => e.type === 'gate-timeout').length, 1);
+    assert.equal(events.find((e) => e.type === 'gate-timeout').unanswered, 2, 'both seats asked the same unresolved question');
+    const done = await cli(['status', '--id', id]);
+    assert.equal(done.verdict.status, 'ready');
+    assert.equal(done.nextAction.type, 'report_result');
+    assert.equal((await cli(['answer', '--id', id], { round: 0, answers: [{ id: 'q1', text: 'Late reply must stay unsent.' }] })).status, 409);
+    const rows = readFileSync(path.join(root, id, 'transcript.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(rows.filter((r) => r.type === 'gate-timeout').length, 1);
+    assert.ok(!rows.some((r) => r.type === 'human' || r.type === 'accepted'), 'silence supplies neither an answer nor acceptance');
+    assert.ok(!JSON.stringify(rows).includes('Late reply must stay unsent.'));
+
+    const unattended = await cli(['start'], { ...body, options: { ...body.options, unattended: true } });
+    const completed = await cli(['wait', '--id', unattended.id]);
+    assert.equal(completed.status, 'done');
+    assert.equal(completed.verdict.status, 'ready');
+    const autoEvents = await readEvents(await fetch(`${srv.base}/api/debates/${unattended.id}/events`), (e) => e.type === 'done');
+    assert.ok(!autoEvents.some((e) => ['gate', 'countdown', 'gate-timeout'].includes(e.type)));
+
+    const exited = new Promise((resolve) => srv.child.once('exit', resolve)); srv.child.kill(); await exited;
+    const restarted = await startFakeServer(root);
+    try {
+      const replay = await readEvents(await fetch(`${restarted.base}${route}/events`), (e) => e.type === 'done');
+      assert.equal(replay.find((e) => e.type === 'gate-timeout').unanswered, 2, 'the reason survives reload and restart');
+    } finally { restarted.child.kill(); }
+  } finally { srv.child.kill(); }
+});
+
+test('agent wait passes an empty correction window without asking for a meaningless answer', { timeout: 30_000 }, async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rt-empty-window-'));
+  const srv = await startFakeServer(root, ['--fake-consensus']);
+  try {
+    const started = await fetch(`${srv.base}/api/debates`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token },
+      body: JSON.stringify({ fieldNotes: { decision: 'Synthetic complete context', options: ['Trial', 'Wait'] },
+        seats: [{ vendor: 'claude', lens: 'risk' }, { vendor: 'codex', lens: 'cost' }],
+        options: { critiqueRounds: 0, autoContinueMs: 3000, questionWaitMs: 100 } }) }).then((r) => r.json());
+    await readEvents(await fetch(`${srv.base}/api/debates/${started.slug}/events`), (e) => e.type === 'gate');
+    const before = await fetch(`${srv.base}/api/debates/${started.slug}/state`).then((r) => r.json());
+    const extended = await fetch(`${srv.base}/api/debates/${started.slug}/hold`, { method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token }, body: JSON.stringify({ round: 0 }) }).then((r) => r.json());
+    assert.equal(extended.autoContinueAt, before.gate.autoContinueAt, 'More time never shortens an already longer review window');
+    const result = await new Promise((resolve, reject) => execFile(process.execPath,
+      ['src/cli.js', 'agent', 'wait', '--id', started.slug, '--port', String(srv.port)],
+      { windowsHide: true, timeout: 15000 }, (error, stdout) => error ? reject(error) : resolve(JSON.parse(stdout))));
+    assert.equal(result.status, 'done');
+    assert.equal(result.verdict.status, 'ready');
+    const rows = readFileSync(path.join(root, started.slug, 'transcript.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(rows.find((r) => r.type === 'gate-timeout').unanswered, 0);
+    assert.ok(!rows.some((r) => r.type === 'human' || r.type === 'accepted'));
+  } finally { srv.child.kill(); }
+});
+
 test('the JSON agent checks without calls, answers grouped questions, rejects stale rounds and reads completion', { timeout: 60_000 }, async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'rt-agent-'));
   const srv = await startFakeServer(root);
@@ -92,6 +179,15 @@ test('the JSON agent checks without calls, answers grouped questions, rejects st
     assert.equal(waiting.board, `${srv.base}/#${id}`);
     assert.equal(waiting.status, 'waiting'); assert.equal(waiting.gate.round, 0);
     assert.equal(waiting.gate.questions.length, 2);
+    assert.equal(waiting.nextAction.type, 'ask_user');
+    assert.deepEqual(waiting.nextAction.answerTemplate, { round: 0, answers: waiting.gate.questions.map((q) => ({ id: q.id, text: '' })) });
+    assert.match(waiting.nextAction.instruction, /user-input tool/);
+    assert.match(waiting.nextAction.instruction, /ask in chat/);
+    assert.match(waiting.nextAction.command, /agent answer .* --input -$/);
+    assert.match(waiting.nextAction.extend.command, /agent hold /);
+    assert.equal(waiting.gate.timeoutBehavior, 'continue_without_answers');
+    assert.ok(waiting.gate.autoContinueAt > Date.now());
+    assert.ok(waiting.gate.autoContinueAt <= waiting.deadlineAt);
     assert.equal(waiting.gate.questions.find((q) => q.sources.includes('risk')).sources.length, 2);
     assert.doesNotMatch(JSON.stringify(waiting), new RegExp(srv.token));
     assert.equal((await fetch(`${srv.base}/api/debates/${id}/state`, { headers: { origin: 'https://untrusted.example' } })).status, 403);
@@ -411,7 +507,7 @@ test('fake server end to end: three seats, gates answered through the API, trans
     assert.equal(seatsApi.vendors.find((v) => v.vendor === 'api').profiles, true, 'API pools are per endpoint host');
     assert.equal(seatsApi.defaults.memory, 'stateless');
     assert.equal(seatsApi.defaults.critiqueRounds, 1, 'the default review has one critique round');
-    assert.deepEqual(seatsApi.runtime, { mode: 'demo', dataDir: debatesDir, diagnostics: { available: true, dropped: 0 } });
+    assert.deepEqual(seatsApi.runtime, { mode: 'demo', dataDir: debatesDir, cataloguePending: false, diagnostics: { available: true, dropped: 0 } });
     assert.ok(srv.log().includes(`data: ${debatesDir}`));
     const page = await fetch(`${srv.base}/`).then((r) => r.text());
     assert.match(page, /id="run-mode"/);
@@ -440,7 +536,7 @@ test('fake server end to end: three seats, gates answered through the API, trans
     });
     assert.equal(events.at(-1).type, 'done', srv.log());
     assert.equal(gates[0].round, 0);
-    assert.equal(gates[0].mode, 'blocking');
+    assert.equal(gates[0].mode, 'countdown');
 
     const types = events.map((e) => e.type);
     assert.equal(events.find((e) => e.type === 'started').seats.length, 3);

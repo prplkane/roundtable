@@ -28,6 +28,7 @@ import { reviewSnapshot } from './snapshot.js';
 import { pickFolder } from './folder-picker.js';
 import { dataDirectory, legacyHistory, acquireDataLock, checkedHistoryPath, removeHistory, createUsageStore, createHistoryIndex } from './history.js';
 import { VERSION } from './version.js';
+import { LOCAL_API_VERSION } from './local-server.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const UI = path.join(ROOT, 'src', 'ui');
@@ -49,6 +50,7 @@ const PORT = Number(process.env.PORT) || (FAKE ? 4748 : 4747);
 // Per-launch capability: every request that changes something carries it. The page gets it in a
 // meta tag when it is served; scripts take it from the startup line (ROUNDTABLE_TOKEN).
 const TOKEN = randomBytes(16).toString('hex');
+const INSTANCE_ID = randomBytes(16).toString('hex');
 // Set on the page as an HttpOnly cookie: the browser returns it on the page's own requests, and no
 // script, the agent client included, reads it from the page. Part of the board check (fromBoard).
 const BOARD_COOKIE = randomBytes(16).toString('hex');
@@ -58,6 +60,7 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
 
 const debates = new Map(); // slug -> live debate record
 let shuttingDown = false;
+let pendingWrites = 0;
 
 // The board's acknowledgment of a vendor's terms notice (config.js terms, src/terms.js). Until it
 // is given, nothing reads that vendor's model list or quota in the background; a debate whose
@@ -73,12 +76,13 @@ const termsHeld = (vendor, acknowledged = false) => !acknowledged && !termsRecor
 // the background at boot, or once Antigravity's terms notice is acknowledged; the setup screen
 // gets the static hints until it lands.
 let catalogue = null;
+const staticCatalogue = await vendorCatalogue({ agyModels: async () => [] });
 const readCatalogue = () => (FAKE || termsHeld('agy') ? vendorCatalogue({ agyModels: async () => [] }) : vendorCatalogue())
   .then((c) => { catalogue = c; return c; })
   .catch((e) => { diagnostics.write({ code: 'status-failed', action: 'catalogue' }, e); console.error('[catalogue]', e.message); return vendorCatalogue({ agyModels: async () => [] }).then((c) => (catalogue = c)); });
 let catalogueReady = readCatalogue();
-const effortsByVendor = () => Object.fromEntries(Object.entries(catalogue || {}).map(([v, c]) => [v, c.efforts]));
-const modelsByVendor = () => Object.fromEntries(Object.entries(catalogue || {}).map(([v, c]) => [v, c.models || []]));
+const effortsByVendor = () => Object.fromEntries(Object.entries(catalogue || staticCatalogue).map(([v, c]) => [v, c.efforts]));
+const modelsByVendor = () => Object.fromEntries(Object.entries(catalogue || staticCatalogue).map(([v, c]) => [v, c.models || []]));
 
 // The quota picture. Baselines: tokens per call per vendor from every transcript on disk.
 // Calibration: how much of each vendor window one round took, measured between the quota
@@ -437,6 +441,21 @@ function answerGate(d, answer) {
   return true;
 }
 
+// Every attended window is bounded. Extending it never answers a question or adds a note.
+function scheduleGate(d, duration, extended = false) {
+  clearTimeout(d.timer);
+  const pending = d.pending;
+  const deadline = Math.min(Math.max(Date.now() + duration, extended ? pending.autoContinueAt || 0 : 0), pending.info.deadlineAt ?? Infinity);
+  pending.autoContinueAt = deadline;
+  push(d, { type: 'countdown', deadline, extended });
+  d.timer = setTimeout(() => {
+    if (d.pending !== pending) return;
+    const expired = Date.now() >= (pending.info.deadlineAt ?? Infinity);
+    answerGate(d, { action: expired ? 'stop' : 'continue', reason: expired ? 'wall-clock' : 'input-timeout' });
+  }, Math.max(0, deadline - Date.now()));
+  return deadline;
+}
+
 // Opt browser requests into hidden-mood shortcuts; ordinary agent requests keep custom text.
 // This is a UI distinction, not an authorization boundary: a custom client can obtain the cookie
 // and forge these headers. The launch token and Host/Origin checks still protect every write.
@@ -557,11 +576,7 @@ function attachEngine(d, { fieldNotes, seats, chairman, options, resume = null, 
 
   const gate = (info) => new Promise((resolve) => {
     d.pending = { resolve, info };
-    if (info.mode === 'countdown') {
-      const deadline = Date.now() + info.autoContinueMs;
-      push(d, { type: 'countdown', deadline });
-      d.timer = setTimeout(() => answerGate(d, { action: 'continue' }), info.autoContinueMs);
-    }
+    scheduleGate(d, info.autoContinueMs);
   });
 
   d.debate = createDebate({
@@ -667,10 +682,29 @@ const server = http.createServer(async (req, res) => {
   const p = url.pathname;
   for (const [k, v] of Object.entries(HEADERS)) res.setHeader(k, v);
   try {
-    const isRead = req.method === 'GET' && (!p.startsWith('/api/') || p === '/api/seats' || p === '/api/debates' || p === '/api/preflight' || /\/(events|state)$/.test(p));
+    const isRead = req.method === 'GET' && (!p.startsWith('/api/') || p === '/api/health' || p === '/api/seats' || p === '/api/debates' || p === '/api/preflight' || /\/(events|state)$/.test(p));
     const no = refuse(req, isRead);
     if (no) return requestError(res, no[0], no[1], diagnosticAction(p));
     if (shuttingDown && !isRead) return requestError(res, 503, 'The server is shutting down.', diagnosticAction(p));
+    if (!isRead) {
+      pendingWrites++;
+      let counted = true;
+      const release = () => { if (counted) { counted = false; pendingWrites--; } };
+      res.once('finish', release); res.once('close', release);
+    }
+    if (req.method === 'GET' && p === '/api/health') return json(res, 200, {
+      service: 'roundtable', apiVersion: LOCAL_API_VERSION, version: VERSION, instanceId: INSTANCE_ID,
+      mode: FAKE ? 'demo' : 'live', dataDir: DEBATES_DIR, shuttingDown,
+      activeReviews: [...debates.values()].filter(activeDebate).length,
+    });
+    if (p === '/api/shutdown' && req.method === 'POST') {
+      const body = await readBody(req);
+      if (body?.instanceId !== INSTANCE_ID) return requestError(res, 409, 'The server instance changed. Read its status before stopping it.', 'shutdown');
+      if (pendingWrites > 1 || [...debates.values()].some(activeDebate)) return requestError(res, 409, 'The server has an active review or another write in progress. Finish or explicitly stop the review before stopping the server.', 'shutdown');
+      json(res, 200, { ok: true, stopping: true });
+      shutdown('requested while idle');
+      return;
+    }
     if (p === '/') {
       const html = (await readFile(path.join(UI, 'index.html'), 'utf8'))
         .replace('<meta name="roundtable-token" content="">', `<meta name="roundtable-token" content="${TOKEN}">`)
@@ -683,9 +717,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && p.startsWith('/src/') && p.endsWith('.js')) return serveFile(res, path.join(ROOT, path.normalize(p)));
 
     if (req.method === 'GET' && p === '/api/seats') {
-      const cat = catalogue || await catalogueReady;
+      const cat = catalogue || (url.searchParams.get('cached') === '1' ? staticCatalogue : await catalogueReady);
       return json(res, 200, {
-        runtime: { mode: FAKE ? 'demo' : 'live', dataDir: DEBATES_DIR, ...(legacyDataDirs.length ? { legacyDataDirs } : {}), diagnostics: diagnostics.status() },
+        runtime: { mode: FAKE ? 'demo' : 'live', dataDir: DEBATES_DIR, cataloguePending: !catalogue, ...(legacyDataDirs.length ? { legacyDataDirs } : {}), diagnostics: diagnostics.status() },
         vendors: Object.entries(ADAPTERS).map(([vendor, a]) => ({
           vendor, kind: a.kind, label: a.label, colour: a.colour, usageUrl: a.usageUrl || null, quota: quota[vendor] || null, profiles: poolsByAccount(a), limitedIsolation: a.limitedIsolation === true, search: !!a.research,
           terms: termsRecord.status(vendor), pool: a.pool, catalogue: cat[vendor],
@@ -796,8 +830,10 @@ const server = http.createServer(async (req, res) => {
         }
         return json(res, 200, { ok: true, ...(body.answers?.length ? { warning: 'The review was stopped. Question answers were not submitted.' } : {}) });
       }
-      if (['continue', 'finish'].includes(m[2]) && body.round != null && d.pending?.info.round !== body.round)
+      if (['continue', 'finish', 'hold'].includes(m[2]) && body.round != null && d.pending?.info.round !== body.round)
         return requestError(res, 409, 'The review has moved to another step. Your answers were not sent. Read the current questions before retrying.', m[2]);
+      if (m[2] === 'hold' && (body.answers?.length || body.message.trim()))
+        return requestError(res, 400, 'More time does not submit answers or notes. Use Continue or agent answer to send them.', 'hold');
       if (body.answers?.length) {
         if (!d.pending) return requestError(res, 409, 'The review is not waiting for answers. Your draft was not sent.', m[2]);
         body.message = validateMessage({ message: answerMessage(d.pending.info.questions, body.answers, body.message) }).message;
@@ -819,8 +855,9 @@ const server = http.createServer(async (req, res) => {
       if (m[2] === 'continue') return answerGate(d, { action: 'continue', message: body.message || '', source: body.source }) ? json(res, 200, { ok: true })
         : requestError(res, 409, 'The review is no longer waiting for input. Your note was not sent. Check the current round before retrying.', 'continue');
       if (m[2] === 'hold') {
-        if (d.timer) { clearTimeout(d.timer); d.timer = null; push(d, { type: 'held' }); }
-        return json(res, 200, { ok: true });
+        if (!d.pending) return requestError(res, 409, 'The response window has closed. Read the current state before requesting more time.', 'hold');
+        const deadline = scheduleGate(d, d.pending.info.questionWaitMs || DEFAULTS.questionWaitMs, true);
+        return json(res, 200, { ok: true, autoContinueAt: deadline });
       }
     }
     res.writeHead(404); res.end('not found');

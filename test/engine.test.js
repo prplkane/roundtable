@@ -203,7 +203,7 @@ test('consensus exits, including in round 0, after the round-0 gate, and still w
   const s = await d.run();
   assert.equal(s.rounds.length, 1);
   assert.equal(s.stopReason, 'consensus');
-  assert.deepEqual(gates.map((g) => [g.round, g.mode, g.stop, g.reopenable]), [[0, 'blocking', 'consensus', true]]);
+  assert.deepEqual(gates.map((g) => [g.round, g.mode, g.stop, g.reopenable]), [[0, 'countdown', 'consensus', true]]);
   assert.equal(s.humanNotes[0], undefined);
   assert.ok(s.verdict.text);
   assert.ok(events.some((e) => e.type === 'verdict'));
@@ -276,13 +276,14 @@ test('unattended: no gate opens, every pause and question is skipped, and the bo
   assert.ok(s.verdict, 'the review still ends in a verdict');
 });
 
-test('gate blocks after round 0 and on any QUESTION_FOR_HUMAN, counts down otherwise', async () => {
+test('correction windows are brief; genuine questions get the longer answer window', async () => {
   const gates = [];
   const gate = async (info) => { gates.push(info); return { action: 'continue', message: info.round === 0 ? 'think about mobile' : '' }; };
   const { d, fr } = debate((v, round) =>
     (round === 1 && v === 'codex') ? reply('Wait a sprint', { question: 'Is the deadline fixed?' }) : disagreeForever(v, round), { gate });
   const s = await d.run();
-  assert.deepEqual(gates.map((g) => [g.round, g.mode, g.reason]), [[0, 'blocking', 'round0'], [1, 'blocking', 'question'], [2, 'countdown', 'auto']]);
+  assert.deepEqual(gates.map((g) => [g.round, g.mode, g.reason]), [[0, 'countdown', 'round0'], [1, 'countdown', 'question'], [2, 'countdown', 'auto']]);
+  assert.deepEqual(gates.map((g) => g.autoContinueMs), [15000, 120000, 15000]);
   assert.deepEqual(gates[1].questions, [{ lens: 'cost', seat: 'seat-1', question: 'Is the deadline fixed?' }], 'the asking seat, for the board; seats only ever see the lens');
   // the human note after round 0 reaches every seat in round 1
   const r1 = fr.calls.filter((c) => c.round === 1);

@@ -36,7 +36,8 @@ export const DEFAULTS = {
   hiddenSeatTokenCap: 60_000,
   wallClockMs: 30 * 60_000,
   callTimeoutMs: 5 * 60_000,
-  autoContinueMs: 60_000,
+  autoContinueMs: 15_000,  // brief chance to correct a round without a question
+  questionWaitMs: 120_000, // answer window; no reply continues with the unknowns intact
   // 'stateless': every round is a fresh call whose prompt carries what the seat needs (its own
   // last reply, the others', the note). This avoids resending the full conversation; token use
   // still varies. 'resume': the CLI session is resumed, so conversation context can grow.
@@ -471,9 +472,9 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
   async function humanGate(round, stop = null) {
     // seat: for the human's side only; what goes back to the seats names the lens (review-view.js)
     const questions = state.rounds[round].filter((r) => r.question).map((r) => ({ lens: r.seat.lens, seat: r.seat.id, question: r.question }));
-    const blocking = round === 0 || questions.length > 0;
     const reopenable = round === 0 && stop === 'consensus' && round < maxRound;
-    const info = { round, mode: blocking ? 'blocking' : 'countdown', reason: round === 0 ? 'round0' : (questions.length ? 'question' : 'auto'), questions, autoContinueMs: opts.autoContinueMs, stop, reopenable };
+    const info = { round, mode: 'countdown', reason: questions.length ? 'question' : round === 0 ? 'round0' : 'auto', questions,
+      autoContinueMs: questions.length ? opts.questionWaitMs : opts.autoContinueMs, questionWaitMs: opts.questionWaitMs, deadlineAt, stop, reopenable };
     // Nobody is at the table: no pause, no answers. The seats were told to assume instead of ask;
     // a question a seat wrote anyway stays on its card, unanswered.
     if (unattended) { fire('gate-skipped', { round, questions }); return null; }
@@ -494,6 +495,10 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       deadlineHit = true;
       state.status = 'running'; state.stopContext = 'waiting';
       record({ type: 'gate-expired', round }); fire('gate-expired', { round }); return 'wall-clock';
+    }
+    if (answer.reason === 'input-timeout') {
+      const event = { type: 'gate-timeout', round, unanswered: questions.length };
+      record(event); fire('gate-timeout', event);
     }
     state.status = 'running';
     const message = (answer.message || '').trim();
@@ -746,7 +751,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
         if (stopRequested) { state.stopReason = 'human'; break; }
         if (finishRequested) { state.stopReason = 'finish'; break; }
         let stop = stopCheck(round);
-        // Round 0 always shows the blind positions and waits, even when a stop condition is met.
+        // Keep a brief correction window after the blind round, including early consensus.
         if (!expired() && (round === 0 || !stop || state.rounds[round].some((r) => r.question))) {
           const humanStop = await humanGate(round, stop);
           if (humanStop) { state.stopReason = humanStop; break; }

@@ -144,7 +144,7 @@ const S = {
   opened: new Set(), // reply keys opened by a click on the card head; every reply starts folded to its seat and stance
   // Folds the person set by hand, so a redraw on the next event keeps them: roundOpen by round
   // index (unset: the latest round is open), openDetails by reply key and details class.
-  roundOpen: {}, openDetails: new Set(),
+  roundOpen: {}, openDetails: new Set(), timedOut: {},
   unattended: false, // the review skips every pause (from its options, so a replay from disk knows too)
   draft: [], // setup screen: the seat rows being edited
   budget: {}, // setup screen: vendor -> { tokens, usd } caps
@@ -191,6 +191,7 @@ async function setup() {
   $('datalists').insertAdjacentHTML('beforeend', `<datalist id="endpoints">${ENDPOINT_PRESETS.map((e) => `<option value="${esc(e.url)}">${esc(e.label)}</option>`).join('')}</datalist>`);
   $('critique-rounds').value = defaults.critiqueRounds;
   $('auto').value = defaults.autoContinueMs / 1000;
+  $('question-wait').value = (defaults.questionWaitMs || 120000) / 1000;
   $('wall').value = defaults.wallClockMs / 60000;
   $('memory').value = defaults.memory || 'stateless';
   try { const saved = JSON.parse(localStorage.getItem('roundtable.notes') || 'null'); if (saved) for (const [k, v] of Object.entries(saved)) if (k !== 'options' && $(k)) $(k).value = v; S.options = String(saved?.options || '').split('\n').map((o) => o.trim()).filter(Boolean); } catch {}
@@ -217,7 +218,7 @@ async function setup() {
   S.initialDraft = retained.length >= 2 ? null : JSON.stringify(S.draft);
   S.initialChair = !settings.chairman;
   for (const [key, id, scale, min, max] of [
-    ['critiqueRounds', 'critique-rounds', 1, 0, 8], ['autoContinueMs', 'auto', 1000, 100, 600_000], ['wallClockMs', 'wall', 60_000, 60_000, 10_800_000],
+    ['critiqueRounds', 'critique-rounds', 1, 0, 8], ['autoContinueMs', 'auto', 1000, 100, 600_000], ['questionWaitMs', 'question-wait', 1000, 100, 600_000], ['wallClockMs', 'wall', 60_000, 60_000, 10_800_000],
   ]) {
     const value = settings.options?.[key];
     if (Number.isInteger(value) && value >= min && value <= max) $(id).value = value / scale;
@@ -985,7 +986,7 @@ async function start() {
   const body = {
     fieldNotes, seats: draftSeats(),
     chairman: draftChairman(),
-    options: { critiqueRounds: Number($('critique-rounds').value), autoContinueMs: Number($('auto').value) * 1000, wallClockMs: Number($('wall').value) * 60000, memory: $('memory').value, unattended: $('unattended').checked, allowLimitedIsolation: isolationAccepted(), acknowledgeTermsRisk: termsAccepted(), budget: budgetBody(),
+    options: { critiqueRounds: Number($('critique-rounds').value), autoContinueMs: Number($('auto').value) * 1000, questionWaitMs: Number($('question-wait').value) * 1000, wallClockMs: Number($('wall').value) * 60000, memory: $('memory').value, unattended: $('unattended').checked, allowLimitedIsolation: isolationAccepted(), acknowledgeTermsRisk: termsAccepted(), budget: budgetBody(),
       ...(searcherOn() ? { research: { vendor: $('searcher-vendor').value, query: $('research-query').value.trim(), maxSearches: Number($('research-searches').value), timeoutMs: Number($('research-time').value) * 1000,
         model: $('searcher-model').value.trim(), effort: $('searcher-effort').value, account: searcherAccount() } } : {}) },
   };
@@ -1165,7 +1166,7 @@ function resetBoard({ clearDrafts = false } = {}) {
   replyReveals.clear();
   Object.assign(S, { seats: [], fieldNotes: null, rows: [], rounds: [], opened: new Set(), roundOpen: {}, openDetails: new Set(), humanNotes: [], initialNotes: [], gate: null, deadline: null, held: false, verdict: null, status: 'idle', startedAt: null, stopReason: null, pending: new Set(), chairman: null, configuredChairman: null, interrupted: null, stopQueued: false, finishQueued: false, error: null, conn: {}, positions: [], accepted: null, synthesis: null, down: {},
     budgetStop: null, exported: null, exportError: null, replayed: false, connected: null, chairmanFallback: null, transcriptWarning: null, unattended: false, research: null,
-    actionPending: null, actionError: null, holdPending: false, synthChoice: null, stopContext: null, reviewDeadline: null }); // hash routing reuses S: nothing from the last board
+    actionPending: null, actionError: null, holdPending: false, timedOut: {}, synthChoice: null, stopContext: null, reviewDeadline: null }); // hash routing reuses S: nothing from the last board
   if (clearDrafts || !S.questionDrafts) S.questionDrafts = {};
   cardMotion.clear(); // a fold still rolling up belongs to the board that is gone
   if (clearDrafts) { $('question-inputs').replaceChildren(); delete $('question-inputs').dataset.signature; setUsageOpen(false); $('decision-actions').open = false; }
@@ -1191,10 +1192,11 @@ function handle(e) {
     case 'round-done': S.pending.clear(); if (e.positions) S.positions[e.round] = e.positions; break;
     case 'gate':
       S.gate = e; S.reviewDeadline = e.deadlineAt; S.deadline = null; S.held = false; S.status = 'waiting';
-      if (!e.replayed && e.mode === 'blocking') playCue('waiting'); // the table waits for the person, even in a background tab
+      if (!e.replayed && e.questions.length) playCue('waiting'); // a real question, including in a background tab
       break;
     case 'gate-expired': S.stopContext = 'waiting'; S.gate = null; S.deadline = null; break;
-    case 'countdown': S.deadline = e.deadline; break;
+    case 'countdown': S.deadline = e.deadline; S.held = false; break;
+    case 'gate-timeout': S.timedOut[e.round] = e; break;
     case 'held': S.held = true; S.deadline = null; break;
     case 'gate-closed': S.gate = null; S.deadline = null; S.status = 'running'; break;
     case 'stop-queued': S.stopQueued = true; S.finishQueued = false; break;
@@ -1305,7 +1307,8 @@ function renderRound(i, replies, isCurrent) {
   // replies themselves, so a review replayed from disk says it too).
   const asked = replies.filter((r) => r.question).length;
   const skipped = S.unattended && replies.length && !pendingSeats.length ? `<div class="human-note"><b>Unattended</b>${asked ? `${asked} question${asked > 1 ? 's' : ''} went unanswered.` : 'The pause was skipped.'}</div>` : '';
-  const note = skipped + (S.humanNotes[i] || []).map((n) => `<div class="human-note"><b>${noteLabel(n)}</b>${esc(noteRecord(n).text)}</div>`).join('');
+  const timedOut = S.timedOut[i]?.unanswered ? '<div class="human-note"><b>Continued automatically</b>The answer window ended. Unanswered questions remain unknown.</div>' : '';
+  const note = skipped + timedOut + (S.humanNotes[i] || []).map((n) => `<div class="human-note"><b>${noteLabel(n)}</b>${esc(noteRecord(n).text)}</div>`).join('');
   // Folded unless it is the round in progress: a finished review leads with its conclusion.
   const live = isCurrent && !['done', 'error'].includes(S.status);
   return `<details class="round" ${(S.roundOpen[i] ?? live) ? 'open' : ''} data-round="${i}">
@@ -1523,14 +1526,15 @@ function renderGate() {
     return;
   }
   const parts = [];
-  if (g.questions.length) parts.push(`<span class="status warn">${groupQuestions(g.questions).length} question${groupQuestions(g.questions).length === 1 ? '' : 's'} for you</span> Answer above, or continue without answers.`);
-  else if (g.reason === 'round0') parts.push(`<span class="status warn">waiting for you</span> ${S.seats.length} blind positions are on the table. Add a note or continue.`);
-  if (g.stop) parts.push(`<span class="hint">${g.reopenable ? 'Next: the verdict, or one more round if you add a note.' : 'Next: the verdict.'}</span>`);
+  if (g.questions.length) parts.push(`<span class="status warn">${groupQuestions(g.questions).length} question${groupQuestions(g.questions).length === 1 ? '' : 's'} for you</span> <span class="gate-guidance">Answer above, or continue without answers.</span>`);
+  else parts.push(`<span class="status warn">review window</span> ${g.reason === 'round0' ? 'The blind positions are ready.' : 'The round is complete.'} Add a note, or let the review continue.`);
+  if (g.stop) parts.push(`<span class="hint gate-guidance">${g.reopenable ? 'Next: the verdict, or one more round if you add a note.' : 'Next: the verdict.'}</span>`);
   if (g.mode === 'countdown') {
     if (S.held) parts.push('<span class="status muted">countdown held</span> waiting for you');
-    else if (S.deadline) parts.push(`<span class="countdown">auto-continue in <span id="cd">${Math.max(0, Math.ceil((S.deadline - Date.now()) / 1000))}</span> s</span>`);
+    else if (S.deadline) parts.push(`<span class="countdown">Auto-continue in <span id="cd">${Math.max(0, Math.ceil((S.deadline - Date.now()) / 1000))}</span> s</span>`);
+    parts.push(`<button class="btn btn-small" id="extend-window" type="button" ${S.holdPending || S.actionPending ? 'disabled' : ''}>More time</button>`);
   }
-  if (S.reviewDeadline) parts.push(`<span class="hint">Review time left: <span id="review-time-left"></span>. Reading and answering count toward this limit.</span>`);
+  if (S.reviewDeadline) parts.push(`<span class="hint">Review time left: <span id="review-time-left"></span>.<span class="gate-guidance"> Reading and answering count toward this limit.</span></span>`);
   st.innerHTML = link + parts.join(' ');
   updateReviewTime();
 }
@@ -1541,6 +1545,8 @@ function updateReviewTime() {
 }
 
 function renderReviewState() {
+  const questionCount = S.status === 'waiting' ? groupQuestions(S.gate?.questions).length : 0;
+  if (S.fieldNotes?.decision) document.title = `${questionCount ? `${questionCount} question${questionCount === 1 ? '' : 's'} for you · ` : ''}${S.fieldNotes.decision} · Roundtable`;
   const terminal = ['done', 'error'].includes(S.status);
   if (S.status === 'researching' && !S.stopQueued) {
     $('review-state').className = 'review-state status warn';
@@ -1582,7 +1588,16 @@ function renderQuestions() {
   $('answer-count').textContent = `${answered} of ${groups.length} answered · one send to all seats`;
   $('send-answers').disabled = !!S.actionPending;
   $('send-answers').textContent = S.actionPending === 'continue' ? 'Sending…' : answered ? 'Send answers and continue' : 'Continue without answers';
-  $('answer-questions').textContent = `Answer ${groups.length} question${groups.length === 1 ? '' : 's'}`;
+  $('answer-questions').innerHTML = `<span class="answer-label-full">Answer ${groups.length} question${groups.length === 1 ? '' : 's'}</span><span class="answer-label-short" aria-hidden="true">Answer</span>`;
+  $('answer-questions').setAttribute('aria-label', `Answer ${groups.length} question${groups.length === 1 ? '' : 's'}`);
+  $('more-time').disabled = !!S.holdPending || !!S.actionPending;
+  updateQuestionTime();
+}
+
+function updateQuestionTime() {
+  if (!S.gate?.questions.length || !S.deadline) { $('question-timing').textContent = ''; return; }
+  const seconds = Math.max(0, Math.ceil((S.deadline - Date.now()) / 1000));
+  $('question-timing').textContent = `Continuing without answers in ${Math.floor(seconds / 60)}m ${seconds % 60}s. Writing requests more time; drafts are sent only when you submit.`;
 }
 
 // Which vendor would cross its cap, and by how much: shown wherever the gate status is.
@@ -1655,6 +1670,7 @@ function render() {
 
 function tick() {
   updateReviewTime();
+  updateQuestionTime();
   if (S.startedAt && S.status !== 'done') $('st-elapsed').textContent = `${Math.floor((Date.now() - S.startedAt) / 60000)}m ${Math.floor(((Date.now() - S.startedAt) / 1000) % 60)}s`;
   const cd = $('cd');
   if (cd && S.deadline) cd.textContent = Math.max(0, Math.ceil((S.deadline - Date.now()) / 1000));
@@ -1682,24 +1698,29 @@ async function boardAction(action, body, onSuccess) {
   }
 }
 async function hold(ev) {
-  if (!S.gate || !S.deadline || S.held || S.holdPending || S.actionPending) return;
-  if (ev.target.closest('#continue, #finish, #stop') || ev.key === 'Enter' && ev.target.closest('#human-form')) return;
+  if (!S.gate || !S.deadline || S.holdPending || S.actionPending) return;
+  if (ev && !ev.target.closest('#question-inputs textarea, #human-msg')) return;
+  // Refresh while someone is writing, after ten seconds or halfway through a shorter
+  // window. Incidental clicks never pause the table, and abandoned drafts still expire.
+  const windowMs = S.gate.questionWaitMs || 120000;
+  if (ev && S.deadline - Date.now() > windowMs - Math.min(10000, windowMs / 2)) return;
   const gate = S.gate, revision = viewRevision;
   S.holdPending = true;
   try {
-    await post('hold');
+    const result = await post('hold', { round: gate.round });
     if (revision === viewRevision && S.gate === gate) {
-      S.held = true; S.deadline = null;
+      S.deadline = result.autoContinueAt; S.held = false;
       if (S.actionError?.action === 'hold') S.actionError = null;
     }
   } catch (e) {
-    if (revision === viewRevision && S.gate === gate && !S.held) S.actionError = { action: 'hold', message: `Could not confirm that auto-continue paused. ${e.message}` };
+    if (revision === viewRevision && S.gate === gate) S.actionError = { action: 'hold', message: `Could not extend the answer window. ${e.message}` };
   } finally {
-    if (revision === viewRevision) { S.holdPending = false; renderGate(); }
+    if (revision === viewRevision) { S.holdPending = false; renderGate(); renderQuestions(); }
   }
 }
-document.addEventListener('click', hold, true);
-document.addEventListener('keydown', hold, true);
+document.addEventListener('focusin', hold, true);
+document.addEventListener('input', hold, true);
+$('more-time').addEventListener('click', () => hold());
 
 $('human-form').addEventListener('submit', (ev) => {
   ev.preventDefault();
@@ -1764,6 +1785,7 @@ document.addEventListener('click', async (ev) => {
 });
 // A verdict skipped (budget, wall clock), failed or never written: run the chairman alone.
 $('gate-status').addEventListener('click', async (ev) => {
+  if (ev.target.id === 'extend-window') { await hold(); $('extend-window')?.focus({ preventScroll: true }); return; }
   if (ev.target.id !== 'synthesize') return;
   const revision = viewRevision;
   const pick = $('synth-chair').value;

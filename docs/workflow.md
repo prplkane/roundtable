@@ -33,9 +33,79 @@ npm test
 
 There are no dependencies to install.
 
-After an update, stop the running server with Ctrl+C, start it again with `npm start` (or
-`npm run fake` for the demo), then refresh the browser. Refreshing the page alone does not
-load an updated server or model list.
+### Connect an assistant for every project
+
+Install once from a checkout: run `npm pack`, then `npm install -g` with the generated
+`.tgz` filename, then `roundtable setup --client codex`. Install the archive, since
+`npm install -g .` can create a link to the checkout that breaks when it moves. The published
+package, when available, can be installed with `npm install -g @prplkane/roundtable`.
+Setup points at the installed package, not the project where you next ask for a review.
+
+Choose `--client claude`, `--client agy`, repeat `--client`, or use `--client all` to connect
+all three. This explicitly installs a user-level MCP connection and the bundled Roundtable
+skill. No npm install hook changes assistant settings. Restart the assistant or reload its
+MCP connections after setup, then ask it to use Roundtable from any project.
+
+| Assistant | MCP configuration | Workflow skill |
+| --- | --- | --- |
+| Codex | `~/.codex/config.toml` | `~/.codex/skills/roundtable/SKILL.md` |
+| Claude Code | `~/.claude.json` | `~/.claude/skills/roundtable/SKILL.md` |
+| Antigravity app / CLI | `~/.gemini/config/mcp_config.json` | `~/.gemini/config/skills/roundtable/SKILL.md` |
+
+Codex uses `CODEX_HOME` when set. Claude uses `CLAUDE_CONFIG_DIR` when set, with
+`.claude.json` and `skills/roundtable/SKILL.md` inside that directory. `--home <directory>`
+selects an isolated test home and ignores both overrides. Antigravity's current app, CLI and
+IDE use the [shared configuration directory](https://antigravity.google/docs/mcp);
+the presence of an older `~/.gemini/antigravity/mcp_config.json` does not select it.
+For an older IDE, check the path shown by its MCP manager before configuring it manually.
+Setup preserves unrelated settings and comments in Codex's TOML, including dotted and
+quoted keys and multiline strings. It refuses an existing unmanaged Roundtable entry,
+an edited managed entry or skill,
+invalid configuration JSON, and linked configuration files. Resolve a conflict explicitly;
+setup does not overwrite custom edits. A private receipt under `~/.roundtable/integrations.json`
+records paths and hashes for checking, updating and removal. No configuration contents or
+credentials are copied into it. Missing managed files can be repaired by rerunning setup,
+or removed with `--remove`; present files with custom edits remain protected.
+Rerun setup after a package update to refresh the skill. Changing a profile override requires
+removing the old managed connection with its original profile first.
+
+```bash
+roundtable setup --client all --check
+roundtable setup --client codex --remove
+```
+
+`--check` reads the installed files and verifies their recorded hashes, MCP script and Node executable;
+it makes no model call. To test without a provider, use `--fake` with setup, or run
+`roundtable mcp --fake`. This uses the separate demo board on port 4748. Updates preserve
+the saved mode and port. Use setup's `--live` to switch explicitly to live port 4747, or
+`--fake` to switch to demo port 4748. `--port N` selects another
+loopback port; `roundtable mcp --no-start` requires an already running board. Every server
+needs its own data directory when more than one runs in the same mode (see Local data).
+
+The MCP adapter starts the board in the background when a tool needs it and leaves it
+running when a chat disconnects, so question timers and reviews continue. Starting the board
+checks provider status but starts no review. It never opens the browser. Use the returned
+board link to view or stop a review. The existing loopback token protects writes, and the
+adapter never prints it. Normal review content is returned to the assistant that invoked it.
+An unrelated service, incompatible API, different package version or wrong demo/live mode
+on the selected port is refused. An explicit `ROUNDTABLE_DEBATES_DIR` must match the running
+board. A lightweight health endpoint checks this without waiting for provider catalogues;
+temporary readiness failures are retried within 35 seconds, without retrying review writes.
+Configure the host's tool timeout to at least 90 seconds if it supports that setting:
+a wait can include two bounded state reads as well as the requested event wait.
+
+If an assistant says Roundtable is unavailable, run setup's `--check`, reload its connections,
+and confirm `roundtable_guide` appears among its tools. The installed skill also explains the
+`roundtable agent` CLI fallback. The repository's `AGENTS.md` does not install anything in
+other projects. Do not substitute ordinary subagents and call their result a Roundtable review.
+
+After an update, finish active reviews, run `roundtable server restart` (add `--fake` or
+`--port N` for that board), reload the assistant's MCP connection and refresh the browser.
+`roundtable server status` inspects the board; `stop` stops it. Stop/restart requires the
+launch token and matching server instance, and refuses active reviews or other writes.
+It never cancels a review to perform an update. Older boards without the health API must be
+stopped from their original terminal with Ctrl+C, or by stopping their known server process.
+Refreshing the browser alone does not reload server code.
 
 ## 2. Install and log in to each vendor
 
@@ -339,19 +409,25 @@ custom text.
 
 - **Critique rounds**: rounds after the blind first one. Start with one and increase it only
   when another round is useful.
-- **Auto-continue (s)**: after a round, the board waits this long for you, then moves on. A
-  click or keystroke requests a pause. **Countdown held** confirms the server paused it; if
-  the request fails, the board reports that the countdown may still be running.
+- **Review window (s)**: a short correction window between rounds with no questions, including
+  the blind first round. The default is 15 seconds; it continues without a click.
+- **Answer window (s)**: when a seat asks a question, wait up to 120 seconds by default, then
+  continue with the missing facts still unknown. A countdown is shown beside the questions
+  and in the bottom bar. Writing an answer or note, or choosing **More time**, renews this
+  window within the overall wall clock. Clicking elsewhere does not hold the review.
+  Drafts are never submitted automatically. If an extension fails, the board reports it.
 - **Wall clock (min)**: a hard stop.
 - **Memory**: leave on `stateless`. Each round is a fresh call with the field notes, the seat's
   own last reply and the others' replies. This avoids resending the full conversation, but
   token use and cost still vary. `resume` retains a conversation and can grow the context each
   round. Neither setting controls the provider's logging or retention policy.
-- **Unattended**, off by default: the table never waits for you. The pause after the blind
+- **Unattended**, off by default: the table never waits for you. The window after the blind
   round is skipped, and the seats are told that nobody answers questions, so they state what
   they would have asked as an assumption instead; the question line leaves their contract, which
   also keeps its tokens out of every call. Turn it on only for a review nobody will watch;
-  otherwise leave it off, so the board can stop for you and play its waiting sound.
+  otherwise leave it off, so the board can collect answers and play its question sound.
+  These modes work both in the browser and through an agent. Use unattended for a background
+  job with no reply channel; an agent in a live chat can present the questions to its user.
 - **Budget caps**, in the quota panel: an optional token or dollar ceiling per vendor. The
   engine checks projected usage before each round and every provider attempt, including network
   retries, re-prompts and a fallback chairman. It counts reported usage and calls still in
@@ -421,20 +497,24 @@ background tab, only the sound plays, so you hear when a long review finishes. T
 nothing until you have clicked or typed on the page once. The JSON agent client loads neither the
 animation nor the sounds.
 
-1. **Round 0 is blind.** Every seat answers at once without seeing the others. The board then
-   always waits for you. This is the best moment to step in: correct a wrong assumption, add a
-   fact, answer a seat's question. Type in the bar at the bottom and press **Continue**, or just
-   press Continue.
+1. **Round 0 is blind.** Every seat answers at once without seeing the others. A timed window
+   lets you correct a wrong assumption, add a fact, or answer a seat's question, including when
+   the seats already agree. Use **Continue** to move on immediately, or let the timer expire.
+   Questions get the longer answer window; a round with no question uses the review window.
    Each reply card starts folded to its seat and position, including in the round still coming
    in; click its head to read the reply, and again to fold it. A card you open stays open until
    the review changes.
 2. **Critique rounds.** Each seat sees the others' replies under their lens names and argues.
-   Between rounds the countdown runs; type to hold it.
+   Between rounds the countdown runs; writing a note requests more time. A finished final round
+   without questions goes straight to the verdict.
 3. **Questions for you.** Answer in one area above the replies. Identical questions share a field
    and list every seat that asked (name, lens and mood); distinct questions stay separate. Send all answers together, add
-   a general note, or continue with unknowns left blank. Final-round questions also wait before
-   the verdict. Explicit no-question placeholders such as `None.` or `none, treat available
-   hours as an explicit unknown` do not create a pause. Ambiguous wording still waits for you.
+   a general note, or continue with unknowns left blank. Final-round questions also get the
+   answer window before the verdict. With no response, the review continues automatically and
+   records that the questions went unanswered; silence never supplies facts or accepts a result.
+   The browser tab title and a sound draw attention to questions without taking keyboard focus.
+   Explicit no-question placeholders such as `None.` or `none, treat available
+   hours as an explicit unknown` do not create an answer window. Ambiguous wording still gets one.
    No extra model call is used to collect or filter questions.
    Every submitted answer is shared with all seats in the next round and with the chairman,
    even if only one seat asked. This gives every seat the same corrections and constraints.
@@ -774,8 +854,8 @@ usual login:
 }
 ```
 
-Use the JSON client for coding agents. It returns one compact object per command and waits for
-input instead of answering questions automatically. From a checkout:
+Use the JSON client for coding agents. It returns one compact object per command and exposes
+timed question windows without answering for the person. From a checkout:
 
 ```bash
 npm start -- --no-open
@@ -790,7 +870,47 @@ target another local server. `status --refresh` checks installed CLIs and cached
 `check` validates the request and estimates its size. Neither makes a model call. `start`,
 `answer`, `resume` and `verdict` can cause calls under the review's existing limits.
 
-When `wait` returns `waiting`, use its question IDs and round number in an answer file:
+Connected assistants use the same client through MCP. Start with `roundtable_guide` and
+`roundtable_status`, then `roundtable_check` and `roundtable_start` with `{ "review": ... }`.
+`roundtable_wait` takes `{ "id": "<review-id>" }`; after displaying questions it also takes
+`afterRound`. `roundtable_answer` takes `{ "id": "...", "round": 0, "answers": [...] }`.
+`roundtable_hold`, `roundtable_finish`, `roundtable_stop`, `roundtable_resume` and
+`roundtable_verdict` expose the corresponding controls. All tools have typed input schemas
+and return matching JSON text and `structuredContent`. No acceptance or export tool is exposed.
+
+MCP replies identify `service: "roundtable"`; a started review has an id and board URL.
+`nextAction` includes tool names and arguments for the question handoff. `completed` is true
+only when the review is done **and** the chairman's verdict is ready. A returned id, completed
+seat turn or timed-out wait is not completion. Keep waiting through `running` and `verdict`.
+If synthesis failed, was skipped or the review was interrupted, report that limitation instead
+of writing a replacement recommendation. `depth` reports planned critique rounds, attempted
+rounds and completed rounds (including separate critique counts). A completed round has a
+reply entry for every seat and at least one usable reply; an all-failed, invalid, PASS-only
+or prohibited-tool round is attempted, not completed. Mixed rounds may still contain failed
+seats, so report those limitations alongside depth. Report actual depth:
+consensus can stop early, and zero critique rounds means the seats did not answer each other.
+
+When `nextAction.type` is `ask_user`, the coordinator must actually ask `gate.questions`:
+
+1. Use the host's available question/input tool. If there is no form, ask in normal chat.
+   Combine overlapping questions when useful, while retaining their IDs. A raw JSON dump
+   alone is not the question handoff.
+2. Tell the person when `gate.autoContinueAt` expires and that the review will continue with
+   unanswered facts still unknown. Use only supplied facts; do not fill missing answers yourself.
+3. If the person needs more time, send `agent hold --id <review-id> --input file` with
+   `{ "round": 0 }`. This renews the configured answer window, bounded by the wall clock.
+   Do not use it as a background keepalive. `nextAction.extend` provides the command and input.
+4. With an asynchronous input tool, run `nextAction.waitCommand` while the prompt is pending.
+   It uses `wait --after-round <round>` to wait for another step without repeatedly returning
+   the same question. A timed-out read returns `nextAction.type: "await_user"`; keep the existing
+   prompt and wait again. When its window closes, report the outcome. Silence is not consent.
+5. Before submitting a reply, read `agent status --id <review-id>`. If the round has advanced,
+   keep the user's reply and explain that it was not submitted. Do not attach it to different
+   question IDs or start another review automatically.
+
+`nextAction.answerTemplate` and `nextAction.command` give the answer shape and agent subcommand.
+Prefix subcommands with `node src/cli.js` from a checkout, or `roundtable` when installed.
+Use the current question IDs and round number in an answer file:
 
 ```json
 { "round": 0, "answers": [{ "id": "q1", "text": "The deadline can move by a week." }], "message": "Keep the trial reversible." }
@@ -808,9 +928,12 @@ while the agent keeps working. An agent should offer the link, not open it. Use 
 is already running; start one only when `status` cannot reach it.
 
 `wait` returns at a question or completion, or after 25 seconds (configurable from 1 to 30 with
-`--seconds`). It does not continue a round. With `"unattended": true` in `options` the review
-never pauses: `wait` only ever returns at completion, and the seats assume instead of asking. Read `status`, answer only from supplied facts, and
-ask the user for missing facts. Empty answers leave questions open. Stale-round answers fail
+`--seconds`). Reading never extends or continues a round; the server owns the timer. A timed
+checkpoint with no questions has `nextAction.type: "wait"`; keep waiting instead of asking for
+an empty confirmation. With `"unattended": true` in `options` the review
+never pauses: `wait` returns progress or completion, and the seats assume instead of asking.
+In attended reviews, read `status`, answer only from supplied facts, and ask for missing facts.
+Empty answers leave questions open. Stale-round answers fail
 without being sent. Writes are never retried automatically. Use `stop` to abort all calls,
 `resume` for an interrupted review, or `verdict` to request a missing verdict. Acceptance and
 export stay explicit user decisions.
@@ -848,19 +971,26 @@ on stdin. Keep real request and answer files outside a public repository.
     { "vendor": "claude", "lens": "cost", "mood": { "preset": "builder" }, "model": "sonnet", "effort": "low" }
   ],
   "chairman": { "vendor": "claude", "model": "sonnet", "effort": "medium" },
-  "options": { "critiqueRounds": 0, "memory": "stateless", "budget": { "claude": { "tokens": 120000 } } }
+  "options": { "critiqueRounds": 1, "memory": "stateless", "budget": { "claude": { "tokens": 120000 } } }
 }
 ```
 
-### A small review, and how to choose its settings
+Attended requests can set `options.autoContinueMs` (default 15000) and `options.questionWaitMs`
+(default 120000), each from 100 to 600000 milliseconds. Both are ignored in unattended mode.
+The overall wall clock remains a hard limit, including response windows and extensions.
+
+### Choose the review depth
 
 The cost of a review is the number of calls, not the length of the request. Each seat call
 carries the provider's own overhead before the field notes arrive, so one more seat or round
 costs far more than one more sentence of context. `agent --help` repeats this recipe:
 
-- **Size.** Two seats, `critiqueRounds` 0, `memory` stateless and a budget per vendor. That is
-  three calls: two seats and the verdict. Add a seat or a round only when the user asks for
-  depth.
+- **Size.** Normally use two seats, `critiqueRounds` 1 (the engine default), `memory` stateless
+  and a budget per vendor: up to five calls before any repairs. Use zero critique rounds for
+  a requested quick comparison and disclose that the seats will not respond to each other.
+  Two critique rounds can suit a requested deep review or several consequential trade-offs,
+  within the person's time and budget. Consensus may end early. Do not automatically start
+  a second review or exceed agreed limits because disagreement remains.
 - **Lenses.** Give every seat a different lens, taken from what the decision could get wrong:
   risk, cost, evidence, reversibility, long-term effects, user impact. Two seats with the same
   lens mostly agree, which wastes a call.

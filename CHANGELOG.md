@@ -1,6 +1,40 @@
 # Changelog
 
-## Unreleased
+## 0.6.3
+
+### Assistant integration
+
+- Add `roundtable setup` to connect user-level MCP tools and a workflow skill for Codex,
+  Claude Code and Antigravity across projects. Include checks and removal, preserve unrelated
+  settings and refuse to overwrite edited entries. No automatic npm install hook is added.
+- Add a dependency-free stdio MCP adapter using the existing JSON client. Start a hidden
+  local board on demand, expose questions and bounded extensions, and keep reviews running
+  when the host disconnects. Report completion only after a ready chairman verdict.
+- Recommend one critique round for normal agent reviews and reserve zero for quick
+  comparisons. Report actual completed rounds so agents cannot mistake blind positions
+  for a discussion. Bundle the skill in the npm payload and test installation outside a checkout.
+- Count attempted rounds separately from rounds with usable replies, so failed critiques do
+  not inflate review depth. Share the HTTP client and validation bounds between MCP and CLI;
+  remove the subprocess watchdog that could interrupt a valid long wait.
+- Check server health without waiting for provider catalogues; retry transient readiness
+  errors and refuse incompatible versions, modes or explicit storage directories. Add idle-only
+  server status/start/stop/restart commands for installed updates.
+- Preserve all unmanaged TOML declaration forms, literal dollar strings, selected modes and
+  ports. Honor Claude profile overrides, check the Node executable and repair missing managed
+  files. Test a real npm archive installation after moving its source checkout.
+
+### Review workflow
+
+- Make attended checkpoints finite in both the browser and agent client: 15 seconds for a
+  correction window and two minutes for a question by default, configurable separately.
+  An unanswered window continues with unknowns intact; it never supplies an answer or accepts
+  the recommendation. The hard wall clock still applies.
+- Replace permanent holds on incidental browser clicks with bounded extensions while writing
+  or requesting More time. Show question countdowns, draw attention in the tab title, and
+  retain automatic-continuation notices after reload.
+- Return an explicit question handoff, answer template, deadline and commands to coordinating
+  agents. Add `agent hold` for a bounded extension and `wait --after-round` to await a response
+  without asking the same question again. Empty checkpoints need no user confirmation.
 
 ### Documentation
 

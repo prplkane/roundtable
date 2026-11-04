@@ -125,12 +125,39 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   resume and verdict requests can make calls under the same budgets and limits as the board.
   Writes are never automatically retried. JSON output contains private review content; treat
   request files, answer files and saved command output like transcripts.
+  Attended response windows continue automatically after the configured interval. A timeout
+  records unanswered questions; it is not a human note, acceptance or a supplied fact. Reading
+  state never extends the window. The authenticated `hold` action grants a bounded extension
+  within the overall wall clock, and stale-round answers and extensions are refused. Browser
+  drafts are never submitted by a timer. Agent snapshots provide a question handoff and answer
+  template; the host agent is responsible for presenting the questions and collecting replies.
   Research snapshots project known fields only: fixed failure descriptions, bounded progress
   and validated source records. Raw CLI error text remains in board/transcript details, not
   the agent snapshot; saved older failures receive the same projection.
   Notes sent by the client carry `source: agent`; board notes default to `source: human`.
   This is declared attribution, not an authenticated identity or proof of human approval.
   It grants no extra permissions. Legacy notes without a source retain their original label.
+- **Assistant setup and MCP:** `roundtable setup` explicitly installs user-scoped MCP entries
+  and the Roundtable skill for the selected hosts. It makes no model call and is never run
+  by an npm installation hook. Unrelated settings are preserved; edited or unmanaged
+  Roundtable entries are refused. A local receipt stores paths and hashes, not configuration
+  contents or credentials. Updates and removal check those hashes before changing files.
+  Missing owned files can be repaired or removed; existing edited files remain protected.
+  Setup honors Codex and Claude profile overrides and checks the stored Node executable.
+  The stdio MCP adapter exposes the JSON client's review actions, not a general shell or
+  filesystem tool. It validates inputs, bounds protocol messages and uses the same loopback
+  token and server validation. No acceptance or export action is exposed. Setup, discovery
+  and guide reads make no model call; review actions follow the existing budgets and consent
+  rules. Connecting AGY as a host does not grant consent to use AGY as a provider.
+  On demand it starts a hidden board that survives a disconnected MCP client, preserving
+  running reviews and answer timers. Cancelling an MCP request only stops that client read
+  or write attempt; a write might already have reached the server. Read state before retrying,
+  and use Stop to cancel an actual review. No uncertain write is automatically retried.
+  Health reads check API/package version, mode and any explicit data directory before reuse;
+  temporary readiness failures have a bounded retry window. The authenticated server
+  stop/restart command requires a matching launch instance and refuses active reviews or
+  concurrent writes. It does not automatically stop an old board during an update.
+  MCP results contain private review text visible to the invoking assistant and its host.
 - **Antigravity can put your Google account at risk.** Google's Antigravity FAQ says wrapping
   `agy` inside third-party applications is not supported under consumer plans, and that
   third-party access violates its Terms of Service and can lead to suspension or termination

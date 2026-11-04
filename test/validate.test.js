@@ -33,6 +33,9 @@ test('debate request: bounds on rounds, seats, options and caps', () => {
   const unattended = base(); unattended.options.unattended = true;
   assert.equal(validateDebateRequest(unattended, { adapters: ADAPTERS }).options.unattended, true);
   rejects((b) => { b.options.wallClockMs = 10; }, /wallClockMs/);
+  for (const value of [0, -1, 100.5, 600001, '120000']) rejects((b) => { b.options.questionWaitMs = value; }, /questionWaitMs/);
+  const timed = base(); timed.options.questionWaitMs = 120000;
+  assert.equal(validateDebateRequest(timed, { adapters: ADAPTERS }).options.questionWaitMs, 120000);
 });
 
 test('debate request: unknown keys are dropped, a dollar cap is kept where cost is reported', () => {

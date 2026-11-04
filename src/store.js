@@ -280,6 +280,7 @@ export function rebuildDebate(rows) {
       events.push({ type: 'seat-state', round: i, seat: r.seat, state: r.state || (r.failed ? (r.timedOut ? 'timed-out' : 'failed') : (r.reprompted ? 'reprompted' : 'replied')) });
     }
     events.push({ type: 'round-done', round: i, replies, positions: positions(replies) });
+    for (const timeout of rows.filter((r) => r.type === 'gate-timeout' && r.round === i)) events.push({ type: 'gate-timeout', round: i, unanswered: timeout.unanswered });
     for (const note of humanNotes[i] || []) events.push({ type: 'human', round: i, ...noteRecord(note) });
     for (const ro of reopens.filter((x) => x.round === i)) events.push({ type: 'reopen', round: ro.round, stop: ro.stop });
   });
