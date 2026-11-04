@@ -703,7 +703,11 @@ Measured dollar baselines are adjusted for that extra input. These are conservat
 allowances, not exact token counts or guaranteed spending limits.
 
 Set its **Limits**: searches (1–8 reported operations) and time (30–600 seconds). An operation
-can contain several queries or page visits, and can begin before the CLI reports it. Roundtable
+can contain several queries or page visits, and can begin before the CLI reports it. A Codex
+searcher is asked to make one operation carrying up to that many queries, and another only
+when the first returned nothing usable: each further operation resends everything gathered so
+far and is one more request that can stall, so this keeps its input near a single search's
+(about 22k tokens) instead of growing with each one. Roundtable
 stops the call when a reported operation exceeds the limit; it cannot undo upstream work or
 guarantee a provider billing ceiling. Claude also reports how many searches it ran when the
 call ends, and a count over the limit fails the research. Claude runs each search on a small
@@ -715,7 +719,8 @@ While the searcher works, the review state reads **Searcher at work** and the so
 shows its eye moving down a column of results (still, with reduced motion).
 
 The board saves up to eight sources with URLs, excerpts, publication dates where reported,
-and the time the bundle was gathered. Citations and excerpts are supplied by the searcher's provider, not
+and the time the bundle was gathered. A date that is not a real `YYYY-MM-DD` date (a month
+only, a year only, "unknown") is saved as not reported; the source itself is kept. Citations and excerpts are supplied by the searcher's provider, not
 independently verified by Roundtable. Every seat and the chairman gets the identical saved
 bundle, with tools disabled during discussion. The source panel, agent state, field-notes
 file and Markdown export include it. Its spending appears as the **searcher** row in Usage
@@ -728,10 +733,16 @@ duplicates, and the response must contain at most eight entries before deduplica
 Different query strings and fragments remain distinct URLs. This cleanup is local and makes
 no extra model call; repeated sources do not discard an otherwise usable search result.
 
-A Codex search can stop making progress while its process remains open. Roundtable stops a
-Codex searcher call that makes no progress for 40 seconds (its own "Reconnecting" notices do not
-count) and starts it once more if at least 30 seconds of the searcher's time limit remain.
-This recovery does not identify or fix the cause of the stall. Both attempts share one limit, both are
+A Codex search can stop making progress in two ways. Most often one of its requests, the search
+or the answer after it, streams nothing: at low effort (the searcher's default) Codex reconnects
+after 15 seconds of silence, as any light Codex call does (see Error logs), and each reconnect
+resends only that request, so a finished search is kept. Less often a search starts and nothing
+more arrives while its process remains open, so no silence limit fires. Roundtable stops a Codex
+searcher call that makes no progress for 40 seconds (a "Reconnecting" notice counts as progress,
+since those reconnects are bounded) and starts it once more if at least 30 seconds of the
+searcher's time limit remain; a call whose reconnects were all used up is started once more the
+same way. This recovery does not identify or fix the cause of the stall. Both attempts share one
+limit, both are
 recorded, and the stalled one's usage stays unknown, since Codex reports none for it. The retry
 is a fresh call with its own search limit, so one research step can run up to twice the
 configured number of searches; each attempt's row in the record says how many it ran. A stall
@@ -918,15 +929,22 @@ chairman timeouts are not retried automatically; the searcher's bounded restart 
 above. Search and reconnect stages in the error details help distinguish these from slow
 model replies. These controls do not guarantee the provider's availability.
 
-A Codex reply streams over SSE through a provider entry Roundtable names per call, pointing at
-the same ChatGPT backend with the same login. After response headers arrive, a stream that
-stays silent for the idle limit can trigger a reconnect, starting the answer again at most
-twice. The idle limit is (call limit − 15 s) ÷ 3, between 10 s and 300 s: 95 s at the default
-five-minute call limit. This timer does not cover waiting for the response headers;
-Roundtable's overall call limit still bounds the process. The provider may charge interrupted
-attempts without including them in the reported usage. Raising the call limit also lengthens
-the idle limit, allowing more time for silent reasoning. Every
-reconnect the CLI reports is counted: a reply that came after one carries a
+A Codex reply streams over WebSocket through a provider entry Roundtable names per call, pointing
+at the same ChatGPT backend with the same login. A response can take minutes to start; over
+WebSocket the idle limit runs from the moment the request is sent, so that wait is caught like a
+silent stream. When the stream stays silent for the idle limit, (call limit − 15 s) ÷ 3, between
+10 s and 300 s: 95 s at the default five-minute call limit, the CLI reconnects and starts the
+answer again, at most twice; once those are used up the call fails as a stalled connection,
+before the call limit. The provider may charge interrupted attempts without including them in
+the reported usage. Raising the call limit also lengthens the idle limit, allowing more time for
+silent reasoning at high effort. A call at low effort (or none or minimal) answers within
+seconds once its request streams, so it reconnects after 15 seconds of silence instead, at most
+five times (the derived limit when a tight call limit makes that shorter). Once the reconnects
+are used up over WebSocket, the CLI falls back to HTTPS for the rest of the call, where the idle
+timer starts only after response headers; a WebSocket that does not open within 10 seconds does
+the same. Roundtable's overall call limit still bounds the process. Every reconnect is counted,
+including the first WebSocket retry that Codex leaves out of its events (Roundtable reads it from
+Codex's retry log): a reply that came after one carries a
 **reconnected ×N** mark on its card, and the count is saved with the attempt, where failure
 details, error logs and the agent state show it. The markdown transcript does not carry it.
 

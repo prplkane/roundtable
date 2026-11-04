@@ -15,6 +15,47 @@
 - Take the version shown in the board footer and sent in the Codex app-server handshake from
   `package.json`; both still said 0.6.1.
 
+### Review fixes
+
+- Stream Codex replies over WebSocket, so a response that never starts is caught. A request
+  can be held for minutes before its response starts (one traced call: 173 seconds). Over SSE,
+  Codex starts its idle timer only once response headers arrive, so that wait had no limit short
+  of Roundtable's call limit; over WebSocket the timer starts when the request is sent. Against a
+  local server that never answers, SSE waited until it was killed, while WebSocket reconnected at
+  each idle limit. On the real backend, 18 WebSocket calls at low, medium and high effort all
+  answered, with no reconnect on a healthy call; the three stalls were resent at their idle
+  limit. After its reconnects Codex falls back to HTTPS for the rest of the call, where the wait
+  for response headers is again bounded only by the call limit, and a WebSocket that does not
+  open within 10 seconds does the same. Reconnects are now counted from Codex's retry log too,
+  since its events leave out the first WebSocket retry.
+- Reconnect a silent Codex request after 15 seconds instead of up to 95. Each request a Codex
+  call makes either streams within a few seconds or stays silent, on every model and search mode
+  tried, through `codex exec` and `codex app-server` alike, with or without Roundtable's
+  settings. A Codex seat, chairman or searcher at low effort (or none or minimal) now reconnects
+  after 15 seconds of silence, up to five times, and a reconnect resends only the silent request.
+  This does not make stalls rarer (in testing, 15, 35 and 60 second limits each saw one or two
+  slow calls in eight); it makes a silent one cost about 15 seconds instead of 95 for a seat at
+  the default call limit, where stalled low-effort seats took 101 to 220 seconds. Other efforts
+  keep the limit derived from the call limit, since a request that reasons longer may stay silent
+  while healthy (GPT-6.1 Sol at high effort sent no stream events for 15 to 17 seconds).
+- Count a Codex searcher's reconnect notices as progress, and start once more a searcher call
+  whose reconnects all failed. The reconnects are bounded, and a reconnect keeps a finished
+  search, so stopping the call at a reconnect threw that search away. The fresh attempt follows
+  the 0.6.1 rules: at least 30 seconds must remain, and both attempts share the time limit.
+- Keep a search whose sources include a date the searcher could not give as a real `YYYY-MM-DD`
+  date. One such date (a month only, a year only, "unknown") used to reject the whole source
+  bundle and stop the review before discussion; that source's date is now saved as not reported
+  and the other sources keep theirs.
+
+### Security and usage
+
+- Ask a Codex searcher for one search call carrying several queries. Each further call is another
+  request that can stall, and it resends everything gathered so far: input grew from about 22k
+  tokens for one search to 103k for four. In testing, one call returned as many sources (3 on
+  average) at 23k input tokens on average instead of 35k, with a median of 13 seconds instead of
+  41. The search limit is unchanged: a second call is still allowed when the first returned
+  nothing usable. Claude and Antigravity search one query per call and get no such hint.
+
 ## 0.6.1
 
 ### Security and usage

@@ -241,8 +241,10 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       fire('attempt', attempt);
       checkInterrupted();
       const throttled = !res.ok && res.kind === 'throttled';
-      // a search that went silent is started once more, inside the searcher's one time limit
-      const stalled = kind === 'research' && !res.ok && res.systemCode === 'STALL' && searchEnds - now() >= SEARCH_RETRY_MIN_MS;
+      // a search that went silent is started once more, inside the searcher's one time limit: one
+      // the watchdog stopped (STALL), or one whose CLI used up its reconnects on a silent stream
+      const silent = res.systemCode === 'STALL' || res.systemCode === 'CLI_FAILURE' && res.kind === 'timeout';
+      const stalled = kind === 'research' && !res.ok && silent && searchEnds - now() >= SEARCH_RETRY_MIN_MS;
       const retry = !res.ok && attemptNo === 1 && !expired() && !stopRequested && !(finishRequested && !isChairman)
         && (stalled || kind !== 'research' && (res.kind === 'network' || throttled && res.resetsAt != null && res.resetsAt < deadlineAt));
       // the attempt row keeps `throttled`; everything after it sees the quota failure it became,

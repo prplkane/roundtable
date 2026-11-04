@@ -103,18 +103,23 @@ test('research is explicit, bounded and runs on one searching CLI; supplied sour
     assert.throws(() => researchSettings({ ...settings, ...change }), /Research/);
   assert.equal(validateDebateRequest({ ...b, fieldNotes: { ...fieldNotes, research: sources } }, { adapters: ADAPTERS }).fieldNotes.research, undefined);
   assert.doesNotMatch(researchPrompt(settings), /PRIVATE_REVIEW_CONTEXT/);
+  // Codex is asked for one search call carrying several queries; the others search one query a call
+  const codex = researchSettings({ ...settings, vendor: 'codex', maxSearches: 3 });
+  assert.match(researchPrompt(codex), /Use at most 3 search operations, then stop searching and report the evidence\. Make ONE web search call; it may carry up to 3 queries\./);
+  assert.match(researchPrompt({ ...codex, maxSearches: 1 }), /up to 1 query\./);
+  for (const vendor of ['claude', 'agy']) assert.doesNotMatch(researchPrompt(researchSettings({ ...settings, vendor })), /ONE web search call/, vendor);
   assert.ok(buildArgs(ADAPTERS.codex, { prompt: 'q' }).args.includes('web_search="disabled"'));
   const p = project({ seats, chairman: { vendor: 'claude' }, critiqueRounds: 1, research: settings });
   assert.equal(p.bySeat.research.calls, 1);
   assert.ok(p.byVendor.codex.seats.includes('research'));
 });
 
-test('source records validate URLs, dates and bounds while keeping excerpts as quoted data', () => {
+test('source records validate URLs and bounds while keeping excerpts as quoted data', () => {
   const good = researchSources(sourceText, '2026-10-30T00:00:00.000Z');
   assert.equal(good[0].id, 'S1');
   assert.equal(good[0].gatheredAt, '2026-10-30T00:00:00.000Z');
   for (const s of [{ ...sources[0], url: 'javascript:alert(1)' }, { ...sources[0], url: 'https://user:secret@example.com/' },
-    { ...sources[0], publishedAt: '2026-02-30' }, { ...sources[0], excerpt: 'x'.repeat(1201) }])
+    { ...sources[0], excerpt: 'x'.repeat(1201) }])
     assert.throws(() => researchSources(JSON.stringify({ sources: [s] })), /Research/);
   for (const raw of ['not JSON', '{"sources":[]}']) assert.throws(() => researchSources(raw), /Research/);
   assert.deepEqual(researchSources(JSON.stringify({ sources: [sources[0], sources[0]] }), good[0].gatheredAt), good);
@@ -128,6 +133,16 @@ test('source records validate URLs, dates and bounds while keeping excerpts as q
   assert.equal(observer.accept({ type: 'item.started', item: { id: 'tool', type: 'command_execution' } }), false);
   observer.report(0); assert.equal(observer.searches, 1, 'a CLI count only raises the figure');
   observer.report(2); assert.equal(observer.searches, 2);
+});
+
+test('a publication date that is not a real YYYY-MM-DD date becomes not reported instead of failing the bundle', () => {
+  const dated = (publishedAt) => researchSources(JSON.stringify({ sources: [{ ...sources[0], publishedAt }] }))[0].publishedAt;
+  for (const bad of ['2026-02-30', '2025-03', '2025', 'unknown', 'null', 'March 2025', '2025-03-03T10:00:00Z', '', ' ', 20250303, {}, null])
+    assert.equal(dated(bad), null, JSON.stringify(bad));
+  assert.equal(dated(' 2026-01-01 '), '2026-01-01');
+  const [kept, other] = researchSources(JSON.stringify({ sources: [sources[0], { ...sources[0], url: 'https://example.com/other', publishedAt: '2025-03' }] }));
+  assert.equal(kept.publishedAt, '2026-01-01', 'the other sources keep their dates');
+  assert.equal(other.publishedAt, null);
 });
 
 test('repeated source URLs keep one citation and combine bounded evidence without losing distinct URLs', () => {
@@ -146,7 +161,7 @@ test('repeated source URLs keep one citation and combine bounded evidence withou
   const full = { ...first, excerpt: 'x'.repeat(1200) };
   const bounded = researchSources(JSON.stringify({ sources: [full, duplicate] }));
   assert.equal(bounded[0].excerpt, full.excerpt, 'keep the first complete excerpt when another will not fit');
-  for (const invalid of [{ ...duplicate, title: '' }, { ...duplicate, excerpt: 'x'.repeat(1201) }, { ...duplicate, publishedAt: '2026-02-30' }])
+  for (const invalid of [{ ...duplicate, title: '' }, { ...duplicate, excerpt: 'x'.repeat(1201) }])
     assert.throws(() => researchSources(JSON.stringify({ sources: [first, invalid] })), /Research/, 'duplicates must still pass every field check');
   assert.throws(() => researchSources(JSON.stringify({ sources: Array(9).fill(first) })), /expected 1–8 sources/, 'the raw record limit still applies');
 });
@@ -183,7 +198,7 @@ test('research CLI permits only reported web searches, enforces the count and ke
     assert.equal(result.research.searches, 1);
     assert.equal(result.usedTools, false);
     assert.ok(result.raw.args.includes('web_search="live"'));
-    assert.ok(result.raw.args.includes('model_providers.roundtable.supports_websockets=false'), 'the searcher streams the same way as a seat');
+    assert.ok(result.raw.args.includes('model_providers.roundtable.supports_websockets=true'), 'the searcher streams the same way as a seat');
     assert.ok(result.raw.args.includes('mcp_servers={}'));
     assert.ok(result.raw.args.includes('features.shell_tool=false'));
     await assert.rejects(run('ordinary debate'), (e) => e.code === 'TOOL_POLICY');
