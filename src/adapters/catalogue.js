@@ -1,7 +1,7 @@
 // What each vendor can be asked for: model ids and effort levels, from the sources that exist.
 //
 //  claude  no list command headless; the aliases in config.js are the hints
-//  codex   the plan table in models.js and the levels in config.js. Not ~/.codex/config.toml: the
+//  codex   the model table in models.js and the levels in config.js. Not ~/.codex/config.toml: the
 //          seat runs with --ignore-user-config, so that file cannot describe its defaults
 //  agy     `agy models` prints "<id>\t<label>" lines (slow: a network call), cached after one read
 import { ADAPTERS } from './config.js';
@@ -37,7 +37,7 @@ export async function vendorCatalogue({ agyModels = readAgyModels } = {}) {
       models: a.modelHints.map((id) => ({ id, label: id })), efforts: a.effortLevels,
       defaultModel: null, defaultEffort: null, pool: a.pool, effortInModel: !!a.effortInModel,
     };
-    // claude and codex: the plan table (models.js); the CLI's own default named where it is known
+    // claude and codex: the model table (models.js); the CLI's own default named where it is known
     if (MODELS[vendor]) entry.models = MODELS[vendor].slice();
     if (vendor === 'claude') entry.defaultLabel = 'Opus 5.5';
     // The installed CLI chooses its default; a static model table cannot establish it.

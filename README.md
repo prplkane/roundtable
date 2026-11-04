@@ -9,6 +9,9 @@ Use it to compare technical approaches, review a product decision or examine a p
 different perspectives. The browser interface runs locally, and a JSON command-line client
 supports the same workflow for agents and scripts.
 
+Usage statistics describe your own agents' calls in Roundtable and stay on your machine.
+Roundtable has no telemetry or analytics service and sends no usage data to its developers.
+
 **Requirements:** Node.js 22 or newer. No runtime dependencies. Live reviews use installed
 Claude, Codex or Antigravity CLIs, or an OpenAI-compatible endpoint for a local or hosted model.
 
@@ -74,6 +77,9 @@ Open [localhost:4747](http://localhost:4747/). The header identifies the session
 Start with two seats and one critique round; see the [first test-drive checklist](docs/workflow.md#a-first-live-test-drive)
 for a complete walkthrough. `npm run doctor` checks setup without making model calls.
 
+After updating, stop the running server with Ctrl+C, run `npm start` again and refresh the
+page. Refreshing the browser alone does not load an updated server or model list.
+
 ## Controls and limits
 
 | Control | Behavior |
@@ -81,7 +87,7 @@ for a complete walkthrough. `npm run doctor` checks setup without making model c
 | Answer questions | Add context before the discussion continues. Agent notes and your notes are labelled separately. |
 | Finish with verdict | End the discussion and request a recommendation from the completed replies. Available after a usable round. |
 | Stop | Cancel the discussion and any active chairman call. Saved replies and reported usage remain. |
-| Delete / Clear finished | Remove inactive history while protecting running sessions. Exports and usage statistics are retained. |
+| Delete / Clear | Remove finished and interrupted history while protecting running sessions. Exports and local usage statistics are retained. |
 
 Set round, time and provider budget limits before starting. Budget checks run before each
 attempt, including retries. If a provider omits token usage while a token cap is set, further

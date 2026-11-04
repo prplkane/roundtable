@@ -33,6 +33,10 @@ npm test
 
 There are no dependencies to install.
 
+After an update, stop the running server with Ctrl+C, start it again with `npm start` (or
+`npm run fake` for the demo), then refresh the browser. Refreshing the page alone does not
+load an updated server or model list.
+
 ## 2. Install and log in to each vendor
 
 Seat only the vendors you have a subscription for. One vendor is enough: you can seat it
@@ -76,10 +80,12 @@ with no model call and no conversation. It reads when the server starts, on **Re
 after each Claude reply and when a debate ends, from an empty folder with a seat's lockdown
 (no tools, no MCP servers, safe mode) but with slash commands on, which `/usage` needs. Only the session, weekly and per-model weekly limit lines are kept; the activity summary
 the same answer prints (requests, sessions, skills, MCP servers) is discarded and never saved.
-If the read gives nothing, the figure each Claude reply carries is shown instead; with API-key
-billing, where `/usage` shows no plan limits, reads stop after the first and replies supply it. If an answer
-ever shows a turn, tokens or a cost, or the read gets no answer within 30 seconds, Roundtable
-stops reading Claude quota until the server restarts and says so on the console.
+If a proven-free read has no limit lines, the last known figure or a reply's quota is kept;
+the next normal read can recover without restarting. Missing limits do not establish the
+account's billing method or login state. If no figure is available, the card says **quota unavailable**.
+If an answer is not proven to be a local command with no turn, tokens or cost, or the read
+gets no answer within 30 seconds, Roundtable stops reading Claude quota until the server
+restarts and says so on the console.
 
 ### Codex (OpenAI)
 
@@ -272,7 +278,7 @@ checked yet).
 | Vendor | Claude, Codex or Antigravity, or **API endpoint** (section 7b). Pick the same vendor more than once if you like. Next to it, a tag says what kind of seat it is: `CLI · subscription`, `API · local` or `API · pay-per-token`. |
 | Lens | The angle this seat argues from, for example "risk", "cost", "the clinician". Must be unique: it is the only name the other seats ever see. |
 | Mood | How it argues. `grill` (the default) attacks assumptions and demands evidence. `steelman` states each option at its best first. `builder` judges by what it takes to ship. `contrarian` takes the least popular side. `custom` takes your own sentence. |
-| Model | Under the vendor name on the card, with stronger model families first and plan restrictions beside the name. This is a broad capability order, not a benchmark comparison across vendors. Antigravity lists each model once and its effort pips choose the variant. **Custom model ID…** opens a text field and keeps your selection while you edit; enter an ID or choose a listed model before starting. Terra requires Codex CLI 0.159 or later; access still depends on your plan. A retired model is refused with what to use instead. |
+| Model | Under the vendor name on the card, with stronger model families first. Names carry only **default** and **lightest** notes; the CLI decides model access. This is a broad capability order, not a benchmark comparison across vendors. Antigravity lists each model once and its effort pips choose the variant. **Custom model ID…** opens a text field and keeps your selection while you edit; enter an ID or choose a listed model before starting. Terra requires Codex CLI 0.159 or later. A retired model is refused with what to use instead. |
 | Effort | The thinking level, as pips: click one to set it, click the last filled one again for the CLI's default. Higher thinks longer and draws more. |
 | Login profile | Behind "Login profile" on the card. Leave empty to use your normal login; fill in only to seat a second account of the same CLI (step 7). |
 
@@ -387,6 +393,12 @@ remaining and a small bar, with the window and reading age. Missing figures say 
 Open **Usage details** for per-seat tokens, costs and timing, grouped by account with each
 account's live windows. A **+** after a total means some calls reported nothing; a dash means
 the CLI reports no cost. Rounds fold once a review finishes, so the conclusion leads.
+
+These statistics describe your own agents' calls in Roundtable and are calculated and stored
+on your machine. Roundtable has no telemetry or analytics service and sends no usage data to
+its developers. Provider quota readings describe your account and may also include activity
+outside Roundtable. Your selected providers receive the prompts needed for live reviews;
+their data handling is separate.
 
 Codex reports cumulative tokens when resuming a thread. Roundtable charges only the increase
 since that seat's last reading and keeps the original totals under `usage.raw`. A missing or
@@ -976,7 +988,7 @@ there is no current snapshot. Refresh with an authenticated JSON `POST /api/pref
 | A seat is "reconnected ×1" | Its provider connection went silent for the idle limit and the CLI started the answer again. The reply is complete; the interrupted attempt may have been charged without appearing in usage. Repeated marks on one vendor point at the provider, not at the seat. |
 | "address already in use" | Another server is on that port. Stop it, or start with a different `PORT`. |
 | The board says the debate is unknown | The server was restarted. Reopen the address; the board replays from disk and offers Resume. |
-| A vendor's remaining quota shows nothing | Claude's read needs a subscription sign-in; with API-key billing, `/usage` has no limits to show and the figure appears after the first Claude reply. Antigravity's read needs agy 1.1.11 or later and a sign-in; check `agy -p /usage` in a plain terminal (not a shell opened by another agent CLI: with Claude Code's variables in the environment, agy sends the text to a model instead of answering it), or type the figure from its credits page. If the console says Antigravity quota reads are off, restart the server once the CLI answers `/usage` without a turn again. Codex shows only a weekly window on some plans. |
+| A vendor's remaining quota shows nothing | Use **Refresh status**. A free read without limits leaves quota unavailable or keeps the last figure; it does not disable later reads or require a model call. Claude and Antigravity use their CLI's `/usage`; Codex uses its account rate-limit command and may show only a weekly window. Antigravity needs agy 1.1.11 or later, a sign-in and the account acknowledgment. If the console says quota reads are off, restart after checking that the CLI answers its local usage command without a model turn. |
 
 ## Where things live
 
@@ -1004,17 +1016,18 @@ same live folder. The headless discussion script reads calibration from that fol
 
 ### Delete and clear history
 
-Use **Delete** beside a saved session, then confirm its title. Interrupted sessions can be
-deleted individually. **Clear** confirms the number of finished or stopped sessions
-selected (up to 1,000 per batch); it leaves running and interrupted sessions alone. The server
-rechecks the selection, including a session that started writing a new verdict after the list
+Use **Delete** beside a saved session, then confirm its title. **Clear** confirms the number
+of finished and interrupted sessions selected (up to 1,000 per batch); running sessions are
+kept, including those waiting for your answers. The server rechecks the selection, including
+a session that started writing a new verdict after the list
 loaded. A stale selection is refused before any selected session is removed.
 
 Deleting removes the local transcript, recovery copies and seat working files. It does not
 remove files you exported, quota calibration or usage statistics. Token estimates retain the
 recorded calls after cleanup and restart. A statistics-write failure prevents deletion. Open
-tabs showing a deleted session return to the list. Corrupt records must be repaired first so
-their reported usage can be retained. Browser preferences and provider histories are separate.
+tabs showing a deleted session return to the list without a deletion banner. Corrupt records
+must be repaired first so their reported usage can be retained. Browser preferences and
+provider histories are separate.
 
 ### Move older history
 

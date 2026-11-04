@@ -102,7 +102,11 @@ test('lamp: missing and logged out are red; a used-up window is red with its res
   assert.deepEqual([spent.state, spent.kind], ['danger', 'quota']);
   assert.match(spent.note, /quota used up \(7d, resets in 5d 0h\)/);
   assert.equal(lamp({ vendor: 'codex', installed: true, loggedIn: true, quota: { windows: [win('5h', 0.93)] } }, NOW).state, 'warn');
-  assert.equal(lamp({ vendor: 'claude', installed: true, loggedIn: true, quota: null }, NOW).state, 'ok');
+  for (const vendor of ['claude', 'codex', 'agy']) {
+    assert.deepEqual(lamp({ vendor, installed: true, loggedIn: true, quota: null }, NOW),
+      { state: 'ok', kind: null, note: 'logged in · quota unavailable' }, 'a successful login check does not promise quota after a model call');
+    assert.equal(lamp({ vendor, installed: true, loggedIn: true, quota: { windows: [win('5h', 0.12)] } }, NOW).note, 'ready · 5h 12%');
+  }
   assert.equal(lamp({ vendor: 'agy', installed: true, loggedIn: null, quota: null }, NOW).state, 'warn', 'a CLI that cannot say is not called ready');
 });
 

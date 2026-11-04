@@ -71,11 +71,12 @@ test('browser reports cannot inject provider events, URLs, messages or metadata'
 test('browser diagnostics keep a bounded, sanitized queue through offline reloads and acknowledge only saved entries', async () => {
   let saved = null, online = false;
   const storage = { getItem: () => saved, setItem: (key, value) => { saved = value; } };
-  const send = async (events) => { if (!online) throw new Error('offline'); return { saved: events.map((e) => e.id) }; };
+  const send = async (events) => { if (!online) throw new Error('offline'); return { saved: validateBrowserDiagnostics({ events }).map((e) => e.id) }; };
   const first = createBrowserDiagnostics({ storage, send });
-  for (let i = 0; i < 25; i++) first.report('browser-network', 'create', { message: 'PRIVATE-MARKER', url: '/private-title', status: 500 });
+  for (let i = 0; i < 25; i++) first.report('browser-network', requestAction(i % 2 ? '/api/debates/clear' : '/api/debates', true), { message: 'PRIVATE-MARKER', url: '/private-title', status: 500 });
   await first.flush();
   assert.equal(first.pending().length, 20);
+  assert.deepEqual([...new Set(first.pending().map((e) => e.action))].sort(), ['clear', 'create']);
   assert.doesNotMatch(saved, /PRIVATE-MARKER|private-title/);
   const reloaded = createBrowserDiagnostics({ storage, send });
   assert.deepEqual(reloaded.pending(), first.pending());

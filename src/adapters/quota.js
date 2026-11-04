@@ -110,10 +110,9 @@ export const CLAUDE_USAGE_ARGS = ['-p', '/usage', '--output-format', 'json', '--
   '--tools', '', '--disallowedTools', 'mcp__*', '--setting-sources', 'local', '--strict-mcp-config', '--safe-mode', '--no-session-persistence'];
 
 // A reader with its own latch, as for agy: an answer that is not shown free, or a read cut off by
-// the timeout, stops every later read until the server restarts. So does a free answer without
-// limit lines (API-key billing, not signed in, reworded text): reading again after every reply
-// would only log a failure each time, and each reply's own figure is used instead. An error
-// answer is no figure this time, not a stop. It runs from an empty folder
+// the timeout, stops every later read until the server restarts. A proven-free answer without
+// limit lines, or with an error, is no figure this time; the next ordinary read may work.
+// It runs from an empty folder
 // so no project settings or instructions load, with the seats' cleaned environment (a shell
 // another agent CLI opened changes how the CLI treats slash commands). home: a named profile's
 // CLAUDE_CONFIG_DIR. run, resolve and cwd are injectable so tests never spawn the CLI.
@@ -136,7 +135,7 @@ export function claudeQuotaReader({ run = runProcess, resolve = resolveBinary, w
     const obj = lastJson(out);
     if (!claudeReadWasFree(obj)) return stop(obj ? '/usage did not answer as a local command (a turn, tokens or a cost)' : '/usage gave no JSON answer');
     if (obj.is_error) return null;
-    return claudeUsage(obj.result) || stop('/usage shows no plan limits (API-key billing, or not signed in); each Claude reply\'s own figure is used');
+    return claudeUsage(obj.result);
   };
   read.stopped = () => stopped;
   return read;

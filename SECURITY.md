@@ -5,6 +5,10 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
 
 ## Data and execution
 
+- **No telemetry or analytics service.** Usage statistics describe your own agents' calls in
+  Roundtable. They are calculated and stored on your machine; Roundtable sends no usage
+  statistics, review text or diagnostic logs to its developers. Live reviews still send the
+  required prompts to your selected providers, whose data handling is separate.
 - **CLI login files stay with the CLI.** Roundtable does not read or copy those files. It runs each vendor's
   own CLI (`claude`, `codex`, `agy`) as a child process, and that CLI does its own login the way
   it does in your terminal. A test asserts that no source file names a credential file or copies
@@ -72,8 +76,9 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   The browser also retains field notes, seat choices, limits, chairman settings and budgets in
   local storage for that address. Clearing browser data removes those preferences, not server
   records. They can contain private context; use a browser profile you trust.
-- **History cleanup:** authenticated Delete and Clear requests recheck that sessions
-  are inactive. A data-folder lock prevents two servers from sharing the same writable history.
+- **History cleanup:** Delete and Clear include finished and interrupted sessions.
+  Authenticated requests recheck that none are running or waiting for input. A data-folder
+  lock prevents two servers from sharing the same writable history.
   Cleanup refuses linked directories and nested links. It saves `_usage.json` before removing
   transcripts, recovery backups and seat working files. This file keeps usage counters and model
   identifiers under hashed session IDs, without titles, prompts, replies, notes or account paths.
@@ -234,6 +239,11 @@ checks running and twelve running or queued in total. Requests beyond that limit
 status. Results are cached for one minute; forced refreshes have a five-second cooldown per pool.
 The cache retains at most 64 completed snapshots. These bounds cover preflight refresh work;
 startup catalogue/quota reads and debate calls have their own existing timeouts and controls.
+
+Claude and Antigravity usage reads must be proven free of model work. A proven-free answer
+without limits leaves quota unknown or retains the last figure; the next normal refresh can
+try again. An answer that is not proven free, or a timeout, still disables that reader until
+restart. No additional retry or polling loop is started.
 
 The browser waits up to 15 seconds for ordinary setup/history and action requests. It never
 automatically retries a failed write, since a lost response can hide an action already accepted
