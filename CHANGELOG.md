@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Documentation
+
+- Add a Known issues entry to the guide, linked from the README: Codex calls can stall, what
+  Roundtable does about it and what it cannot do.
+
 ## 0.6.2
 
 - Simplify model names to default and lightest annotations, removing inferred plan restrictions.
