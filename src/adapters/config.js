@@ -14,8 +14,10 @@
 //              added unless the call will be resumed (resume memory); agy has none
 //  model       argv for a model override; (id) => argv (inserted before a trailing "-")
 //  effort      argv for a reasoning-effort override; (level) => argv
-//  stream      argv for how the reply is streamed, derived from the call's time limit;
-//              (timeoutMs) => argv (codex: a provider entry of its own, see CODEX_PROVIDER)
+//  stream      argv for how the reply is streamed, derived from the call's time limit and effort;
+//              (timeoutMs, effort) => argv (codex: a provider entry of its own, see CODEX_PROVIDER)
+//  env         variables set for every call (codex: the log level that reports stream retries)
+//  retries     (stderr) => how many times the CLI retried its stream, where the events miss some
 //  effortLevels  levels the CLI accepts (source named per vendor); the UI offers only these
 //  effortInModel  regex: when the chosen model id already carries the level, skip `effort`
 //  modelHints  ids the CLI is known to accept, offered as suggestions (free text still allowed)
@@ -70,11 +72,16 @@ export const CODEX_RUNTIME = ['-c', 'features.unbounded_connection_retries=false
 // idle or reconnect setting. The CLI's documented stream-idle default, 300 s, equals Roundtable's
 // default call limit, so the CLI's own recovery cannot run before that deadline. A
 // provider entry of our own, pointing at the same ChatGPT backend with the same login, streams
-// over SSE with an idle limit that fits inside the call limit and a bounded number of reconnects.
-// A reconnect starts the answer again, and the interrupted attempt's tokens may be charged
-// without being reported. The idle timer starts after response headers; it does not cover every
-// connection stage or identify a stall's cause. The outer call deadline remains the final bound.
-// Every key is in the CLI's configuration reference, and all were accepted by CLI 0.162.1 under
+// over WebSocket with an idle limit that fits inside the call limit and a bounded number of
+// reconnects. Over SSE the idle timer starts only after response headers arrive (codex-api
+// spawn_response_stream), so a response that never starts had no limit short of the call
+// limit; over WebSocket it starts when the request is sent. After its reconnects Codex falls
+// back to HTTPS, where that wait is unbounded again; the connect limit bounds a WebSocket that
+// never opens. Reported WebSocket hangs (openai/codex issues 13710, 22156) end in that same
+// fallback. A reconnect starts the answer again, and the interrupted attempt's tokens may be
+// charged without being reported. None of this identifies a stall's cause. The outer call
+// deadline remains the final bound.
+// Every key is in the CLI's configuration reference, and all were accepted under
 // --strict-config, where an unknown key fails the call; that a custom provider may use the
 // ChatGPT login is demonstrated, not documented (SECURITY.md).
 export const CODEX_PROVIDER = 'roundtable';
@@ -85,11 +92,23 @@ export const CODEX_STREAM_IDLE_RANGE = [10_000, 300_000];
 // Divide the available stream time among attempts; the outer deadline can still interrupt one.
 export const codexStreamIdleMs = (timeoutMs = 300_000) => Math.min(CODEX_STREAM_IDLE_RANGE[1],
   Math.max(CODEX_STREAM_IDLE_RANGE[0], Math.floor((timeoutMs - CODEX_STREAM_MARGIN_MS) / (CODEX_STREAM_RECONNECTS + 1))));
-export const codexStream = (timeoutMs) => ['-c', `model_provider="${CODEX_PROVIDER}"`, ...Object.entries({
+export const codexStream = (timeoutMs, { idleMs = codexStreamIdleMs(timeoutMs), reconnects = CODEX_STREAM_RECONNECTS } = {}) => ['-c', `model_provider="${CODEX_PROVIDER}"`, ...Object.entries({
   name: '"OpenAI"', base_url: '"https://chatgpt.com/backend-api/codex"', requires_openai_auth: 'true', wire_api: '"responses"',
-  supports_websockets: 'false', stream_idle_timeout_ms: String(codexStreamIdleMs(timeoutMs)), stream_max_retries: String(CODEX_STREAM_RECONNECTS),
+  supports_websockets: 'true', websocket_connect_timeout_ms: '10000', stream_idle_timeout_ms: String(idleMs), stream_max_retries: String(reconnects),
   request_max_retries: '2', // connection failures before the stream opens; the default of 4 stays out of a bounded review
 }).flatMap(([k, v]) => ['-c', `model_providers.${CODEX_PROVIDER}.${k}=${v}`])];
+// A request to the ChatGPT backend either streams within a few seconds or stays silent until the
+// idle limit; measured on every model and search mode tried, through exec and app-server alike,
+// with or without these settings. A reconnect resends only the silent request (a finished search
+// is kept), so a call at a light effort reconnects early and often: 15 s of silence, up to 5
+// times, where the derived limit made a seat wait 95 s. A tight time limit keeps the shorter
+// derived idle. Other efforts may reason in silence past 15 s while healthy, so they keep the
+// derived limit. More reconnects can mean more interrupted attempts charged but not reported.
+export const CODEX_LIGHT_IDLE_MS = 15_000;
+export const CODEX_LIGHT_RECONNECTS = 5;
+const LIGHT_EFFORTS = new Set(['none', 'minimal', 'low']);
+export const codexStreamFor = (timeoutMs, effort = null) => !LIGHT_EFFORTS.has(effort) ? codexStream(timeoutMs)
+  : codexStream(timeoutMs, { idleMs: Math.min(CODEX_LIGHT_IDLE_MS, codexStreamIdleMs(timeoutMs)), reconnects: CODEX_LIGHT_RECONNECTS });
 // agy's permission rules accept only command, read_file, write_file, read_url, mcp, execute_url and
 // unsandboxed (its rule pattern, CLI 1.4.11). Its search_web tool has no rule and cannot be denied
 // here: a "search_web(*)" entry is ignored without a warning. The reported-tool guard stops it.
@@ -106,6 +125,9 @@ const toolBlock = (block) => ['tool_use', 'server_tool_use', 'mcp_tool_use'].inc
 //   reported(events) searches the CLI counted itself, when it does
 //   usage(events)    token counters that include the search's own model calls, when the CLI
 //                    reports those apart from the reply's
+//   stallMs          stop the call after this long without progress (spawn.js runProcess)
+//   reconnectIsProgress  the CLI's reconnect notices count as progress for stallMs
+//   searchHint(settings) a sentence added to the search prompt for this CLI's search tool
 const moved = (label) => Object.assign(new Error(`Research needs the supported ${label} restriction flags.`), { code: 'RESEARCH_INVALID' });
 const CLAUDE_SEARCH = 'WebSearch';
 const claudeBlocks = (events) => events.flatMap((e) => e.type === 'assistant' && Array.isArray(e.message?.content) ? e.message.content.filter(toolBlock)
@@ -245,7 +267,11 @@ export const ADAPTERS = {
     model: (m) => ['-m', m],
     // Same path as the sandbox policy on resume: one argv element, TOML-quoted.
     effort: (e) => ['-c', `model_reasoning_effort="${e}"`],
-    stream: codexStream, // fresh and resume calls alike: the extras go on both
+    stream: codexStreamFor, // fresh and resume calls alike: the extras go on both
+    // One stderr line per stream retry, the first WebSocket retry included, which the JSON events
+    // leave out in release builds; reconnects are counted from these too (retries below).
+    env: { RUST_LOG: 'codex_core::responses_retry=warn,codex_core::client=warn' },
+    retries: (stderr) => (stderr.match(/retrying sampling request/g) || []).length,
     // CLI effort vocabulary; availability depends on the selected model and installed CLI.
     // ~/.codex/config.toml is not a source: --ignore-user-config keeps it from the seat.
     effortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
@@ -280,9 +306,19 @@ export const ADAPTERS = {
       searchIds: (e) => (codexSearch(e) ? [e.item.id] : []),
       foreignTool: (events) => codexTools(events.filter((e) => !codexSearch(e))),
       // Stop a search that reports no progress for 40 seconds. This is a local recovery policy,
-      // not a guarantee about provider latency or the cause of a stall. Reconnect notices do not
-      // count as progress; the engine permits at most one fresh attempt within the same deadline.
+      // not a guarantee about provider latency or the cause of a stall. A silent request is the
+      // stream's job (codexStreamFor), so the watchdog is for a search that starts and never
+      // returns while the connection stays busy. A reconnect notice counts as progress: the
+      // reconnects are bounded by codexStreamFor, and stopping the call there would throw away a
+      // finished search that the reconnect keeps. The engine permits at most one fresh attempt
+      // within the same deadline, also after the reconnects are used up.
       stallMs: 40_000,
+      reconnectIsProgress: true,
+      // One Codex search operation can carry several queries. Each further operation is another
+      // request that can stall, and it resends everything gathered so far: input grew from about
+      // 22k tokens for one search to 103k for four. Asked for one call, the searcher returned as
+      // many sources at about a third fewer tokens on average.
+      searchHint: ({ maxSearches: n }) => `Make ONE web search call; it may carry up to ${n} ${n === 1 ? 'query' : 'queries'}. Search again only if that call returned nothing usable.`,
     },
     quota: 'app-server',
     usageUrl: 'https://chatgpt.com/settings/usage',

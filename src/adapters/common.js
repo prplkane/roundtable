@@ -97,7 +97,7 @@ export function buildArgs(cfg, { prompt, sessionId = null, model = null, effort 
   const base = streamMode ? cfg.stdinArgs : cfg.args;
   const args = sessionId ? cfg.resume(sessionId, base) : [...base];
   const extra = [];
-  if (cfg.stream) extra.push(...cfg.stream(timeoutMs)); // the stream's idle limit fits inside the call limit
+  if (cfg.stream) extra.push(...cfg.stream(timeoutMs, effort)); // the stream's idle limit fits inside the call limit
   if (!keepSession && !sessionId && cfg.ephemeral) extra.push(...cfg.ephemeral);
   if (model && cfg.model) extra.push(...cfg.model(model));
   if (instructionsFile) extra.push('-c', `model_instructions_file=${JSON.stringify(instructionsFile)}`);
@@ -165,7 +165,8 @@ export function makeAdapter(name, overrides = {}) {
     if (opts.cwd) mkdirSync(opts.cwd, { recursive: true }); // a missing cwd makes spawn fail with ENOENT
     let pendingLine = '', processError = null, res, eventCount = 0, stage = 'waiting', hasReply = false, terminalUsage = false, reconnects = 0;
     // the last event that moved the call on: a CLI's reconnect or retry notice says it has been
-    // waiting, so the searcher's silence limit counts on through it
+    // waiting, so the searcher's silence limit counts on through it, unless the searcher's
+    // reconnects are bounded and worth waiting for (config.js reconnectIsProgress)
     let progressAt = Date.now();
     const notice = (event) => event?.type === 'error' && /reconnect|retry|stream.*disconnect/i.test(event.message || '');
     const inspect = (chunk) => {
@@ -178,7 +179,7 @@ export function makeAdapter(name, overrides = {}) {
         let event;
         try { event = JSON.parse(line); } catch { throw Object.assign(new Error('Provider emitted an invalid JSON event.'), { code: 'PROVIDER_PROTOCOL' }); }
         eventCount++;
-        if (!notice(event)) progressAt = Date.now();
+        if (!notice(event) || searching?.reconnectIsProgress) progressAt = Date.now();
         if (event?.type === 'turn.completed' || event?.type === 'result' || event?.event === 'result') stage = 'completed';
         else if (event?.item?.type === 'reasoning' || event?.message?.content?.some?.((c) => c?.type === 'thinking')) stage = 'reasoning';
         else if (event?.item?.type === 'agent_message' || event?.type === 'assistant') stage = 'reply';
@@ -205,7 +206,7 @@ export function makeAdapter(name, overrides = {}) {
     };
     try { res = await runProcess(bin, args, {
       // opts.minimal: the seat runs as cheaply as the vendor allows (cfg.minimalEnv, if any)
-      stdin, cwd: opts.cwd, timeoutMs, env: { ...cleanEnv(home), ...(opts.minimal && cfg.minimalEnv) }, tag: opts.tag ?? null,
+      stdin, cwd: opts.cwd, timeoutMs, env: { ...cleanEnv(home), ...cfg.env, ...(opts.minimal && cfg.minimalEnv) }, tag: opts.tag ?? null,
       onStdout: inspect, completionGraceMs: cfg.completionGraceMs,
       stallMs: searching?.stallMs || 0, progressAt: () => progressAt, // the searcher only: a search that went silent (config.js)
     }); } catch (e) { processError = e; res = { stdout: e.stdout || '', stderr: e.stderr || '', code: null, ms: e.ms || 0, progress: e.progress }; }
@@ -215,6 +216,8 @@ export function makeAdapter(name, overrides = {}) {
       try { inspect('\n'); } catch (e) { processError = e; }
     }
     if (!processError && res.code !== 0 && !res.completed) processError = Object.assign(new Error(`${cfg.label} exited unsuccessfully (${res.code ?? 'signal'}).`), { code: 'CLI_EXIT', stdout: res.stdout, stderr: res.stderr });
+    // the CLI's own retry log can see reconnects its events leave out (config.js retries)
+    reconnects = Math.max(reconnects, cfg.retries?.(String(res.stderr || '')) || 0);
     const raw = {
       args: args.map((a) => (a.length > 200 ? a.slice(0, 200) + '...' : a)),
       stdout: res.stdout, stderr: res.stderr, code: res.code, ms: res.ms,

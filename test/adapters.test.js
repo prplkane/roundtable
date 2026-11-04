@@ -52,7 +52,8 @@ test('codex: the stream idle limit fits every reconnect inside the call limit', 
   for (const limit of [60_000, 300_000, 600_000, 900_000]) assert.ok(codexStreamIdleMs(limit) * (CODEX_STREAM_RECONNECTS + 1) + 15_000 <= limit, `${limit} nests`);
   const args = buildArgs(ADAPTERS.codex, { prompt: 'hi', timeoutMs: 120_000 }).args;
   assert.ok(args.includes('model_provider="roundtable"'));
-  assert.ok(args.includes('model_providers.roundtable.supports_websockets=false'));
+  assert.ok(args.includes('model_providers.roundtable.supports_websockets=true'), 'WebSocket: its idle limit also covers a response that never starts');
+  assert.ok(args.includes('model_providers.roundtable.websocket_connect_timeout_ms=10000'));
   assert.ok(args.includes('model_providers.roundtable.requires_openai_auth=true'), 'same login');
   assert.ok(args.includes('model_providers.roundtable.stream_idle_timeout_ms=35000'));
   assert.ok(args.includes('model_providers.roundtable.stream_max_retries=2'));

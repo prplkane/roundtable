@@ -167,8 +167,14 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   Codex telemetry exports, analytics, shell snapshots and unlimited connection retries are
   disabled per call; shared CLI settings and login files are not changed.
   Each Codex call also names a provider entry of its own that points at the same ChatGPT
-  backend and uses the same login, so the reply streams over SSE with an idle limit derived
-  from the call limit ((limit − 15 s) ÷ 3, between 10 s and 300 s) and at most two reconnects.
+  backend and uses the same login, so the reply streams over WebSocket with an idle limit
+  derived from the call limit ((limit − 15 s) ÷ 3, between 10 s and 300 s) and at most two
+  reconnects, or, at low effort (or none or minimal), 15 s and at most five reconnects. Over
+  WebSocket that limit runs from the moment the request is sent, so a response the backend never
+  starts is caught too; a WebSocket that does not open within 10 s, or whose reconnects run out,
+  falls back to HTTPS, where such a wait has no limit short of the call limit. Codex runs with its
+  stream-retry warnings on (`RUST_LOG`), so its error output holds one line per retry, which
+  Roundtable counts; those lines carry turn ids and the error text, not prompts or replies.
   The built-in provider exposes no idle or reconnect setting, and the CLI's documented
   stream-idle default, 300 s, equals the default call limit, so its own recovery could never run
   before Roundtable ended the call. Every key is in the CLI's configuration reference; that a
@@ -176,8 +182,8 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   it is expected to fail the call with an authentication error, which marks the pool down for
   the review; one that ignores it is expected to fall back to the built-in provider. A reconnect
   starts the answer again, and the interrupted attempt's tokens may be charged by the provider
-  without appearing in the reported usage. The stream-idle timer starts after response headers;
-  waiting for those headers is bounded by Roundtable's overall call limit.
+  without appearing in the reported usage; more reconnects can mean more such attempts.
+  Roundtable's overall call limit remains the final bound.
   Codex also receives a short review-specific base prompt through a uniquely created temporary
   file, removed after the call. It contains no field notes or personal context. The tool flags,
   read-only sandbox and reported-tool guard apply independently of these instructions.
