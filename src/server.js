@@ -17,7 +17,6 @@ import { slugFor, openDebateDir, rebuildDebate } from './store.js';
 import { exportDebate, validateTarget, decisionRecord } from './export.js';
 import { rollup, hasUsableRound } from './engine.js';
 import { roundDeltas, updateCalibration, migrateCalibration, CALIBRATION_VERSION, project } from './estimate.js';
-import { readFileSync, existsSync } from 'node:fs';
 import { fakeRunner, fakeQuota } from './fake.js';
 import { validateDebateRequest, validateMessage, validateAccept, BODY_LIMIT } from './validate.js';
 import { createDiagnostics, diagnosticAction, validateBrowserDiagnostics } from './diagnostics.js';
@@ -28,6 +27,7 @@ import { noteRecord, storedNote } from './notes.js';
 import { reviewSnapshot } from './snapshot.js';
 import { pickFolder } from './folder-picker.js';
 import { dataDirectory, legacyHistory, acquireDataLock, checkedHistoryPath, removeHistory, createUsageStore, createHistoryIndex } from './history.js';
+import { VERSION } from './version.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const UI = path.join(ROOT, 'src', 'ui');
@@ -43,7 +43,7 @@ process.once('exit', releaseDataLock);
 const legacy = process.env.ROUNDTABLE_DEBATES_DIR ? [] : legacyHistory(DEBATES_DIR, { root: ROOT, fake: FAKE });
 for (const { dir, missing } of legacy) console.warn(`Older history remains in ${dir}: ${missing} review${missing === 1 ? '' : 's'} not in ${DEBATES_DIR}. Stop any server using that folder, then move those review folders into ${DEBATES_DIR}; see Local data and backups.`);
 const legacyDataDirs = legacy.map((x) => x.dir);
-const diagnostics = createDiagnostics(DEBATES_DIR, { mode: FAKE ? 'demo' : 'live', version: JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version });
+const diagnostics = createDiagnostics(DEBATES_DIR, { mode: FAKE ? 'demo' : 'live', version: VERSION });
 diagnostics.write({ code: 'server-start', action: 'startup' });
 const PORT = Number(process.env.PORT) || (FAKE ? 4748 : 4747);
 // Per-launch capability: every request that changes something carries it. The page gets it in a
@@ -672,7 +672,9 @@ const server = http.createServer(async (req, res) => {
     if (no) return requestError(res, no[0], no[1], diagnosticAction(p));
     if (shuttingDown && !isRead) return requestError(res, 503, 'The server is shutting down.', diagnosticAction(p));
     if (p === '/') {
-      const html = (await readFile(path.join(UI, 'index.html'), 'utf8')).replace('<meta name="roundtable-token" content="">', `<meta name="roundtable-token" content="${TOKEN}">`);
+      const html = (await readFile(path.join(UI, 'index.html'), 'utf8'))
+        .replace('<meta name="roundtable-token" content="">', `<meta name="roundtable-token" content="${TOKEN}">`)
+        .replace('<span class="end" id="st-version"></span>', `<span class="end" id="st-version">v${VERSION}</span>`);
       res.writeHead(200, { 'content-type': MIME['.html'], 'cache-control': 'no-store', 'set-cookie': `rt_board=${BOARD_COOKIE}; HttpOnly; SameSite=Strict; Path=/` });
       return res.end(html);
     }

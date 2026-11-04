@@ -12,6 +12,8 @@
 - Remove deletion success banners from the history list.
 - Clarify that usage statistics describe your own agents' Roundtable calls, stay on your
   machine, and are not sent to Roundtable's developers. Document restarting after updates.
+- Take the version shown in the board footer and sent in the Codex app-server handshake from
+  `package.json`; both still said 0.6.1.
 
 ## 0.6.1
 

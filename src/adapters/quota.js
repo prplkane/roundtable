@@ -17,6 +17,7 @@
 //          CLI itself (no turn, zero tokens) -> command.data.groups[].buckets[] with window,
 //          remaining_fraction (0..1) and reset_time (ISO, UTC). Groups are model families.
 import { resolveBinary, runProcess, cleanEnv, dataDir } from './spawn.js';
+import { VERSION } from '../version.js';
 import { spawn, execFileSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
@@ -299,6 +300,6 @@ export function readCodexQuota({ timeoutMs = 20_000, home = null } = {}) {
         if (msg.id === 2) finish(msg.result ? codexQuota(msg.result) : null);
       }
     });
-    send({ id: 1, method: 'initialize', params: { clientInfo: { name: 'roundtable', version: '0.6.1' } } });
+    send({ id: 1, method: 'initialize', params: { clientInfo: { name: 'roundtable', version: VERSION } } });
   });
 }
