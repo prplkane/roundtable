@@ -900,6 +900,32 @@ does not cancel model work on the server. If the page reports an expired launch 
 unsent notes and reload. A failed history load says **unavailable**, with **Retry history**;
 it does not claim your records are gone. A setup-load failure offers **Reload**.
 
+### Known issues
+
+Each entry carries the date it was written, so a stale one shows. An entry leaves when a
+release can show it no longer applies.
+
+**Codex calls can stall** (noted 2026-11-04; seen since late October 2026). A Codex request
+sometimes streams nothing for a long time after it is accepted, or a web search starts and never
+returns. It happens on every Codex model, for seats and the searcher alike, and with a direct
+`codex exec` call on the same account and network, so it is not specific to Roundtable's
+settings. What you see: a **Reconnecting** notice on the card, a reconnect count on the reply,
+a searcher started once more, or a reply that takes 15 to 30 seconds longer than usual.
+
+What Roundtable does: streams Codex replies over WebSocket, so a response that never starts is
+caught; reconnects a silent low-effort call after 15 seconds of silence, up to five times;
+counts a searcher's reconnects as progress and starts the searcher once more when its call made
+no progress for 40 seconds; asks the Codex searcher for one search call carrying its queries.
+
+What it cannot do: once the reconnects are used up, Codex falls back to HTTPS, where a response
+that never starts is bounded only by the call limit. Seats at medium effort and above keep the
+longer idle limit (95 seconds at the default call limit), so a silent stall there costs more. A
+seat whose request stays busy without progress has no watchdog; only the call limit ends it.
+
+If a review keeps stalling: seat another vendor for that round, keep the searcher at low effort,
+keep the call limit at its default rather than raising it, and follow the connection checks
+below. Save the error log if you report it.
+
 ### Regional availability and stalled connections
 
 A provider can accept a connection and then stop delivering the reply. Repeated reconnects,

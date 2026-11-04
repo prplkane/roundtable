@@ -20,7 +20,8 @@ network paths can also interrupt replies even when login succeeds. Check the
 [availability and network guidance](docs/workflow.md#provider-availability-and-network-access)
 before your first live review.
 
-**Status:** early preview for developers. Feedback from real workflows is welcome.
+**Status:** early preview for developers. Feedback from real workflows is welcome. What does not
+work well yet is listed under [Known issues](docs/workflow.md#known-issues).
 
 ## How a review works
 
