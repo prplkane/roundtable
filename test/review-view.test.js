@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { groupQuestions, answerMessage, argumentHtml, remainingWindow, cancellationReason, stopExplanation, ceremonyOutcome, verdictView, verdictResultText } from '../src/review-view.js';
+import { groupQuestions, answerMessage, argumentHtml, remainingWindow, cancellationReason, stopExplanation, ceremonyOutcome, verdictView, verdictResultText, verdictHeadline, defaultSearchQuery } from '../src/review-view.js';
 
 test('questions share an answer only when their wording matches; distinct questions and sources survive', () => {
   const questions = [{ lens: 'risk', seat: 'seat-0', question: 'What is the budget?' }, { lens: 'cost', seat: 'seat-1', question: '  What is the budget? ' }, { lens: 'evidence', seat: 'seat-2', question: 'Is the budget approved?' }];
@@ -121,7 +121,7 @@ test('none remains an abstention or synthesis; empty sections do not fabricate c
   assert.deepEqual(view.dissent, []);
   assert.deepEqual(view.reconsider, []);
   assert.deepEqual(view.questions, { needed: ['What outcome matters?'], optional: [], unclassified: [] });
-  assert.match(verdictResultText(text, CHOICES), /No single option recommended\./);
+  assert.match(verdictResultText(text, CHOICES), /Answer\nNO SINGLE OPTION RECOMMENDED\nCombine/);
   assert.doesNotMatch(verdictResultText(text, CHOICES), /Suggested option|Further exploration|Main reservation/);
 });
 
@@ -137,8 +137,21 @@ test('only explicit empty values disappear; non-English and uncertain questions 
 test('copy result retains the conclusion and caveats without tally, protocol labels or run metadata', () => {
   const text = CONCLUSION.replace('DISSENT:', 'TALLY:\n- opt-2: incorrect generated tally\nDISSENT:');
   const copy = verdictResultText(text, CHOICES, 'How should we test the change?');
-  assert.ok(copy.startsWith('How should we test the change?\n\nAnswer\nRun a small pilot'));
-  for (const expected of ['Suggested option: Run a pilot', 'Why\nThe pilot', 'Main reservation', 'What could change this', 'Clarification needed from you', 'Can records be restored?', 'Further exploration (optional)']) assert.ok(copy.includes(expected), expected);
+  assert.ok(copy.startsWith('How should we test the change?\n\nAnswer\nRUN A PILOT\nRun a small pilot'));
+  for (const expected of ['Why\nThe pilot', 'Main reservation', 'What could change this', 'Clarification needed from you', 'Can records be restored?', 'Further exploration (optional)']) assert.ok(copy.includes(expected), expected);
   assert.doesNotMatch(copy, /RECOMMENDATION:|TALLY:|opt-1|opt-2|incorrect generated tally|NEEDED:|OPTIONAL:|verdict\.md/);
   assert.equal(verdictResultText('An old unstructured answer.', CHOICES), 'An old unstructured answer.');
+});
+
+test('the verdict headline comes from its validated option, even when prose mentions another first', () => {
+  const view = verdictView(CONCLUSION.replace('Run a small pilot', 'Before rolling out everywhere, run a small pilot'), CHOICES);
+  assert.equal(verdictHeadline(view), 'RUN A PILOT');
+  assert.equal(verdictHeadline({ pick: null, option: null }), '', 'do not infer a pick from prose');
+});
+
+test('the default search query contains only the current question and candidate options', () => {
+  const query = defaultSearchQuery({ decision: ' Which approach should we test? ', options: [' Run a pilot ', 'Wait'], constraints: 'PRIVATE CONSTRAINT', known: 'PRIVATE FACT', exportTo: 'PRIVATE PATH', answers: 'PRIVATE ANSWER' });
+  assert.equal(query, 'Which approach should we test?\n\nOptions to investigate:\n- Run a pilot\n- Wait');
+  assert.doesNotMatch(query, /PRIVATE/);
+  assert.equal(defaultSearchQuery({ decision: 'An exact question?', options: [] }), 'An exact question?');
 });

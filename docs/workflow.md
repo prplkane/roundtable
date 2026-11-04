@@ -130,8 +130,9 @@ The demo shows and asks the same and records the answer in the demo folder; it c
 Antigravity cannot be fully sealed off: it still loads your shared Antigravity customizations
 and discovers your MCP servers, and its web search cannot be switched off. Roundtable denies
 its file, command, URL and MCP tools and stops the call, without a retry, at the first tool it
-reports. A seat, chairman or searcher card set to Antigravity says **Limited isolation** with
-this explanation as its tip; choosing Antigravity there accepts it. An agent request must send
+reports. A seat, chairman or searcher card set to Antigravity has a compact **Warnings** control
+(**Review required** before the terms acknowledgment). Expand it to read **Limited isolation**
+and the account notice; choosing Antigravity accepts limited isolation. An agent request must send
 `options.allowLimitedIsolation: true` (also in `roundtable agent --help`), or the server
 refuses Antigravity. Use another provider if that is unsuitable. Claude and Codex require their isolation flags to be supported;
 an older CLI fails with an update instruction instead of a weaker fallback.
@@ -271,7 +272,7 @@ checked yet).
 | Vendor | Claude, Codex or Antigravity, or **API endpoint** (section 7b). Pick the same vendor more than once if you like. Next to it, a tag says what kind of seat it is: `CLI · subscription`, `API · local` or `API · pay-per-token`. |
 | Lens | The angle this seat argues from, for example "risk", "cost", "the clinician". Must be unique: it is the only name the other seats ever see. |
 | Mood | How it argues. `grill` (the default) attacks assumptions and demands evidence. `steelman` states each option at its best first. `builder` judges by what it takes to ship. `contrarian` takes the least popular side. `custom` takes your own sentence. |
-| Model | Under the vendor name on the card. The list is grouped by the plan your CLI reports (for example "On your plan (Max)"); models your plan does not include, or that bill usage credits, are listed apart. Antigravity lists each model once and its effort pips choose the variant. "other id…" takes any id. Lighter models draw less quota. A model the vendor has retired is refused with what to use instead. |
+| Model | Under the vendor name on the card, with stronger model families first and plan restrictions beside the name. This is a broad capability order, not a benchmark comparison across vendors. Antigravity lists each model once and its effort pips choose the variant. **Custom model ID…** opens a text field and keeps your selection while you edit; enter an ID or choose a listed model before starting. Terra requires Codex CLI 0.159 or later; access still depends on your plan. A retired model is refused with what to use instead. |
 | Effort | The thinking level, as pips: click one to set it, click the last filled one again for the CLI's default. Higher thinks longer and draws more. |
 | Login profile | Behind "Login profile" on the card. Leave empty to use your normal login; fill in only to seat a second account of the same CLI (step 7). |
 
@@ -423,6 +424,9 @@ animation nor the sounds.
    the verdict. Explicit no-question placeholders such as `None.` or `none, treat available
    hours as an explicit unknown` do not create a pause. Ambiguous wording still waits for you.
    No extra model call is used to collect or filter questions.
+   Every submitted answer is shared with all seats in the next round and with the chairman,
+   even if only one seat asked. This gives every seat the same corrections and constraints.
+   The initial blind replies stay independent; answers do not rewrite earlier replies.
 4. **Finish with verdict** ends discussion and sends the collected replies to the chairman.
    It becomes available after a complete round has a usable reply. Unfinished seat calls are
    cancelled; their reported usage is kept. With **0 critique rounds**, round 0 still runs, so
@@ -454,7 +458,8 @@ remaining time. If it expires, the board says that no answer was assumed.
 
 ### The verdict
 
-The board shows a **Conclusion**: the answer first, then its reasons, the main reservation and
+The board shows a **Conclusion**: the recommended option first, in bold uppercase, then the
+answer, its reasons, the main reservation and
 what could change it. A missing goal or fact that could change the answer must be stated as a
 condition, with **Clarification needed from you** below it. These questions are for you; a
 finished review does not wait for answers or start another call automatically. Optional further
@@ -659,10 +664,15 @@ names the endpoint on each seat's line (`API http://localhost:11434/v1`) and on 
 
 ### Optional searcher before discussion
 
-The **searcher** gathers web evidence once, before the blind replies. It is not a seat: it
-never sees your field notes, never argues and never votes. Press **+ Add searcher** under the
-seats to add its card, next to the chairman's; its × removes it. Write its **Query**, the
-only text sent to the web, and review it for private details. The card has its own vendor,
+The **searcher** gathers web evidence once, before the blind replies. It never argues or votes.
+Press **+ Add searcher** under the seats to add its card, next to the chairman's; its × removes it.
+By default its visible **Query** follows your question and candidate options. It investigates
+facts for and against them; it does not recommend an answer. Choose **Custom query** to edit
+the draft or enter an exact question. A custom query stays unchanged when you edit the review.
+Only the displayed query goes to the searcher: other context and discussion answers are excluded.
+Review it for private details. The same decision question is useful when you need outside
+evidence; leave the searcher off when you already have the facts you want the seats to reason from.
+The card has its own vendor,
 model, effort and login profile, like the chairman's. Pick the vendor whose pool has room:
 Claude, Codex or Antigravity. There is one searcher and one call, on that vendor only. A new
 searcher, or one moved to another vendor, starts on that vendor's lightest model at low
@@ -995,7 +1005,7 @@ same live folder. The headless discussion script reads calibration from that fol
 ### Delete and clear history
 
 Use **Delete** beside a saved session, then confirm its title. Interrupted sessions can be
-deleted individually. **Clear finished** confirms the number of finished or stopped sessions
+deleted individually. **Clear** confirms the number of finished or stopped sessions
 selected (up to 1,000 per batch); it leaves running and interrupted sessions alone. The server
 rechecks the selection, including a session that started writing a new verdict after the list
 loaded. A stale selection is refused before any selected session is removed.

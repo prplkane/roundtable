@@ -319,6 +319,8 @@ details.panel:not([open]) > .panel-title { border-bottom: 0; }
 .result-copy .hint { display: block; margin-top: var(--space-2); }
 #copy-result-text { display: block; width: 100%; min-height: 180px; max-height: 45vh; resize: vertical; margin: var(--space-2) 0; }
 .verdict-answer > p:first-of-type { font-size: 1.1em; line-height: 1.65; max-width: 80ch; }
+.verdict-pick { color: var(--color-text); overflow-wrap: anywhere; }
+.verdict-pick strong { font-weight: var(--weight-strong); }
 .verdict-pick { margin-top: var(--space-1) !important; }
 .verdict-questions { padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-sm); }
 .verdict-needed { border-left: 3px solid var(--color-warn); }
@@ -375,11 +377,17 @@ details.panel:not([open]) > .panel-title { border-bottom: 0; }
 .seat-card .remove { position: absolute; top: 2px; right: 2px; min-height: 18px; padding: 0 var(--space-1); border: 0; background: transparent; color: var(--color-text-muted); font-size: var(--text-sm); }
 .seat-card .remove:hover { color: var(--color-danger); }
 .seat-card .lamp { margin-right: var(--space-3); }
-.seat-bd { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-2) var(--space-3) var(--space-3); }
+.seat-bd { display: flex; flex: 1; flex-direction: column; gap: var(--space-1); padding: var(--space-2) var(--space-3) var(--space-3); }
 .f { display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: center; gap: var(--space-2); min-height: 26px; }
 .seat-note { font: var(--text-xs) var(--font-mono); color: var(--color-text-muted); }
 .seat-note.danger { color: var(--color-danger); } .seat-note.warn { color: var(--color-warn); }
 .iso-note { min-height: 0; } /* a card on Antigravity: the limitation, its explanation as the tip */
+.lamp-note { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; line-height: 1.4; min-height: 2.8em; }
+.lamp-note:focus { display: block; overflow: visible; }
+.card-notices, .card-notices-empty { display: block; min-height: 26px; font: var(--text-xs)/1.5 var(--font-mono); }
+.card-notices > summary { cursor: pointer; padding: 3px 0; }
+.card-notices-body { display: grid; gap: var(--space-2); padding: var(--space-2); border-left: 2px solid currentColor; }
+.seat-more { margin-top: auto; }
 /* a card on a vendor with a terms notice: a note that opens the notice (#vendor-terms) */
 .terms-note { display: block; padding: 0; border: 0; background: none; text-align: left; text-decoration: underline dotted; text-underline-offset: 2px; cursor: pointer; }
 /* flat controls */
@@ -391,15 +399,16 @@ details.panel:not([open]) > .panel-title { border-bottom: 0; }
 .seat-card .flat.model:hover, .seat-card .flat.model:focus { border-bottom-color: var(--color-border-strong); }
 .seat-card .mood-text { margin-top: var(--space-1); }
 /* effort as pips: one per level the CLI accepts; none filled is the CLI's default */
-.pips { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.pips { display: grid; gap: 0; min-width: 0; }
+.pip-buttons { display: flex; min-width: 0; gap: 2px; }
 .pips.locked { pointer-events: none; opacity: 0.55; }
 .card-avatar { width: 22px; height: 22px; color: var(--seat); } .card-avatar svg { width: 16px; height: 16px; }
-.pip { display: inline-grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.pip { display: inline-grid; place-items: center; flex: 0 1 28px; min-width: 16px; width: 28px; height: 28px; padding: 0; border: 0; background: transparent; cursor: pointer; }
 .pip::before { content: ''; width: 12px; height: 12px; border: var(--border-width) solid var(--v); }
 .pip.on::before { background: var(--v); }
 .pip:hover { background: var(--color-bg); }
 .pip:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
-.pip-label { margin-left: var(--space-2); font: var(--text-xs) var(--font-mono); color: var(--color-text-muted); }
+.pip-label { min-height: 1.5em; font: var(--text-xs)/1.5 var(--font-mono); color: var(--color-text-muted); }
 .seat-more summary { font: var(--weight-strong) var(--text-xs) var(--font-mono); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--color-text-muted); cursor: pointer; padding: var(--space-1) 0; }
 .seat-more .flat { margin-top: var(--space-1); }
 .seats-actions { padding: 0 var(--space-3) var(--space-3); display: flex; justify-content: space-between; align-items: center; }

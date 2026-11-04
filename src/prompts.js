@@ -227,7 +227,7 @@ export function chairmanPrompt({ fieldNotes, rounds, humanNotes, initialNotes = 
     'Aim for 220 words total. Keep the reasoning specific; do not repeat the field notes or whole seat replies.',
     LANGUAGE,
     `RECOMMENDATION: <on this line only: one option id (${optionIds(fieldNotes.options).map((o) => o.id).join(' | ')}), or none if the evidence does not support a pick yet>`,
-    'Below the option id, write two short paragraphs, at most four sentences total. First answer the person directly, naming the suggested approach and any condition it depends on. After a blank line, explain the decisive reasons. Do not lead the prose with lens names or a report of who won.',
+    'Below the option id, write two short paragraphs, at most four sentences total. Begin the first sentence with the recommended option name, then give the direct answer and any condition it depends on. Do not bury the option in the middle of the sentence. The board displays its name as a bold uppercase heading above your answer. After a blank line, explain the decisive reasons. Do not lead the prose with lens names or a report of who won.',
     'For philosophical or reflective questions, give a nuanced conclusion rather than treating the options as an exhaustive binary. A synthesis can use none when no single listed option fits; explain it in the answer.',
     'If a missing goal or fact could change the answer, make the conclusion explicitly conditional. Use none when you cannot justify a pick. Do not bury that uncertainty in the questions.',
     'DISSENT: the strongest argument against the recommendation, stated fairly in at most two sentences, with the lens that made it. Preserve substantive dissent; use None. only if there is none.',
