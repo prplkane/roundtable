@@ -127,7 +127,8 @@ test('MCP discovery, protocol errors and guide work without starting a server or
 });
 
 test('installed MCP works outside the repo: questions, real answers, silence, unattended and chairman completion', { timeout: 90000 }, async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'rt-mcp-install-'));
+  // Windows temp paths can use an 8.3 alias; compare installations under the canonical root.
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'rt-mcp-install-')));
   const source = path.join(root, 'temporary checkout'), prefix = path.join(root, 'installation with spaces');
   const installed = path.join(prefix, ...(process.platform === 'win32' ? [] : ['lib']), 'node_modules', '@prplkane', 'roundtable');
   const project = path.join(root, 'unrelated-project'), home = path.join(root, 'home'), data = path.join(root, 'private-data');
