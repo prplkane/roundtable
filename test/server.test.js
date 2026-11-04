@@ -415,6 +415,8 @@ test('fake server end to end: three seats, gates answered through the API, trans
     assert.ok(srv.log().includes(`data: ${debatesDir}`));
     const page = await fetch(`${srv.base}/`).then((r) => r.text());
     assert.match(page, /id="run-mode"/);
+    const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
+    assert.ok(page.includes(`id="st-version">v${version}</span>`), 'the footer shows the version from package.json, not a copy that a release can leave behind');
     assert.doesNotMatch(page, /https:\/\/fonts\./, 'the board needs no remote font request');
     const guide = await fetch(`${srv.base}/docs/workflow.md`);
     assert.equal(guide.status, 200);
