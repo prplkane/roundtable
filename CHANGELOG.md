@@ -4,8 +4,8 @@
 
 ### Agent API
 
-- Say who wrote each answer: `roundtable_answer` requires `from: "user"` or `from: "assistant"`
-  on every answer (the JSON CLI defaults a missing `from` to `assistant`). A submission made
+- Say who wrote each answer: every answer to `roundtable_answer` or `agent answer` takes
+  `from: "user"` or `from: "assistant"`, and a missing `from` counts as `assistant`. A submission made
   only of the user's own answers reaches the board as "You said, via your assistant", and the
   seats and the exported record as the human's answer relayed by the assistant; anything else
   stays an agent note whose answer lines say whose words they are. The declaration is the

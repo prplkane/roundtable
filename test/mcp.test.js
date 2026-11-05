@@ -134,8 +134,9 @@ test('MCP discovery, protocol errors and guide work without starting a server or
   assert.ok(listed.tools.some((t) => t.name === 'roundtable_wait' && t.inputSchema.properties.afterRound));
   assert.ok(!listed.tools.some((t) => /accept|export/.test(t.name)));
   const answerItem = listed.tools.find((t) => t.name === 'roundtable_answer').inputSchema.properties.answers.items;
-  assert.deepEqual(answerItem.required, ['id', 'text', 'from'], 'every answer declares who wrote it');
+  assert.deepEqual(answerItem.required, ['id', 'text'], 'the answer template the adapter hands back has no from, so it must stay valid as echoed');
   assert.deepEqual(answerItem.properties.from.enum, ['user', 'assistant']);
+  assert.match(answerItem.properties.from.description, /Omitted counts as assistant/);
   const guide = await client.tool('guide');
   assert.equal(guide.ok, true);
   assert.ok(guide.recipe.completion && guide.recipe.questions);
@@ -269,9 +270,9 @@ test('installed MCP works outside the repo: questions, real answers, silence, un
   assert.equal(continued.status, 'done');
   assert.equal(continued.verdict.status, 'ready');
   assert.equal(continued.completed, true);
-  const late = await client.tool('answer', { id: silent.id, round: question.gate.round, answers: [{ id: 'q1', text: 'Late reply', from: 'user' }] });
+  const late = await client.tool('answer', { id: silent.id, round: question.gate.round, answers: [{ id: 'q1', text: 'Late reply' }] });
   assert.equal(late.ok, false);
-  assert.equal(late.status, 409);
+  assert.equal(late.status, 409, 'an answer without from passes the schema (the template has none) and fails only on the closed round');
   const silentRows = (await readFile(path.join(data, silent.id, 'transcript.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
   assert.ok(silentRows.some((r) => r.type === 'gate-timeout' && r.unanswered > 0));
   assert.ok(!silentRows.some((r) => ['human', 'accepted'].includes(r.type)));
