@@ -29,6 +29,7 @@ import { pickFolder } from './folder-picker.js';
 import { dataDirectory, legacyHistory, acquireDataLock, checkedHistoryPath, removeHistory, createUsageStore, createHistoryIndex } from './history.js';
 import { VERSION } from './version.js';
 import { LOCAL_API_VERSION } from './local-server.js';
+import { terminalBanner } from './terminal.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const UI = path.join(ROOT, 'src', 'ui');
@@ -879,6 +880,7 @@ server.listen(PORT, '127.0.0.1', () => {
   const url = `http://localhost:${PORT}`;
   const open = process.stdout.isTTY && !process.argv.includes('--no-open') && process.env.ROUNDTABLE_NO_OPEN !== '1' && !process.env.CI;
   const opened = open && openBrowser(url);
+  process.stdout.write(terminalBanner());
   console.log(`roundtable${FAKE ? ' (fake seats)' : ''}: ${url}  token ${TOKEN}`);
   console.log(`mode: ${FAKE ? 'demo (scripted replies and usage)' : 'live (configured providers)'}; data: ${DEBATES_DIR}`);
   console.log('diagnostics: _diagnostics in the data folder; use Save error log on the board. Nothing is uploaded.');

@@ -44,11 +44,10 @@ work well yet is listed under [Known issues](docs/workflow.md#known-issues).
 
 ### Connect your assistant once
 
-Package the current checkout, install the generated archive globally, then connect your assistant:
+Install Roundtable globally, then connect your assistant:
 
 ```bash
-npm pack
-npm install -g ./prplkane-roundtable-0.6.3.tgz
+npm install -g @prplkane/roundtable
 roundtable setup --client codex
 ```
 
@@ -61,11 +60,18 @@ You do not need to open this repository or start a browser for each review.
 Setup installs a user-level workflow skill and MCP connection. `roundtable setup --client codex
 --check` checks it; `--remove` removes its unchanged entries. After updating Roundtable, rerun
 setup to refresh the skill, and use `roundtable server restart` once active reviews finish.
-Installing the archive keeps the command working if you move or remove the checkout;
-`npm install -g .` can create a link back to it. Use the filename printed by `npm pack`.
+No checkout is needed. To install a local checkout instead, run `npm pack` there and
+`npm install -g` with the printed `.tgz` filename; `npm install -g .` can create a link
+back to the checkout that breaks when it moves.
 See [assistant setup](docs/workflow.md#connect-an-assistant-for-every-project)
-for paths, demo mode and troubleshooting. The first public npm release will also support
-`npm install -g @prplkane/roundtable`; until then use the checkout command above.
+for paths, demo mode and troubleshooting, or the [Linux walkthrough](docs/workflow.md#first-connection-on-linux).
+For a source snapshot before its npm release, use
+`npm install -g https://github.com/prplkane/roundtable/archive/refs/heads/main.tar.gz`.
+
+Interactive `roundtable --help`, `roundtable` and `roundtable fake` show the app's pixel logo
+tile in orchid, with the wordmark and installed version beside it. Narrow terminals and
+terminals without UTF-8 use a short title; `NO_COLOR=1` disables color. Redirected output,
+CI, dumb terminals, MCP and JSON commands omit the decoration.
 
 ### Try the demo
 

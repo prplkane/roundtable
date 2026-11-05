@@ -38,6 +38,12 @@
 
 ### Documentation
 
+- Add Linux first-connection steps, including a direct GitHub archive install, assistant
+  registration, discovery checks and a provider-free demo.
+- Show the app's pixel logo tile in interactive help and foreground startup, drawn with half
+  blocks in the orchid and aubergine of the board header, with the wordmark and installed
+  version beside it. Respect terminal width, UTF-8 support and `NO_COLOR`; keep redirected
+  output and machine protocols undecorated.
 - Add a Known issues entry to the guide, linked from the README: Codex calls can stall, what
   Roundtable does about it and what it cannot do.
 

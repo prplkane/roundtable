@@ -35,10 +35,10 @@ There are no dependencies to install.
 
 ### Connect an assistant for every project
 
-Install once from a checkout: run `npm pack`, then `npm install -g` with the generated
-`.tgz` filename, then `roundtable setup --client codex`. Install the archive, since
-`npm install -g .` can create a link to the checkout that breaks when it moves. The published
-package, when available, can be installed with `npm install -g @prplkane/roundtable`.
+Install once with `npm install -g @prplkane/roundtable`, then run
+`roundtable setup --client codex`. To install a local checkout, run `npm pack`, then
+`npm install -g` with the generated `.tgz` filename. Install the archive, since
+`npm install -g .` can create a link to the checkout that breaks when it moves.
 Setup points at the installed package, not the project where you next ask for a review.
 
 Choose `--client claude`, `--client agy`, repeat `--client`, or use `--client all` to connect
@@ -106,6 +106,72 @@ launch token and matching server instance, and refuses active reviews or other w
 It never cancels a review to perform an update. Older boards without the health API must be
 stopped from their original terminal with Ctrl+C, or by stopping their known server process.
 Refreshing the browser alone does not reload server code.
+
+### First connection on Linux
+
+Run these steps as the user who runs your assistant. Setup is once per machine and assistant
+profile, not once per project. Roundtable has no separate account or login.
+
+1. Check `node --version` and `npm --version`. Node must be 22 or newer.
+2. Install Roundtable globally:
+
+   ```bash
+   npm install -g @prplkane/roundtable
+   roundtable --help
+   ```
+
+   This installs a copy; no checkout is required. For a source snapshot before its npm release,
+   use `npm install -g https://github.com/prplkane/roundtable/archive/refs/heads/main.tar.gz`.
+   If `roundtable` is not found, add the
+   `bin` directory under `npm prefix -g` to your shell's `PATH`. Use a user-owned Node/npm
+   installation; run assistant setup as your ordinary user.
+3. Install and sign in to the providers you want to seat, using section 2. For Codex:
+
+   ```bash
+   npm install -g @openai/codex
+   codex login
+   roundtable doctor
+   ```
+
+   Finish the browser login. One provider is enough for multiple seats. Doctor checks
+   setup without a model call; `--live` additionally makes probe calls.
+4. Register the connection and skill for your assistant:
+
+   ```bash
+   roundtable setup --client codex
+   roundtable setup --client codex --check
+   ```
+
+   Replace `codex` with `claude` or `agy`, or use `all`. The check should report
+   `"ok": true` and `"connected": true` for the selected client. It verifies files and
+   executable paths; the assistant must still load the connection.
+5. Restart the assistant or reload its MCP connections. For Codex, run `codex mcp list`,
+   then open Codex in any project and use `/mcp` to check that Roundtable is available.
+   Ask it to call `roundtable_guide` and `roundtable_status` without starting a review.
+6. Ask for a first review: "Use Roundtable with two seats and one critique round to review
+   this decision. Ask me questions when needed, auto-continue if I do not answer, and wait
+   for the chairman." Include your decision, alternatives and constraints.
+
+Setup writes the installed Node and MCP script paths into the assistant's user configuration
+and copies the workflow skill. On reload, the assistant launches that script and discovers
+the 11 tools over stdio. The first tool that needs the board starts it locally in the background
+on port 4747. Roundtable invokes the provider CLIs with their existing logins only when the
+requested action needs them. There is no Roundtable cloud connection or API key to enter.
+Keep the provider CLI executables on the assistant's `PATH`; after changing a Node version or
+moving its installation, rerun setup and reload the assistant.
+
+To check the workflow without a provider account, use `roundtable setup --client codex --fake`
+before restarting the assistant and request a scripted demo review. This uses port 4748 and
+makes no model calls. Switch back with `roundtable setup --client codex --live` and reload again.
+The browser is optional for MCP: open `http://localhost:4747` after a live tool has started
+the board, or run `roundtable fake` for a foreground demo. If the board is already running in
+the background, open its URL instead of starting a second server.
+
+Foreground board startup and top-level help show the app's pixel logo tile in orchid, with
+the wordmark and installed version beside it. The tile is drawn with half-block characters,
+so it needs a UTF-8 terminal; other locales, and `ROUNDTABLE_ASCII=1`, get the wordmark
+alone. Narrow terminals use a short title, `NO_COLOR=1` removes color, and redirected
+output, CI, `TERM=dumb`, MCP and JSON commands omit it.
 
 ## 2. Install and log in to each vendor
 
