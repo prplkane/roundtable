@@ -3,11 +3,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { terminalBanner } from '../src/terminal.js';
+import { VERSION } from '../src/version.js';
 
 const CLI = path.resolve('src/cli.js');
 const freePort = () => new Promise((resolve, reject) => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); }); s.on('error', reject); });
@@ -25,26 +26,21 @@ test('terminal branding respects output capabilities and does not decorate pipes
   const plain = terminalBanner({ ...terminal, env: { NO_COLOR: '1' } });
   assert.match(plain, /ROUNDTABLE/);
   assert.doesNotMatch(plain, /\x1b\[/, 'NO_COLOR removes ANSI styling');
-  const ascii = terminalBanner({ ...terminal, env: { NO_COLOR: '1', ROUNDTABLE_ASCII: '1' } });
-  assert.doesNotMatch(ascii, /[^\x20-\x7e\n]/, 'an ASCII-only fallback is available');
-  assert.equal(terminalBanner({ ...terminal, env: { NO_COLOR: '1', LANG: 'C' } }), ascii);
+  assert.doesNotMatch(plain, /[^\x20-\x7e\n]/, 'the mark uses printable ASCII in every locale');
+  assert.equal(terminalBanner({ ...terminal, env: { NO_COLOR: '1', LANG: 'C' } }), plain);
   assert.equal(terminalBanner({ ...terminal, isTTY: false }), '');
   assert.equal(terminalBanner({ ...terminal, env: { CI: '1' } }), '');
   assert.equal(terminalBanner({ ...terminal, env: { TERM: 'dumb' } }), '');
-  assert.equal(terminalBanner({ ...terminal, columns: 30, env: { NO_COLOR: '1' } }), '\nROUNDTABLE\n\n');
+  assert.equal(terminalBanner({ ...terminal, columns: 30, env: { NO_COLOR: '1' } }), `\nROUNDTABLE  v${VERSION}\n\n`);
 });
 
-test('terminal mark preserves the actual SVG logo pixels in both renderings', () => {
-  const svg = readFileSync('src/ui/logo.svg', 'utf8');
-  const pixels = new Set([...svg.matchAll(/<rect x="(\d+)" y="(\d+)" width="1" height="1"\/>/g)].map(m => `${m[1]},${m[2]}`));
-  assert.ok(pixels.size > 0);
-  const render = env => terminalBanner({ isTTY: true, columns: 80, env: { NO_COLOR: '1', ...env } }).split('\n').slice(1, -2);
-  const blocks = render({}), ascii = render({ ROUNDTABLE_ASCII: '1' });
-  for (let y = 2; y <= 13; y++) for (let x = 2; x <= 13; x++) {
-    const glyph = blocks[Math.floor((y - 2) / 2)][x];
-    const lit = (y % 2 === 0 ? '▀█' : '▄█').includes(glyph);
-    assert.equal(lit, pixels.has(`${x},${y}`), `block pixel ${x},${y}`);
-    if (y <= 12) assert.equal(ascii[y - 2].slice(2 + (x - 2) * 2, 4 + (x - 2) * 2), pixels.has(`${x},${y}`) ? '##' : '  ', `ASCII pixel ${x},${y}`);
+test('terminal banner fits its available width and identifies the installed version', () => {
+  // A line drawing replaces literal SVG pixels: test legibility and layout, not a raster copy.
+  for (const columns of [10, 18, 30, 48, 49, 80]) {
+    const banner = terminalBanner({ isTTY: true, columns, env: { NO_COLOR: '1' } });
+    for (const line of banner.split('\n')) assert.ok(line.length <= columns, `line exceeds ${columns} columns`);
+    assert.equal(banner.match(/ROUNDTABLE/g).length, 1);
+    if (columns >= 12 + `v${VERSION}`.length) assert.ok(banner.includes(`v${VERSION}`));
   }
 });
 
