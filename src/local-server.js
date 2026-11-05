@@ -1,5 +1,7 @@
 // A cheap, versioned health check; provider catalogues are not server readiness checks.
 import { spawn } from 'node:child_process';
+import { mkdtempSync, openSync, closeSync, readFileSync, rmSync } from 'node:fs';
+import os from 'node:os';
 import { realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -43,23 +45,46 @@ export async function inspectServer(config, { signal, allowOlder = false } = {})
 // Readiness reads may be retried. A review write is never part of this loop.
 export async function ensureServer(config, { signal, timeoutMs = 35000 } = {}) {
   const end = Date.now() + timeoutMs;
-  let spawned = false, spawnFailed = false, last;
+  let spawned = false, spawnFailed = false, exited = null, ready = false, last;
+  // The board's stderr goes to a file, never a pipe: it outlives this process, and a pipe to a
+  // gone host would break its logging. The file sits in a fresh private temp directory (no
+  // predictable path for another user to plant), is read only when the board exits early, and
+  // goes once the board is ready (at once where an open file can be unlinked, else when the
+  // board exits while this process is still around).
+  let log = null;
+  const discard = () => { try { if (log) rmSync(path.dirname(log), { recursive: true, force: true }); } catch {} };
   while (Date.now() < end) {
     signal?.throwIfAborted();
     try {
       const status = await inspectServer(config, { signal });
-      if (status) return status;
+      if (status) { if (spawned) { ready = true; discard(); } return status; }
       if (config.start === false) throw new Error('Roundtable is not running; start the local board or remove --no-start.');
       if (!spawned) {
         spawned = true;
         // Survives the host connection, so closing chat cannot cancel a review or its timer.
+        let fd = null;
+        try { log = path.join(mkdtempSync(path.join(os.tmpdir(), 'roundtable-start-')), 'stderr.log'); fd = openSync(log, 'wx'); } catch {}
         const child = spawn(process.execPath, [SERVER, '--no-open', ...(config.fake ? ['--fake'] : [])], {
           env: { ...process.env, PORT: String(config.port), ...(config.dataDir ? { ROUNDTABLE_DEBATES_DIR: config.dataDir } : {}) },
-          detached: true, windowsHide: true, stdio: 'ignore',
+          detached: true, windowsHide: true, stdio: ['ignore', 'ignore', fd ?? 'ignore'],
         });
-        child.once('error', () => { spawnFailed = true; }); child.unref();
+        if (fd != null) closeSync(fd);
+        child.once('error', () => { spawnFailed = true; });
+        child.once('exit', (code, sig) => { exited = { code, sig }; if (ready) discard(); });
+        child.unref();
       }
     } catch (e) { if (!e.transient) throw e; last = e; }
+    if (exited) {
+      let tail = '';
+      // the board's own last word where it had one, else the error line of a crash, else the last line
+      try {
+        const lines = readFileSync(log, 'utf8').split(/\r?\n/).filter((l) => l.trim());
+        tail = (lines.findLast((l) => l.startsWith('[server]')) || lines.find((l) => /Error|\bE[A-Z]{3,}\b/.test(l)) || lines.at(-1) || '').trim().slice(0, 200);
+      } catch {}
+      discard();
+      const sandboxed = /cannot listen.*\b(EPERM|EACCES)\b/.test(tail);
+      throw new Error(`The local board exited before it was ready${tail ? ` (${tail})` : ''}. ${sandboxed ? 'This environment blocks local servers: start the board from a normal terminal with roundtable server start, then retry.' : 'Run roundtable --no-open in a terminal for startup details.'} No review was started.`);
+    }
     if (spawnFailed) break;
     await delay(100, undefined, { signal });
   }

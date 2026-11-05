@@ -16,7 +16,9 @@ one-time `roundtable setup --client codex` (or `claude` / `agy`) step.
    The MCP server starts the local board when needed; offer its link without opening it.
    For the CLI fallback, read `roundtable agent --help`, then `roundtable agent status --refresh`.
    If no server answers, use `roundtable server start` to start a hidden board and retry
-   the read. An incompatible running board needs a restart after its reviews finish;
+   the read. If that reports `EPERM` or that the environment blocks local servers, your
+   sandbox forbids the port: ask the user to run `roundtable server start` in their own
+   terminal once, then retry. An incompatible running board needs a restart after its reviews finish;
    `roundtable server restart` refuses active reviews. Never automatically retry a write
    that might already have succeeded.
 2. Choose distinct perspectives using the user's facts and constraints. Normally use two seats,

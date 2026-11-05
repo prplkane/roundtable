@@ -96,6 +96,16 @@ test('readiness cancellation prevents dispatch and transient failures have a bou
   assert.equal(reads, before);
 });
 
+test('a board that exits before it is ready is reported with its own last line, not a 35-second timeout', { timeout: 20000 }, async () => {
+  const file = path.join(await mkdtemp(path.join(os.tmpdir(), 'rt-exit-')), 'a-file');
+  await (await import('node:fs/promises')).writeFile(file, 'x');
+  const t0 = Date.now();
+  // a data directory beneath a file cannot be created, so the board dies at startup
+  await assert.rejects(ensureServer({ port: await freePort(), dataDir: path.join(file, 'sub') }, { timeoutMs: 15000 }),
+    /exited before it was ready \(Error: ENOTDIR.*\)\. Run roundtable --no-open in a terminal for startup details\. No review was started\./);
+  assert.ok(Date.now() - t0 < 10000, 'the exit cuts the readiness wait short');
+});
+
 test('MCP discovery, protocol errors and guide work without starting a server or vendor', async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'rt-mcp-protocol-'));
   const port = await freePort();

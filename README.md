@@ -69,9 +69,10 @@ For a source snapshot before its npm release, use
 `npm install -g https://github.com/prplkane/roundtable/archive/refs/heads/main.tar.gz`.
 
 Interactive `roundtable --help`, `roundtable` and `roundtable fake` show the app's pixel logo
-tile in orchid, with the wordmark and installed version beside it. Narrow terminals and
-terminals without UTF-8 use a short title; `NO_COLOR=1` disables color. Redirected output,
-CI, dumb terminals, MCP and JSON commands omit the decoration.
+tile in orchid, with the wordmark, a blinking cursor and the installed version beside it, then
+the provider CLIs found on this machine in their seat colors. Narrow terminals and terminals
+without UTF-8 use a short title; `NO_COLOR=1` disables color. Redirected output, CI, dumb
+terminals, MCP and JSON commands omit the decoration.
 
 ### Try the demo
 

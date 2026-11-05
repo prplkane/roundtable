@@ -29,4 +29,10 @@ test('doctor shows the Antigravity terms notice and sends agy nothing without --
   const given = doctor('--acknowledge-terms-risk');
   assert.match(given, /terms {6}Google's Antigravity FAQ/, 'the notice is shown either way');
   assert.doesNotMatch(given, /held:/);
+  // without --vendor, CLIs that are not on this machine get one line, not a block each
+  const all = execFileSync(process.execPath, ['src/doctor.js'], { env, encoding: 'utf8', windowsHide: true, timeout: 20_000 });
+  assert.match(all, /^not installed: Claude \(claude\), Codex \(codex\), Antigravity \(agy\); install and sign in/m);
+  assert.doesNotMatch(all, /== (Claude|Codex|Antigravity)|NOT FOUND/);
+  assert.match(all, /== API endpoint \(api\)/, 'the endpoint seat has no binary to miss');
+  assert.doesNotMatch(all, /\x1b\[/, 'piped output stays plain');
 });

@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { ADAPTERS } from './adapters/config.js';
 import { resolveBinary, runProcess, profileHome, dataDir } from './adapters/spawn.js';
 import { dataDirectory } from './history.js';
+import { paintVendor } from './terminal.js';
 
 // Shell lines that log a profile in, per vendor, for the platform the user is on. Pure.
 export function loginInstructions(vendor, profile, where = {}) {
@@ -46,9 +47,13 @@ async function main() {
   const catalogue = await vendorCatalogue(ADAPTERS.agy.terms && !acknowledgeTermsRisk ? { agyModels: async () => [] } : {});
   console.log(`roundtable doctor  (${process.platform}, node ${process.version}, data dir ${dataDir()})`);
   console.log(live ? 'live: one trivial model call per vendor' : 'static only; add --live for one trivial model call per vendor');
+  const missing = []; // CLIs not on PATH: one line at the end, a full block only when asked for by --vendor
   for (const [vendor, a] of Object.entries(ADAPTERS)) {
     if (only && only !== vendor) continue;
-    console.log(`\n== ${a.label} (${vendor})  pool: ${a.pool}`);
+    let bin = null, lookup = null;
+    if (a.kind === 'cli') try { bin = resolveBinary(a.binary, a.npmBin); } catch (e) { lookup = e.message; }
+    if (a.kind === 'cli' && !bin && only !== vendor) { missing.push(`${a.label} (${a.binary})`); continue; }
+    console.log(`\n== ${paintVendor(a)} (${vendor})  pool: ${a.pool}`);
     if (a.kind === 'api') { // no binary: everything about an endpoint seat is on its card
       console.log('  seat it    on the board: base URL (…/v1), model id, and for a hosted API the NAME of the key variable');
       console.log(`  efforts    ${a.effortLevels.join(', ')}  (reasoning_effort, sent only when set)`);
@@ -58,8 +63,7 @@ async function main() {
     }
     const held = !!a.terms && !acknowledgeTermsRisk;
     const heldLine = `held: nothing is sent to ${a.binary} without --acknowledge-terms-risk`;
-    let bin = null;
-    try { bin = resolveBinary(a.binary, a.npmBin); console.log(`  binary     ${bin.prefix.length ? `${bin.prefix[0]} (via node)` : bin.file}`); } catch (e) { console.log(`  binary     NOT FOUND: ${e.message}`); }
+    console.log(`  binary     ${bin ? bin.prefix.length ? `${bin.prefix[0]} (via node)` : bin.file : `NOT FOUND: ${lookup}`}`);
     if (bin) console.log(`  version    ${await version(bin, vendor)}`);
     const c = catalogue[vendor];
     if (held) console.log(`  models     ${heldLine}`);
@@ -88,6 +92,7 @@ async function main() {
     }
     if (profile) for (const l of loginInstructions(vendor, profile)) console.log(`  profile    ${l}`);
   }
+  if (missing.length) console.log(`\nnot installed: ${missing.join(', ')}; install and sign in to seat them, or add --vendor <name> for that block`);
   if (!profile) console.log('\nadd --profile <name> to see how to log a named account profile in for each vendor');
 }
 

@@ -7,7 +7,7 @@ import { mkdtempSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { terminalBanner } from '../src/terminal.js';
+import { terminalBanner, paintVendor } from '../src/terminal.js';
 import { VERSION } from '../src/version.js';
 
 const CLI = path.resolve('src/cli.js');
@@ -26,6 +26,7 @@ test('terminal branding respects output capabilities and does not decorate pipes
   assert.match(basic, /ROUNDTABLE/);
   assert.match(basic, /[▀▄█]/, 'the mark is the pixel tile drawn with half blocks');
   assert.match(basic, /\x1b\[45m/, 'a basic terminal gets the standard magenta tile');
+  assert.match(basic, /\x1b\[5m▌/, 'the block cursor blinks like the board header');
   assert.match(terminalBanner({ ...terminal, env: { ...terminal.env, COLORTERM: 'truecolor' } }), /48;2;199;154;208m/, 'true colour gets the orchid tile');
   const plain = terminalBanner({ ...terminal, env: { ...terminal.env, NO_COLOR: '1' } });
   assert.match(plain, /ROUNDTABLE/);
@@ -40,6 +41,17 @@ test('terminal branding respects output capabilities and does not decorate pipes
   assert.equal(terminalBanner({ ...terminal, env: { ...terminal.env, CI: '1' } }), '');
   assert.equal(terminalBanner({ ...terminal, env: { ...terminal.env, TERM: 'dumb' } }), '');
   assert.equal(terminalBanner({ ...terminal, columns: 30, env: { ...terminal.env, NO_COLOR: '1' } }), compact);
+});
+
+test('vendor names take their seat colour per terminal tier and stay plain off a terminal', () => {
+  const codex = { label: 'Codex', colour: 'olive' };
+  const tty = { isTTY: true, env: {}, platform: 'linux' };
+  assert.equal(paintVendor(codex, { ...tty, env: { COLORTERM: 'truecolor' } }), '\x1b[38;2;156;188;106mCodex\x1b[0m');
+  assert.equal(paintVendor(codex, { ...tty, env: { TERM: 'xterm-256color' } }), '\x1b[38;5;149mCodex\x1b[0m');
+  assert.equal(paintVendor(codex, tty), '\x1b[32mCodex\x1b[0m', 'basic terminals get the nearest of the 8 colours');
+  assert.equal(paintVendor({ label: 'Claude', colour: 'rust' }, { ...tty, text: 'claude' }), '\x1b[31mclaude\x1b[0m', 'other text in the vendor colour');
+  for (const off of [{ ...tty, isTTY: false }, { ...tty, env: { NO_COLOR: '1' } }, { ...tty, env: { CI: '1' } }, { ...tty, env: { TERM: 'dumb' } }]) assert.equal(paintVendor(codex, off), 'Codex');
+  assert.equal(paintVendor({ label: 'Other', colour: 'mauve' }, tty), 'Other', 'an unknown colour name paints nothing');
 });
 
 test('terminal banner fits its available width and identifies the installed version', () => {
