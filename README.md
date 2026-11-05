@@ -68,8 +68,9 @@ for paths, demo mode and troubleshooting, or the [Linux walkthrough](docs/workfl
 For a source snapshot before its npm release, use
 `npm install -g https://github.com/prplkane/roundtable/archive/refs/heads/main.tar.gz`.
 
-Interactive `roundtable --help`, `roundtable` and `roundtable fake` show a compact ASCII
-table. Narrow terminals use a short title; `NO_COLOR=1` disables color. Redirected output,
+Interactive `roundtable --help`, `roundtable` and `roundtable fake` show the app's pixel logo
+in orchid. Narrow terminals use a short title; `NO_COLOR=1` disables color, and
+`ROUNDTABLE_ASCII=1` uses ASCII pixels when a font lacks block characters. Redirected output,
 CI, dumb terminals, MCP and JSON commands omit the decoration.
 
 ### Try the demo

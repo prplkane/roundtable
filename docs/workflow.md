@@ -167,8 +167,9 @@ The browser is optional for MCP: open `http://localhost:4747` after a live tool 
 the board, or run `roundtable fake` for a foreground demo. If the board is already running in
 the background, open its URL instead of starting a second server.
 
-Foreground board startup and top-level help show an ASCII table in interactive terminals.
-Narrow terminals use a short title, `NO_COLOR=1` removes color, and redirected output, CI,
+Foreground board startup and top-level help show the app's pixel logo in orchid. The mark
+uses block characters to preserve its proportions; `ROUNDTABLE_ASCII=1` (or a C/POSIX locale)
+selects ASCII pixels. Narrow terminals use a short title, `NO_COLOR=1` removes color, and redirected output, CI,
 `TERM=dumb`, MCP and JSON commands omit it.
 
 ## 2. Install and log in to each vendor
