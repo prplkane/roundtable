@@ -133,6 +133,9 @@ test('MCP discovery, protocol errors and guide work without starting a server or
   assert.equal(waitSchema.afterRound.maximum, LIMITS.critiqueRounds[1]);
   assert.ok(listed.tools.some((t) => t.name === 'roundtable_wait' && t.inputSchema.properties.afterRound));
   assert.ok(!listed.tools.some((t) => /accept|export/.test(t.name)));
+  const answerItem = listed.tools.find((t) => t.name === 'roundtable_answer').inputSchema.properties.answers.items;
+  assert.deepEqual(answerItem.required, ['id', 'text', 'from'], 'every answer declares who wrote it');
+  assert.deepEqual(answerItem.properties.from.enum, ['user', 'assistant']);
   const guide = await client.tool('guide');
   assert.equal(guide.ok, true);
   assert.ok(guide.recipe.completion && guide.recipe.questions);
@@ -228,6 +231,8 @@ test('installed MCP works outside the repo: questions, real answers, silence, un
   assert.match(blockedStop.error, /active review/);
   const firstRound = state.gate.round;
   const originalDeadline = state.gate.autoContinueAt;
+  assert.equal(state.gate.autoContinueAtIso, new Date(originalDeadline).toISOString());
+  assert.ok(Number.isInteger(state.gate.secondsUntilAutoContinue) && state.gate.secondsUntilAutoContinue > 0, 'the window is readable without epoch arithmetic');
   state = await client.tool('wait', { id: started.id, afterRound: firstRound, seconds: 1 });
   assert.equal(state.nextAction.type, 'await_user');
   assert.equal(state.gate.autoContinueAt, originalDeadline, 'reading never extends a gate');
@@ -235,14 +240,15 @@ test('installed MCP works outside the repo: questions, real answers, silence, un
   const held = await client.tool('hold', { id: started.id, round: firstRound });
   assert.equal(held.ok, true);
   assert.ok(held.autoContinueAt > originalDeadline);
+  assert.ok(held.secondsUntilAutoContinue > 0 && held.autoContinueAtIso === new Date(held.autoContinueAt).toISOString());
   const answered = await client.tool('answer', { id: started.id, round: firstRound,
-    answers: state.gate.questions.map((q) => ({ id: q.id, text: 'Synthetic user answer: the deadline can move by a week; stop if failures exceed the trial threshold.' })) });
+    answers: state.gate.questions.map((q) => ({ id: q.id, text: 'Synthetic user answer: the deadline can move by a week; stop if failures exceed the trial threshold.', from: 'user' })) });
   assert.equal(answered.ok, true, answered.error);
   for (let n = 0; n < 5; n++) {
     state = await client.tool('wait', { id: started.id, afterRound: firstRound });
     if (state.status === 'done') break;
     if (state.nextAction.type === 'ask_user') await client.tool('answer', { id: started.id, round: state.gate.round,
-      answers: state.gate.questions.map((q) => ({ id: q.id, text: 'Synthetic user answer: yes.' })) });
+      answers: state.gate.questions.map((q) => ({ id: q.id, text: 'Synthetic user answer: yes.', from: 'user' })) });
   }
   assert.equal(state.status, 'done');
   assert.equal(state.verdict.status, 'ready');
@@ -250,6 +256,7 @@ test('installed MCP works outside the repo: questions, real answers, silence, un
   assert.equal(state.depth.completedCritiqueRounds, 1);
   const rows = (await readFile(path.join(data, started.id, 'transcript.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
   assert.ok(rows.some((r) => r.type === 'human'));
+  assert.ok(rows.filter((r) => r.type === 'human').every((r) => r.source === 'relayed'), 'answers declared as the user\'s own are credited to the user, via the assistant');
   assert.ok(!rows.some((r) => r.type === 'accepted'));
 
   // Unanswered gates keep their timer even when the coordinator disconnects.
@@ -262,7 +269,7 @@ test('installed MCP works outside the repo: questions, real answers, silence, un
   assert.equal(continued.status, 'done');
   assert.equal(continued.verdict.status, 'ready');
   assert.equal(continued.completed, true);
-  const late = await client.tool('answer', { id: silent.id, round: question.gate.round, answers: [{ id: 'q1', text: 'Late reply' }] });
+  const late = await client.tool('answer', { id: silent.id, round: question.gate.round, answers: [{ id: 'q1', text: 'Late reply', from: 'user' }] });
   assert.equal(late.ok, false);
   assert.equal(late.status, 409);
   const silentRows = (await readFile(path.join(data, silent.id, 'transcript.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
