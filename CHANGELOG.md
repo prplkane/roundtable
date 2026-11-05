@@ -38,6 +38,10 @@
 
 ### Documentation
 
+- Add Linux first-connection steps, including a direct GitHub archive install, assistant
+  registration, discovery checks and a provider-free demo.
+- Show an ASCII table in interactive help and foreground board startup, respecting terminal
+  width and `NO_COLOR`. Keep redirected output and machine protocols undecorated.
 - Add a Known issues entry to the guide, linked from the README: Codex calls can stall, what
   Roundtable does about it and what it cannot do.
 

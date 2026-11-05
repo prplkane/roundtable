@@ -7,6 +7,7 @@ import { mkdtempSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { terminalBanner } from '../src/terminal.js';
 
 const CLI = path.resolve('src/cli.js');
 const freePort = () => new Promise((resolve, reject) => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); }); s.on('error', reject); });
@@ -14,7 +15,20 @@ const freePort = () => new Promise((resolve, reject) => { const s = net.createSe
 test('roundtable --help exits 0 and names every command; an unknown command exits 2', () => {
   const help = execFileSync(process.execPath, [CLI, '--help'], { encoding: 'utf8' });
   for (const c of ['fake', 'doctor', 'export', 'debate', '--no-open']) assert.ok(help.includes(c), c);
+  assert.doesNotMatch(help, /R O U N D T A B L E|\x1b\[/, 'redirected help stays plain');
   assert.throws(() => execFileSync(process.execPath, [CLI, 'bogus'], { encoding: 'utf8', stdio: 'pipe' }), (e) => e.status === 2 && /unknown command: bogus/.test(e.stderr));
+});
+
+test('terminal branding respects output capabilities and does not decorate pipes or CI', () => {
+  const terminal = { isTTY: true, columns: 80, env: {} };
+  assert.match(terminalBanner(terminal), /R O U N D T A B L E/);
+  const plain = terminalBanner({ ...terminal, env: { NO_COLOR: '1' } });
+  assert.match(plain, /R O U N D T A B L E/);
+  assert.doesNotMatch(plain, /[^\x20-\x7e\n]/, 'NO_COLOR leaves plain ASCII');
+  assert.equal(terminalBanner({ ...terminal, isTTY: false }), '');
+  assert.equal(terminalBanner({ ...terminal, env: { CI: '1' } }), '');
+  assert.equal(terminalBanner({ ...terminal, env: { TERM: 'dumb' } }), '');
+  assert.equal(terminalBanner({ ...terminal, columns: 30, env: { NO_COLOR: '1' } }), '\nRoundtable\n\n');
 });
 
 test('roundtable fake --port starts the fake server on that port, with scripted seats, and the flags reach it as flags', { timeout: 30_000 }, async () => {
@@ -28,6 +42,7 @@ test('roundtable fake --port starts the fake server on that port, with scripted 
     while (!/token/.test(log) && Date.now() - t0 < 20_000) await new Promise((r) => setTimeout(r, 50));
     assert.ok(log.includes(`roundtable (fake seats): http://localhost:${port}  token `), log);
     assert.match(log, /token [0-9a-f]{32}/);
+    assert.doesNotMatch(log, /R O U N D T A B L E|\x1b\[/, 'redirected board logs stay plain');
     assert.doesNotMatch(log, /the board is open in your browser/, 'no browser from a test');
     const r = await fetch(`http://127.0.0.1:${port}/api/seats`);
     assert.equal(r.status, 200);

@@ -11,6 +11,7 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { terminalBanner } from './terminal.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPTS = {
@@ -29,7 +30,7 @@ const USAGE = ['roundtable [--port <n>] [--no-open]   the board, opened in your 
   'roundtable server --help             check, start, stop or restart the hidden board',
   'roundtable mcp                       MCP tools over stdio; starts the local server as needed'].join('\n');
 // help first, wherever it is on the line: a bare `--help` must never start the real server
-if (!['agent', 'setup', 'mcp', 'server'].includes(args[0]) && args.some((a) => a === 'help' || a === '--help' || a === '-h')) { console.log(USAGE); process.exit(0); }
+if (!['agent', 'setup', 'mcp', 'server'].includes(args[0]) && args.some((a) => a === 'help' || a === '--help' || a === '-h')) { process.stdout.write(terminalBanner()); console.log(USAGE); process.exit(0); }
 const cmd = args[0] && !args[0].startsWith('-') ? args.shift() : 'start';
 if (!SCRIPTS[cmd]) { console.error(`unknown command: ${cmd}\n\n${USAGE}`); process.exit(2); }
 const env = { ...process.env };

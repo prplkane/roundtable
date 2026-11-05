@@ -144,6 +144,8 @@ installed or API endpoints you explicitly configure; demo mode uses scripted rep
   contents or credentials. Updates and removal check those hashes before changing files.
   Missing owned files can be repaired or removed; existing edited files remain protected.
   Setup honors Codex and Claude profile overrides and checks the stored Node executable.
+  Terminal branding is limited to interactive help and foreground board startup; MCP and
+  JSON command output contain no decoration.
   The stdio MCP adapter exposes the JSON client's review actions, not a general shell or
   filesystem tool. It validates inputs, bounds protocol messages and uses the same loopback
   token and server validation. No acceptance or export action is exposed. Setup, discovery
