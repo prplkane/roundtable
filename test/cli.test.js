@@ -21,26 +21,34 @@ test('roundtable --help exits 0 and names every command; an unknown command exit
 });
 
 test('terminal branding respects output capabilities and does not decorate pipes or CI', () => {
-  const terminal = { isTTY: true, columns: 80, env: {} };
-  assert.match(terminalBanner(terminal), /ROUNDTABLE/);
-  const plain = terminalBanner({ ...terminal, env: { NO_COLOR: '1' } });
+  const terminal = { isTTY: true, columns: 80, env: { LANG: 'en_US.UTF-8' }, platform: 'linux' };
+  const basic = terminalBanner(terminal);
+  assert.match(basic, /ROUNDTABLE/);
+  assert.match(basic, /[▀▄█]/, 'the mark is the pixel tile drawn with half blocks');
+  assert.match(basic, /\x1b\[45m/, 'a basic terminal gets the standard magenta tile');
+  assert.match(terminalBanner({ ...terminal, env: { ...terminal.env, COLORTERM: 'truecolor' } }), /48;2;199;154;208m/, 'true colour gets the orchid tile');
+  const plain = terminalBanner({ ...terminal, env: { ...terminal.env, NO_COLOR: '1' } });
   assert.match(plain, /ROUNDTABLE/);
   assert.doesNotMatch(plain, /\x1b\[/, 'NO_COLOR removes ANSI styling');
-  assert.doesNotMatch(plain, /[^\x20-\x7e\n]/, 'the mark uses printable ASCII in every locale');
-  assert.equal(terminalBanner({ ...terminal, env: { NO_COLOR: '1', LANG: 'C' } }), plain);
+  assert.match(plain, /[▀▄█]/, 'the tile stays without colour');
+  const compact = `\nROUNDTABLE  v${VERSION}\n\n`;
+  assert.equal(terminalBanner({ ...terminal, env: { NO_COLOR: '1', LANG: 'C' } }), compact, 'a locale without UTF-8 gets the wordmark only');
+  assert.equal(terminalBanner({ ...terminal, env: { NO_COLOR: '1' } }), compact, 'no locale at all: no half blocks');
+  assert.equal(terminalBanner({ ...terminal, env: { ...terminal.env, NO_COLOR: '1', ROUNDTABLE_ASCII: '1' } }), compact);
+  assert.equal(terminalBanner({ ...terminal, env: { NO_COLOR: '1' }, platform: 'win32' }), plain, 'Windows consoles take Unicode whatever the locale says');
   assert.equal(terminalBanner({ ...terminal, isTTY: false }), '');
-  assert.equal(terminalBanner({ ...terminal, env: { CI: '1' } }), '');
-  assert.equal(terminalBanner({ ...terminal, env: { TERM: 'dumb' } }), '');
-  assert.equal(terminalBanner({ ...terminal, columns: 30, env: { NO_COLOR: '1' } }), `\nROUNDTABLE  v${VERSION}\n\n`);
+  assert.equal(terminalBanner({ ...terminal, env: { ...terminal.env, CI: '1' } }), '');
+  assert.equal(terminalBanner({ ...terminal, env: { ...terminal.env, TERM: 'dumb' } }), '');
+  assert.equal(terminalBanner({ ...terminal, columns: 30, env: { ...terminal.env, NO_COLOR: '1' } }), compact);
 });
 
 test('terminal banner fits its available width and identifies the installed version', () => {
-  // A line drawing replaces literal SVG pixels: test legibility and layout, not a raster copy.
-  for (const columns of [10, 18, 30, 48, 49, 80]) {
-    const banner = terminalBanner({ isTTY: true, columns, env: { NO_COLOR: '1' } });
-    for (const line of banner.split('\n')) assert.ok(line.length <= columns, `line exceeds ${columns} columns`);
+  for (const columns of [10, 18, 30, 42, 43, 80]) {
+    const banner = terminalBanner({ isTTY: true, columns, env: { NO_COLOR: '1', LANG: 'en_US.UTF-8' }, platform: 'linux' });
+    for (const line of banner.split('\n')) assert.ok([...line].length <= columns, `line exceeds ${columns} columns`);
     assert.equal(banner.match(/ROUNDTABLE/g).length, 1);
     if (columns >= 12 + `v${VERSION}`.length) assert.ok(banner.includes(`v${VERSION}`));
+    assert.equal(/[▀▄█]/.test(banner), columns >= 43, 'the tile appears once the tagline fits beside it');
   }
 });
 

@@ -167,11 +167,11 @@ The browser is optional for MCP: open `http://localhost:4747` after a live tool 
 the board, or run `roundtable fake` for a foreground demo. If the board is already running in
 the background, open its URL instead of starting a second server.
 
-Foreground board startup and top-level help show an ASCII line-art version of the logo in
-orchid, with the installed version beside the wordmark. It uses ordinary punctuation instead
-of block characters, so no special font is needed. Narrow terminals use a short title,
-`NO_COLOR=1` removes color, and redirected output, CI,
-`TERM=dumb`, MCP and JSON commands omit it.
+Foreground board startup and top-level help show the app's pixel logo tile in orchid, with
+the wordmark and installed version beside it. The tile is drawn with half-block characters,
+so it needs a UTF-8 terminal; other locales, and `ROUNDTABLE_ASCII=1`, get the wordmark
+alone. Narrow terminals use a short title, `NO_COLOR=1` removes color, and redirected
+output, CI, `TERM=dumb`, MCP and JSON commands omit it.
 
 ## 2. Install and log in to each vendor
 
