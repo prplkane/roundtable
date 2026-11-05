@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.4
+
+### Terminal
+
+- Report only the provider CLIs found on this machine: `roundtable doctor` lists missing ones
+  in a single line instead of a block each (`--vendor <name>` still shows the full block), and
+  foreground startup prints a `providers:` line in the seat colours instead of a failed quota
+  read for every CLI that is not installed.
+- Always print how to open the board and that Ctrl+C stops it, including with `--no-open`.
+- Say plainly when the port cannot be taken: in use, or a sandbox that forbids a local server
+  (`EPERM`), with the `roundtable server start` way out. The MCP tools and `roundtable server
+  start` report that last line within seconds instead of waiting out the readiness timeout,
+  while two hosts starting the board at once both get the one that won the port.
+- Blink the block cursor beside the wordmark where the terminal allows blinking text, and show
+  vendor names in their seat colours.
+
 ## 0.6.3
 
 ### Assistant integration

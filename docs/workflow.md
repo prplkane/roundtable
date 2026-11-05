@@ -160,6 +160,23 @@ requested action needs them. There is no Roundtable cloud connection or API key 
 Keep the provider CLI executables on the assistant's `PATH`; after changing a Node version or
 moving its installation, rerun setup and reload the assistant.
 
+Some assistants run commands in a sandbox that forbids opening a local port. A `roundtable`
+command run inside such a shell cannot start the board: it dies with `listen EPERM
+127.0.0.1:4747`, and the command reports that line. Codex on Linux has shown this. Check
+first that the MCP connection itself is loaded (`codex mcp list`, then `/mcp` in Codex), since
+the MCP tools are started by the assistant rather than by its sandboxed shell. If the tools
+still cannot start the board, start it once from a normal terminal:
+
+```bash
+roundtable server start
+```
+
+It keeps running in the background and `roundtable server status` shows it; the tools then
+only connect to it. Stop it with `roundtable server stop` when no review is active. If a tool
+still cannot reach a board that is running, that sandbox blocks loopback connections too, and
+the assistant cannot use Roundtable from inside it; report it as an issue with the assistant,
+version and OS.
+
 To check the workflow without a provider account, use `roundtable setup --client codex --fake`
 before restarting the assistant and request a scripted demo review. This uses port 4748 and
 makes no model calls. Switch back with `roundtable setup --client codex --live` and reload again.
@@ -168,10 +185,12 @@ the board, or run `roundtable fake` for a foreground demo. If the board is alrea
 the background, open its URL instead of starting a second server.
 
 Foreground board startup and top-level help show the app's pixel logo tile in orchid, with
-the wordmark and installed version beside it. The tile is drawn with half-block characters,
-so it needs a UTF-8 terminal; other locales, and `ROUNDTABLE_ASCII=1`, get the wordmark
-alone. Narrow terminals use a short title, `NO_COLOR=1` removes color, and redirected
-output, CI, `TERM=dumb`, MCP and JSON commands omit it.
+the wordmark, a blinking block cursor and the installed version beside it. The tile is drawn
+with half-block characters, so it needs a UTF-8 terminal; other locales, and
+`ROUNDTABLE_ASCII=1`, get the wordmark alone. Startup then lists the provider CLIs found on
+`PATH`, each in its seat color; `roundtable doctor` names the missing ones in one line.
+Narrow terminals use a short title, `NO_COLOR=1` removes color, and redirected output, CI,
+`TERM=dumb`, MCP and JSON commands omit the decoration.
 
 ## 2. Install and log in to each vendor
 

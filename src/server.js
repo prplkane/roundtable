@@ -29,7 +29,7 @@ import { pickFolder } from './folder-picker.js';
 import { dataDirectory, legacyHistory, acquireDataLock, checkedHistoryPath, removeHistory, createUsageStore, createHistoryIndex } from './history.js';
 import { VERSION } from './version.js';
 import { LOCAL_API_VERSION } from './local-server.js';
-import { terminalBanner } from './terminal.js';
+import { terminalBanner, paintVendor } from './terminal.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const UI = path.join(ROOT, 'src', 'ui');
@@ -402,6 +402,9 @@ function synthesizeDebate(d, body = {}) {
 const quota = {}; // pool key -> { windows, plan, at, groups? }
 const readers = FAKE ? { claude: async () => fakeQuota('claude'), codex: async () => fakeQuota('codex'), agy: async () => fakeQuota('agy') } : quotaReaders;
 const keyOf = (vendor, account) => poolKey(vendor, account, poolsByAccount(ADAPTERS[vendor]));
+// A vendor whose CLI is not on PATH gets no quota read and no startup line: a CLI that is not
+// here is not a failed read. Demo mode seats every vendor with scripted replies.
+const installed = (vendor) => { if (FAKE || ADAPTERS[vendor]?.kind !== 'cli') return true; try { resolveBinary(ADAPTERS[vendor].binary, ADAPTERS[vendor].npmBin); return true; } catch { return false; } };
 
 function setQuota(key, q) {
   if (!q) return;
@@ -415,7 +418,7 @@ const reading = new Map();
 function refreshQuota(key, { acknowledged = false } = {}) {
   const vendor = poolVendor(key), account = poolAccount(key);
   // a reader that stopped itself (agy's latch, quota.js) said why once; no read, no repeat
-  if (!readers[vendor] || readers[vendor].stopped?.() || termsHeld(vendor, acknowledged)) return Promise.resolve(null);
+  if (!readers[vendor] || readers[vendor].stopped?.() || termsHeld(vendor, acknowledged) || !installed(vendor)) return Promise.resolve(null);
   if (reading.has(key)) return reading.get(key);
   // The readers resolve null on every failure (timeout, spawn error, no result) rather than
   // throwing, so say so here or a dead read is invisible on the console. Resolves to the figure
@@ -423,7 +426,7 @@ function refreshQuota(key, { acknowledged = false } = {}) {
   const p = (async () => {
     try {
       const q = await readers[vendor]({ home: account ? profileHome(vendor, account) : null });
-      if (!q) { diagnostics.write({ code: 'status-failed', action: 'quota', vendor }); console.warn(`[quota] ${key}: no figure (read failed or timed out); the strip keeps the last one`); }
+      if (!q) { diagnostics.write({ code: 'status-failed', action: 'quota', vendor }); console.warn(`[quota] ${paintVendor(ADAPTERS[vendor], { text: key })}: no figure (not logged in, or the read failed or timed out); the strip keeps the last one`); }
       setQuota(key, q);
       return q;
     } catch (e) { diagnostics.write({ code: 'status-failed', action: 'quota', vendor }, e); console.error(`[quota] ${key}: ${e.message}`); return null; } finally { reading.delete(key); }
@@ -876,15 +879,27 @@ function openBrowser(url) {
   const cmd = process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]] : process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
   try { spawn(cmd[0], cmd[1], { stdio: 'ignore', detached: true, windowsHide: true }).on('error', () => {}).unref(); return true; } catch { return false; }
 }
+// A port that cannot be taken is said plainly: in use, or a sandbox that forbids listening
+// (Codex on Linux, for one), where the board has to be started from a normal terminal instead.
+server.on('error', (e) => {
+  diagnostics.write({ code: 'server-start', action: 'startup' }, e);
+  const why = e.code === 'EADDRINUSE' ? `port ${PORT} is in use. Check roundtable server status, or start with --port`
+    : ['EPERM', 'EACCES'].includes(e.code) ? `this environment does not allow a local server on 127.0.0.1:${PORT} (${e.code}). Start the board from a normal terminal with roundtable server start; the assistant's tools then connect to it`
+    : e.message;
+  console.error(`[server] cannot listen: ${why}`);
+  process.exit(1);
+});
 server.listen(PORT, '127.0.0.1', () => {
   const url = `http://localhost:${PORT}`;
   const open = process.stdout.isTTY && !process.argv.includes('--no-open') && process.env.ROUNDTABLE_NO_OPEN !== '1' && !process.env.CI;
   const opened = open && openBrowser(url);
   process.stdout.write(terminalBanner());
   console.log(`roundtable${FAKE ? ' (fake seats)' : ''}: ${url}  token ${TOKEN}`);
-  console.log(`mode: ${FAKE ? 'demo (scripted replies and usage)' : 'live (configured providers)'}; data: ${DEBATES_DIR}`);
+  console.log(`mode: ${FAKE ? 'demo (scripted replies and usage)' : 'live'}; data: ${DEBATES_DIR}`);
+  const found = Object.entries(ADAPTERS).filter(([v, a]) => a.kind === 'cli' && installed(v)).map(([, a]) => paintVendor(a));
+  if (!FAKE) console.log(found.length ? `providers: ${found.join(', ')} (CLIs on PATH; an API endpoint is seated on the board)` : 'providers: no Claude, Codex or Antigravity CLI on PATH; seat an API endpoint on the board, or install one and restart. roundtable doctor has details');
   console.log('diagnostics: _diagnostics in the data folder; use Save error log on the board. Nothing is uploaded.');
-  if (opened) console.log('the board is open in your browser; Ctrl+C here stops the server and every CLI it started');
+  console.log(`${opened ? 'the board is open in your browser' : `open ${url} in your browser`}; Ctrl+C here stops the server and every CLI it started`);
 });
 
 // No CLI outlives the server: on a signal or an uncaught error every registered child goes
