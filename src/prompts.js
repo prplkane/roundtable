@@ -102,7 +102,7 @@ export function statelessPrefix({ fieldNotes, lens, mood, seatCount, unattended 
 export function notesBlock(notes) {
   const list = (notes || []).filter((n) => n?.text && n.text.trim());
   if (!list.length) return [];
-  return ['### Discussion notes (agent notes are not human answers)', ...list.map((n, i) => inputRecord('note', n.text, {
+  return ['### Discussion notes (a relayed note is the human\'s answer as their assistant reported it; an agent note is the assistant\'s own and not a human answer)', ...list.map((n, i) => inputRecord('note', n.text, {
     author: noteAuthor(n), source: noteRecord(n).source, round: n.round,
     after: n.round < 0 ? 'Before round 0' : `After round ${n.round}`, latest: i === list.length - 1,
   })), ''];

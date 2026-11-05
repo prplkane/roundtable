@@ -33,7 +33,9 @@ one-time `roundtable setup --client codex` (or `claude` / `agy`) step.
    job sets `options.unattended: true`; an attended chat or browser review leaves it false.
 4. Keep using `roundtable_wait` through discussion and chairman synthesis. At `ask_user`,
    present the supplied questions using the host's available input tool, or normal chat.
-   Include the deadline and explain that silence continues with unanswered facts unknown.
+   Include when the window closes (`gate.secondsUntilAutoContinue`) and explain that silence
+   continues with unanswered facts unknown. Send the user's reply with `from: "user"` on each
+   answer; an answer you supply yourself, with the user's permission, carries `from: "assistant"`.
    Keep question IDs when combining questions. Never fabricate or submit blank answers to
    move the review along. The server owns auto-continue; reading does not extend it.
 5. After presenting a question, asynchronous hosts wait with `afterRound` set to that round.

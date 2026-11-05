@@ -98,7 +98,9 @@ export function validateMessage(body) {
   if (body.answers != null) {
     if (!Array.isArray(body.answers) || body.answers.length > LIMITS.answers) fail('answers', `a list of at most ${LIMITS.answers} answers`);
     if (body.round == null) fail('round', 'required with answers');
-    out.answers = body.answers.map((a) => ({ id: str(a?.id, 'question id', LIMITS.questionId, { required: true }), text: str(a?.text, 'answer', LIMITS.answer) }));
+    out.answers = body.answers.map((a) => ({ id: str(a?.id, 'question id', LIMITS.questionId, { required: true }), text: str(a?.text, 'answer', LIMITS.answer),
+      // who wrote the answer: declared by an agent client, defaulting to the assistant itself
+      from: a?.from == null ? 'assistant' : ['user', 'assistant'].includes(a.from) ? a.from : fail('from', 'user or assistant') }));
   }
   return out;
 }

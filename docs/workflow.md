@@ -980,8 +980,10 @@ When `nextAction.type` is `ask_user`, the coordinator must actually ask `gate.qu
 1. Use the host's available question/input tool. If there is no form, ask in normal chat.
    Combine overlapping questions when useful, while retaining their IDs. A raw JSON dump
    alone is not the question handoff.
-2. Tell the person when `gate.autoContinueAt` expires and that the review will continue with
-   unanswered facts still unknown. Use only supplied facts; do not fill missing answers yourself.
+2. Tell the person when the answer window closes: `gate.secondsUntilAutoContinue` is the whole
+   seconds left and `gate.autoContinueAtIso` the same moment as an ISO timestamp
+   (`autoContinueAt` is epoch milliseconds). The review will continue with unanswered facts
+   still unknown. Use only supplied facts; do not fill missing answers yourself.
 3. If the person needs more time, send `agent hold --id <review-id> --input file` with
    `{ "round": 0 }`. This renews the configured answer window, bounded by the wall clock.
    Do not use it as a background keepalive. `nextAction.extend` provides the command and input.
@@ -995,10 +997,15 @@ When `nextAction.type` is `ask_user`, the coordinator must actually ask `gate.qu
 
 `nextAction.answerTemplate` and `nextAction.command` give the answer shape and agent subcommand.
 Prefix subcommands with `node src/cli.js` from a checkout, or `roundtable` when installed.
-Use the current question IDs and round number in an answer file:
+Use the current question IDs and round number in an answer file. Each answer says who wrote it:
+`from: "user"` for the person's own reply, `from: "assistant"` for one the agent supplied with the
+person's permission (the default when `from` is omitted). A submission made only of the person's
+own answers, with no `message`, reaches the board, the seats and the exported record as the
+human's answer relayed by the assistant; anything else is an agent note whose answer lines say
+whose words they are. The declaration is the agent's own and is shown, not verified:
 
 ```json
-{ "round": 0, "answers": [{ "id": "q1", "text": "The deadline can move by a week." }], "message": "Keep the trial reversible." }
+{ "round": 0, "answers": [{ "id": "q1", "text": "The deadline can move by a week.", "from": "user" }] }
 ```
 
 ```bash

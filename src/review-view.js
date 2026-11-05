@@ -15,13 +15,15 @@ export function groupQuestions(questions = []) {
   return [...groups.values()];
 }
 
-export function answerMessage(questions, answers = [], note = '') {
+// attributed: each answer line says whether the assistant relayed the user's words or wrote its own.
+const ANSWER_LABEL = { user: "Answer (the user's words, relayed by the assistant)", assistant: "Answer (the assistant's own, not the user's)" };
+export function answerMessage(questions, answers = [], note = '', { attributed = false } = {}) {
   const groups = groupQuestions(questions), seen = new Set(), lines = [];
   for (const answer of answers) {
     const group = groups.find((q) => q.id === answer.id);
     if (!group || seen.has(answer.id)) throw Object.assign(new Error('The question list changed. Review the current questions before sending your answers.'), { status: 409 });
     seen.add(answer.id);
-    if (answer.text.trim()) lines.push(`Question (${group.sources.join(', ')}): ${group.question}\nAnswer: ${answer.text.trim()}`);
+    if (answer.text.trim()) lines.push(`Question (${group.sources.join(', ')}): ${group.question}\n${attributed ? ANSWER_LABEL[answer.from] || ANSWER_LABEL.assistant : 'Answer'}: ${answer.text.trim()}`);
   }
   if (note.trim()) lines.push(note.trim());
   return lines.join('\n\n');

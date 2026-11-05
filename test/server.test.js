@@ -193,7 +193,7 @@ test('the JSON agent checks without calls, answers grouped questions, rejects st
     assert.equal((await fetch(`${srv.base}/api/debates/${id}/state`, { headers: { origin: 'https://untrusted.example' } })).status, 403);
     const stale = await agent('answer', ['--id', id], { round: 1, answers: [{ id: 'q1', text: 'Not sent.' }] });
     assert.equal(stale.exit, 1); assert.equal(stale.result.status, 409);
-    const answered = await agent('answer', ['--id', id], { round: 0, source: 'human', answers: [{ id: 'q1', text: 'The deadline can move by one week.' }] });
+    const answered = await agent('answer', ['--id', id], { round: 0, source: 'human', answers: [{ id: 'q1', text: 'The deadline can move by one week.', from: 'user' }] });
     assert.equal(answered.exit, 0);
     let done = (await agent('wait', ['--id', id])).result;
     if (done.status === 'waiting') {
@@ -203,13 +203,13 @@ test('the JSON agent checks without calls, answers grouped questions, rejects st
     assert.equal(done.status, 'done'); assert.equal(done.verdict.status, 'ready'); assert.equal(done.gate, null);
     assert.deepEqual(done.actions, []);
     const transcript = readFileSync(path.join(root, id, 'transcript.jsonl'), 'utf8');
-    assert.match(transcript, /The deadline can move by one week/);
+    assert.match(transcript, /\\nAnswer: The deadline can move by one week/, 'a submission made only of the user\'s own answers carries no attribution per line');
     assert.doesNotMatch(transcript, /Not sent\./);
     const notes = transcript.trim().split('\n').map(JSON.parse).filter((r) => r.type === 'human');
     assert.equal(notes.length, 1);
-    assert.equal(notes[0].source, 'agent', 'the agent client cannot label its answers as human');
+    assert.equal(notes[0].source, 'relayed', 'the agent client cannot label its answers as human; answers it declares as the user\'s are credited as relayed');
     const replay = await readEvents(await fetch(`${srv.base}/api/debates/${id}/events`), (e) => e.type === 'done');
-    assert.equal(replay.find((e) => e.type === 'human').source, 'agent');
+    assert.equal(replay.find((e) => e.type === 'human').source, 'relayed');
     const status = (await agent('status', ['--id', id])).result;
     assert.equal(status.verdict.status, 'ready');
     assert.equal(status.board, `${srv.base}/#${id}`);
@@ -234,23 +234,25 @@ test('the JSON agent checks without calls, answers grouped questions, rejects st
     const post = (action, body) => fetch(`${srv.base}/api/debates/${resumeId}/${action}`, { method: 'POST',
       headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token }, body: JSON.stringify(body) });
     assert.equal((await post('continue', { round: 0, message: 'Do not save.', source: 'system' })).status, 400);
-    assert.equal((await post('continue', { round: 0, message: 'Human supplied date.' })).status, 200);
+    // an answer the client does not declare as the user's stays an agent note, labelled per line
+    assert.equal((await agent('answer', ['--id', resumeId], { round: 0, answers: [{ id: 'q1', text: 'Coordinator guessed the date.' }] })).exit, 0);
     const next = (await agent('wait', ['--id', resumeId])).result;
-    assert.equal(next.gate.round, 1);
-    assert.equal((await agent('stop', ['--id', resumeId], { round: 1, message: 'Coordinator stopped discussion.' })).exit, 0);
+    assert.equal(next.gate.round, 1, 'the seats do not take an undeclared answer as the human\'s and ask again');
+    assert.equal((await post('continue', { round: 1, message: 'Human supplied date.' })).status, 200);
     assert.equal((await agent('wait', ['--id', resumeId])).result.status, 'done');
     const saved = readFileSync(path.join(dir, 'transcript.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
-    assert.deepEqual(saved.filter((r) => r.type === 'human').map((r) => [r.round, r.source, r.text]), [
-      [-1, 'agent', 'Coordinator setup note.'], [0, 'human', 'Human supplied date.'], [1, 'agent', 'Coordinator stopped discussion.'],
+    assert.deepEqual(saved.filter((r) => r.type === 'human').map((r) => [r.round, r.source, r.text.split('\n').at(-1)]), [
+      [-1, 'agent', 'Coordinator setup note.'], [0, 'agent', "Answer (the assistant's own, not the user's): Coordinator guessed the date."], [1, 'human', 'Human supplied date.'],
     ]);
     const record = decisionRecord(saved, resumeId).markdown;
     assert.match(record, /\*\*Agent coordinator:\*\* Coordinator setup note\./);
+    assert.match(record, /\*\*Agent coordinator:\*\* Question \([^)]+\): [^\n]+\nAnswer \(the assistant's own, not the user's\): Coordinator guessed the date\./);
     assert.match(record, /\*\*Human:\*\* Human supplied date\./);
     const originalExited = new Promise((resolve) => srv.child.once('exit', resolve)); srv.child.kill(); await originalExited;
     const restarted = await startFakeServer(root);
     try {
       const replayed = await readEvents(await fetch(`${restarted.base}/api/debates/${resumeId}/events`), (e) => e.type === 'done');
-      assert.deepEqual(replayed.filter((e) => e.type === 'human').map((e) => e.source), ['agent', 'human', 'agent']);
+      assert.deepEqual(replayed.filter((e) => e.type === 'human').map((e) => e.source), ['agent', 'agent', 'human']);
     } finally { restarted.child.kill(); }
   } finally { srv.child.kill(); }
 });

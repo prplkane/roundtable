@@ -117,7 +117,7 @@ page. Refreshing the browser alone does not load an updated server or model list
 
 | Control | Behavior |
 | --- | --- |
-| Answer questions | Add context before the discussion continues. Agent notes and your notes are labelled separately. |
+| Answer questions | Add context before the discussion continues. Your notes, answers your assistant relayed for you, and the assistant's own notes are labelled separately. |
 | Finish with verdict | End the discussion and request a recommendation from the completed replies. Available after a usable round. |
 | Stop | Cancel the discussion and any active chairman call. Saved replies and reported usage remain. |
 | Delete / Clear | Remove finished and interrupted history while protecting running sessions. Exports and local usage statistics are retained. |
