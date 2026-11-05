@@ -11,7 +11,8 @@
 - Always print how to open the board and that Ctrl+C stops it, including with `--no-open`.
 - Say plainly when the port cannot be taken: in use, or a sandbox that forbids a local server
   (`EPERM`), with the `roundtable server start` way out. The MCP tools and `roundtable server
-  start` report that last line at once instead of waiting out the readiness timeout.
+  start` report that last line within seconds instead of waiting out the readiness timeout,
+  while two hosts starting the board at once both get the one that won the port.
 - Blink the block cursor beside the wordmark where the terminal allows blinking text, and show
   vendor names in their seat colours.
 

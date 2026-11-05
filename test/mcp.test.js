@@ -9,7 +9,7 @@ import http from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
 import { exec, freePort, mcpClient } from './mcp-client.mjs';
 import { VERSION } from '../src/version.js';
-import { LOCAL_API_VERSION, inspectServer, ensureServer } from '../src/local-server.js';
+import { LOCAL_API_VERSION, inspectServer, ensureServer, stopServer } from '../src/local-server.js';
 import { LIMITS } from '../src/validate.js';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
@@ -103,7 +103,17 @@ test('a board that exits before it is ready is reported with its own last line, 
   // a data directory beneath a file cannot be created, so the board dies at startup
   await assert.rejects(ensureServer({ port: await freePort(), dataDir: path.join(file, 'sub') }, { timeoutMs: 15000 }),
     /exited before it was ready \(Error: ENOTDIR.*\)\. Run roundtable --no-open in a terminal for startup details\. No review was started\./);
-  assert.ok(Date.now() - t0 < 10000, 'the exit cuts the readiness wait short');
+  assert.ok(Date.now() - t0 < 12000, 'the exit cuts the readiness wait short');
+});
+
+test('two hosts starting the board at once both get the one that won the port', { timeout: 40000 }, async (t) => {
+  const data = await mkdtemp(path.join(os.tmpdir(), 'rt-race-'));
+  const config = { port: await freePort(), fake: true, dataDir: data };
+  t.after(async () => { await stopServer(config); await rm(data, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
+  // the loser exits on the data-folder lock or the port; its starter must still find the winner
+  const [a, b] = await Promise.all([ensureServer(config), ensureServer(config)]);
+  assert.equal(a.instanceId, b.instanceId);
+  assert.equal(a.mode, 'demo');
 });
 
 test('MCP discovery, protocol errors and guide work without starting a server or vendor', async (t) => {

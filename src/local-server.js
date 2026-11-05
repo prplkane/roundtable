@@ -70,16 +70,19 @@ export async function ensureServer(config, { signal, timeoutMs = 35000 } = {}) {
         });
         if (fd != null) closeSync(fd);
         child.once('error', () => { spawnFailed = true; });
-        child.once('exit', (code, sig) => { exited = { code, sig }; if (ready) discard(); });
+        child.once('exit', (code, sig) => { exited = { code, sig, at: Date.now() }; if (ready) discard(); });
         child.unref();
       }
     } catch (e) { if (!e.transient) throw e; last = e; }
-    if (exited) {
+    // A board that exits early may have lost the port or the data folder to one that another
+    // process started at the same moment (two hosts asking at once), so the port is still
+    // watched for a few seconds before the exit counts as the answer.
+    if (exited && Date.now() - exited.at > 5000) {
       let tail = '';
-      // the board's own last word where it had one, else the error line of a crash, else the last line
+      // the board's own last word where it had one, else the message line of a crash, else the last line
       try {
         const lines = readFileSync(log, 'utf8').split(/\r?\n/).filter((l) => l.trim());
-        tail = (lines.findLast((l) => l.startsWith('[server]')) || lines.find((l) => /Error|\bE[A-Z]{3,}\b/.test(l)) || lines.at(-1) || '').trim().slice(0, 200);
+        tail = (lines.findLast((l) => l.startsWith('[server]')) || lines.find((l) => /^\w*Error: /.test(l)) || lines.at(-1) || '').trim().slice(0, 200);
       } catch {}
       discard();
       const sandboxed = /cannot listen.*\b(EPERM|EACCES)\b/.test(tail);
