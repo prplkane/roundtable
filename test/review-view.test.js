@@ -13,6 +13,10 @@ test('questions share an answer only when their wording matches; distinct questi
   assert.match(text, /Question \(risk, cost\): What is the budget\?\nAnswer: Not decided/);
   assert.ok(text.endsWith('Keep the pilot reversible.'));
   assert.doesNotMatch(text, /approved/);
+  const attributed = answerMessage(questions, [{ id: 'q1', text: 'Not decided.', from: 'user' }, { id: 'q2', text: 'Two weeks.', from: 'assistant' }], '', { attributed: true });
+  assert.match(attributed, /\nAnswer \(the user's words, relayed by the assistant\): Not decided\./);
+  assert.match(attributed, /\nAnswer \(the assistant's own, not the user's\): Two weeks\./);
+  assert.match(answerMessage(questions, [{ id: 'q1', text: 'x' }], '', { attributed: true }), /the assistant's own/, 'an undeclared answer is the assistant\'s');
   assert.throws(() => answerMessage(questions, [{ id: 'q9', text: 'value' }]), (e) => e.status === 409);
   assert.throws(() => answerMessage(questions, [{ id: 'q1', text: 'a' }, { id: 'q1', text: 'b' }]), (e) => e.status === 409);
 });
@@ -70,6 +74,20 @@ test('agent state: a unanimous round 0 says what answering would cost; other gat
   assert.equal(agreed.gate.reopenCalls, 3, 'one more call per seat if the agent sends any text');
   const open = reviewSnapshot(board({ round: 0, mode: 'blocking', stop: null, questions: [], reopenable: false }));
   assert.equal(open.gate.reopenCalls, undefined);
+});
+
+test('agent state carries each deadline as epoch ms, an ISO timestamp and whole seconds left', async () => {
+  const { reviewSnapshot, clock } = await import('../src/snapshot.js');
+  const at = Date.now() + 90_500;
+  const snap = reviewSnapshot({ slug: 'r', gen: 1, events: [], pending: { info: { round: 0, mode: 'blocking', stop: null, questions: [] }, autoContinueAt: at },
+    debate: { canFinish: () => false, state: { seats: [{ lens: 'risk' }], rounds: [], deadlineAt: at + 60_000, fieldNotes: { decision: 'd', options: ['A', 'B'] } } } });
+  assert.equal(snap.gate.autoContinueAt, at, 'the epoch field stays for existing clients');
+  assert.equal(snap.gate.autoContinueAtIso, new Date(at).toISOString());
+  assert.ok(snap.gate.secondsUntilAutoContinue >= 89 && snap.gate.secondsUntilAutoContinue <= 91, String(snap.gate.secondsUntilAutoContinue));
+  assert.equal(snap.deadlineAtIso, new Date(at + 60_000).toISOString());
+  assert.ok(snap.secondsUntilDeadline >= 149 && snap.secondsUntilDeadline <= 151, String(snap.secondsUntilDeadline));
+  assert.deepEqual(clock('deadline', null), {}, 'no deadline, no readable fields');
+  assert.equal(clock('deadline', Date.now() - 5000).secondsUntilDeadline, 0, 'a passed deadline reads as zero, never negative');
 });
 
 test('agent depth counts usable rounds separately from completed failed attempts, live and replayed', async () => {

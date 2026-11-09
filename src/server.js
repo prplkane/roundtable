@@ -24,7 +24,7 @@ import { answerMessage } from './review-view.js';
 import { createSettingsStore } from './settings.js';
 import { createTermsRecord, termsRefusal } from './terms.js';
 import { noteRecord, storedNote } from './notes.js';
-import { reviewSnapshot } from './snapshot.js';
+import { reviewSnapshot, clock } from './snapshot.js';
 import { pickFolder } from './folder-picker.js';
 import { dataDirectory, legacyHistory, acquireDataLock, checkedHistoryPath, removeHistory, createUsageStore, createHistoryIndex } from './history.js';
 import { VERSION } from './version.js';
@@ -840,7 +840,13 @@ const server = http.createServer(async (req, res) => {
         return requestError(res, 400, 'More time does not submit answers or notes. Use Continue or agent answer to send them.', 'hold');
       if (body.answers?.length) {
         if (!d.pending) return requestError(res, 409, 'The review is not waiting for answers. Your draft was not sent.', m[2]);
-        body.message = validateMessage({ message: answerMessage(d.pending.info.questions, body.answers, body.message) }).message;
+        // An agent submission is credited to the person only when every answer is declared as the
+        // user's own words and nothing else rides along; otherwise each line says whose it is.
+        // The declaration comes from the client and is shown, not verified.
+        const given = body.answers.filter((a) => a.text.trim());
+        const relayed = body.source === 'agent' && given.length > 0 && given.every((a) => a.from === 'user') && !body.message.trim();
+        body.message = validateMessage({ message: answerMessage(d.pending.info.questions, body.answers, body.message, { attributed: body.source === 'agent' && !relayed }) }).message;
+        if (relayed) body.source = 'relayed';
       }
       if (m[2] === 'resume') { resumeDebate(d, body); return json(res, 200, { ok: true }); }
       if (m[2] === 'synthesize') { synthesizeDebate(d, body); return json(res, 200, { ok: true }); }
@@ -861,7 +867,7 @@ const server = http.createServer(async (req, res) => {
       if (m[2] === 'hold') {
         if (!d.pending) return requestError(res, 409, 'The response window has closed. Read the current state before requesting more time.', 'hold');
         const deadline = scheduleGate(d, d.pending.info.questionWaitMs || DEFAULTS.questionWaitMs, true);
-        return json(res, 200, { ok: true, autoContinueAt: deadline });
+        return json(res, 200, { ok: true, autoContinueAt: deadline, ...clock('autoContinue', deadline) });
       }
     }
     res.writeHead(404); res.end('not found');

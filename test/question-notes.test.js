@@ -4,7 +4,8 @@ import { parseReply } from '../src/contract.js';
 import { createDebate } from '../src/engine.js';
 import { rebuildDebate } from '../src/store.js';
 import { decisionRecord } from '../src/export.js';
-import { noteRecord, noteLabel } from '../src/notes.js';
+import { noteRecord, noteLabel, noteAuthor } from '../src/notes.js';
+import { notesBlock } from '../src/prompts.js';
 import { validateMessage } from '../src/validate.js';
 
 const fieldNotes = { decision: 'Synthetic release review', options: ['Trial', 'Wait'] };
@@ -163,4 +164,20 @@ test('note sources are a bounded enum and omitted sources stay backward compatib
   assert.equal(validateMessage({ message: 'hello' }).source, 'human');
   assert.equal(validateMessage({ message: 'hello', source: 'agent' }).source, 'agent');
   for (const source of ['system', 'Agent', {}, [], true]) assert.throws(() => validateMessage({ source }), /source: human or agent/);
+  assert.throws(() => validateMessage({ message: 'hello', source: 'relayed' }), /source: human or agent/, 'only the server credits a note as relayed');
+  assert.equal(validateMessage({ round: 0, answers: [{ id: 'q1', text: 'x' }] }).answers[0].from, 'assistant', 'an undeclared answer counts as the assistant\'s own');
+  assert.equal(validateMessage({ round: 0, answers: [{ id: 'q1', text: 'x', from: 'user' }] }).answers[0].from, 'user');
+  assert.throws(() => validateMessage({ round: 0, answers: [{ id: 'q1', text: 'x', from: 'nobody' }] }), /from: user or assistant/);
+});
+
+test('a relayed note is credited to the human everywhere, with the assistant named as the carrier', () => {
+  const note = { text: 'Yes, go ahead.', source: 'relayed' };
+  assert.equal(noteRecord(note).source, 'relayed');
+  assert.equal(noteLabel(note), 'You said, via your assistant');
+  assert.equal(noteAuthor(note), 'Human (relayed by the assistant)');
+  assert.equal(noteRecord({ text: 'x', source: 'carrier' }).source, 'human', 'an unknown source still reads as a legacy human note');
+  const block = notesBlock([{ ...note, round: 0 }]);
+  assert.match(block[0], /relayed note is the human's answer/);
+  assert.match(block[0], /agent note is the assistant's own/);
+  assert.match(block[1], /"author":"Human \(relayed by the assistant\)","source":"relayed"/);
 });

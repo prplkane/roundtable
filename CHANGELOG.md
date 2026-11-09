@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.5
+
+### Agent API
+
+- Say who wrote each answer: every answer to `roundtable_answer` or `agent answer` takes
+  `from: "user"` or `from: "assistant"`, and a missing `from` counts as `assistant`. A submission made
+  only of the user's own answers reaches the board as "You said, via your assistant", and the
+  seats and the exported record as the human's answer relayed by the assistant; anything else
+  stays an agent note whose answer lines say whose words they are. The declaration is the
+  assistant's and is shown, not verified.
+- Deadlines readable without arithmetic: `deadlineAt` and `gate.autoContinueAt` (epoch
+  milliseconds) now come with `deadlineAtIso`, `secondsUntilDeadline`, `autoContinueAtIso`
+  and `secondsUntilAutoContinue`; `roundtable_hold` returns the same pair for the renewed
+  window.
+
 ## 0.6.4
 
 ### Terminal
