@@ -71,6 +71,7 @@ export function validateDebateRequest(body, { adapters }) {
   // an endpoint seat has no thread at the vendor to continue, so `resume` prompts would reach it
   // with no context: refuse the table rather than run it on half-prompts
   if (options_.memory === 'resume' && [...body.seats, body.chairman].some((s) => s && adapters[s.vendor]?.kind === 'api')) fail('memory', 'resume needs a session to continue, and an API endpoint seat has none; use stateless');
+  if (options_.memory === 'resume' && [...body.seats, body.chairman].some((s) => s && adapters[s.vendor]?.kind === 'acp')) fail('memory', 'ACP seats currently use fresh sessions; choose stateless');
   if (o.strictTools != null) { if (o.strictTools !== true) fail('strictTools', 'the debate tool guard cannot be disabled'); options_.strictTools = true; }
   if (o.allowLimitedIsolation != null) { if (typeof o.allowLimitedIsolation !== 'boolean') fail('allowLimitedIsolation', 'true or false'); options_.allowLimitedIsolation = o.allowLimitedIsolation; }
   if (o.acknowledgeTermsRisk != null) { if (typeof o.acknowledgeTermsRisk !== 'boolean') fail('acknowledgeTermsRisk', 'true or false'); options_.acknowledgeTermsRisk = o.acknowledgeTermsRisk; }

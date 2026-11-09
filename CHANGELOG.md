@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.6
+
+- Use the public `@prplkane/agentlink` package for optional ACP seats, including
+  shell-free Windows npm launch resolution. Document the qualified beta version.
+
+- Bind ACP session IDs while receiving `session/new` so a foreign-session update
+  coalesced with that reply is rejected before prompting. Update the offline peer
+  to return the correct v2 initialization fields when probed by AgentLink.
+
+- Add AgentLink (ACP) seats and chairman profiles through standard ACP v1 stdio,
+  without runtime dependencies. Keep bridge management in AgentLink and existing
+  direct CLI adapters available. Each call uses a fresh isolated seat session.
+- Deny ACP client tools, stop reported tool activity, preserve missing usage,
+  and propagate cancellation with process cleanup. Refuse unsupported session
+  resume, effort and model overrides instead of inventing compatibility.
+- Test complete reviews, profile selection, chairman fallback, malformed output,
+  authentication failure, tool denial and cancellation with offline fake agents.
+
 ## 0.6.5
 
 ### Agent API

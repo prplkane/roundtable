@@ -93,7 +93,7 @@ export const COLOURS = ['rust', 'olive', 'teal', 'dusk', 'steel'];
 // First use starts small. Prefer ready default logins; one ready vendor can fill both seats.
 // With no ready result yet, show two editable CLI choices and their status lamps.
 export function initialSeatVendors(vendors, checks = []) {
-  const cli = vendors.filter((v) => v.kind !== 'api').map((v) => v.vendor);
+  const cli = vendors.filter((v) => v.kind !== 'api' && v.kind !== 'acp').map((v) => v.vendor);
   const ready = cli.filter((v) => checks.some((p) => p.key === v && p.state === 'ok'));
   const choices = ready.length ? ready : cli;
   return choices.length ? [choices[0], choices[1] || choices[0]] : [];
@@ -120,6 +120,14 @@ export function normaliseAccount(raw) {
   const name = String(raw || '').trim();
   if (!name) return undefined;
   if (!PROFILE_RE.test(name)) throw new Error(`Account profile "${name}" must be 1-40 letters, digits, dots, dashes or underscores.`);
+  return name;
+}
+
+export function agentLinkProfile(raw) {
+  const name = typeof raw === 'string' ? raw.trim() : '';
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(name) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/.test(name)) {
+    throw new Error('An ACP seat needs a valid saved AgentLink profile: 1-64 lowercase letters, digits, underscores or hyphens; no reserved device names.');
+  }
   return name;
 }
 
@@ -200,6 +208,7 @@ export function hostKey(url) {
 // What the card and the record say about where a seat runs: the CLI on a subscription, an API
 // on this machine, or an API that bills per token.
 export function seatKind(vendorRow, endpoint = null) {
+  if (vendorRow?.kind === 'acp') return 'ACP · profile billing';
   if (vendorRow?.kind !== 'api') return 'CLI · subscription';
   let u; try { u = new URL(String(endpoint || '')); } catch { return 'API'; }
   return privateHost(u.hostname) ? 'API · local' : 'API · pay-per-token';
@@ -213,6 +222,12 @@ function normaliseEndpoint(raw, label) {
   const model = raw.model ? String(raw.model).trim() : '';
   if (!model) throw new Error(`${label}: an API seat needs a model id (the endpoint has no default).`);
   return { endpoint, keyEnv: keyEnv || undefined, model, account: hostKey(endpoint) };
+}
+
+// For ACP the existing account field selects an AgentLink profile, not a login
+// directory or a command. Keep pool identity and saved review records consistent.
+function seatAccount(raw, row) {
+  return row.kind === 'acp' ? agentLinkProfile(raw.account) : normaliseAccount(raw.account);
 }
 
 // vendors: { [vendor]: { label, effortLevels } } (the adapter table). efforts may widen a
@@ -243,7 +258,7 @@ export function normaliseSeats(input, { vendors, efforts = {}, models = {}, hidd
       mood,
       model: locked ? locked.model : ep ? ep.model : raw.model ? String(raw.model).trim() : undefined,
       effort: locked ? locked.effort : effort || undefined,
-      account: ep ? ep.account : normaliseAccount(raw.account),
+      account: ep ? ep.account : seatAccount(raw, vendors[raw.vendor]),
       ...(ep ? { endpoint: ep.endpoint, keyEnv: ep.keyEnv } : {}),
       // the vendor's colour (adapters config) unless the board sent one; positions as a fallback
       colour: COLOURS.includes(raw.colour) ? raw.colour : (vendors[raw.vendor].colour || COLOURS[seats.length % COLOURS.length]),
@@ -253,7 +268,7 @@ export function normaliseSeats(input, { vendors, efforts = {}, models = {}, hidd
   // Human-side label only: "Codex 2" when a vendor is seated more than once; an endpoint seat
   // is named by its host ("API localhost-11434"). Never in a prompt.
   const perBase = {};
-  for (const s of seats) { s.base = s.endpoint ? `API ${s.account}` : vendors[s.vendor].label; perBase[s.base] = (perBase[s.base] || 0) + 1; }
+  for (const s of seats) { s.base = s.endpoint ? `API ${s.account}` : vendors[s.vendor].kind === 'acp' ? `ACP ${s.account}` : vendors[s.vendor].label; perBase[s.base] = (perBase[s.base] || 0) + 1; }
   const seen2 = {};
   for (const s of seats) { seen2[s.base] = (seen2[s.base] || 0) + 1; s.label = perBase[s.base] > 1 ? `${s.base} ${seen2[s.base]}` : s.base; delete s.base; }
   return seats;
@@ -268,5 +283,5 @@ export function normaliseChairman(raw, { vendors, efforts = {}, role = 'Chairman
   if (effort && !allowed.includes(effort)) throw new Error(`${role}: ${vendors[vendor].label}${raw.model ? ` ${String(raw.model).trim()}` : ''} does not accept effort "${effort}".`);
   const ep = vendors[vendor].kind === 'api' ? normaliseEndpoint(raw, role) : null;
   return { vendor, colour: vendors[vendor].colour || undefined, model: ep ? ep.model : raw.model ? String(raw.model).trim() : undefined, effort: effort || undefined,
-    account: ep ? ep.account : normaliseAccount(raw.account), ...(ep ? { endpoint: ep.endpoint, keyEnv: ep.keyEnv } : {}) };
+    account: ep ? ep.account : seatAccount(raw, vendors[vendor]), ...(ep ? { endpoint: ep.endpoint, keyEnv: ep.keyEnv } : {}) };
 }

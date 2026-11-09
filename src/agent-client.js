@@ -15,6 +15,7 @@ export const HELP = {
     resume: 'Resume an interrupted review. May make provider calls.',
     verdict: 'Request a missing or failed verdict from saved replies. May make a provider call.',
   },
+  acp: 'To use a saved AgentLink profile, select vendor="acp" and account="profile-name" for each seat and the chairman. Requires stateless memory and allowLimitedIsolation=true after the person accepts profile-owned permissions, customization and billing. Roundtable denies client tools and stops reported tool activity. AgentLink must already be installed/configured. Missing token usage stays unknown and stops further calls for that seat under its cap; no live quota is inferred.',
   setup: 'Use roundtable server status to inspect the local board; roundtable server start launches it hidden if needed (add --fake for a free test). After an update, server restart refuses active reviews. This client reads its launch token locally; it never prints or stores the token.',
   input: 'check/start accept the same {fieldNotes,seats,chairman,options} JSON as the board. Check available providers first. Every result with an id carries board, a link where a person can watch the review in a browser; offer it, do not open it.',
   recipe: {

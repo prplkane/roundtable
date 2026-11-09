@@ -837,6 +837,94 @@ What is different from a CLI seat:
 The chairman can be an endpoint too; its card takes the same fields. The decision record
 names the endpoint on each seat's line (`API http://localhost:11434/v1`) and on the chairman's.
 
+## 7c. AgentLink ACP profiles (optional)
+
+[AgentLink](https://github.com/prplkane/agentlink) manages existing agent CLI/ACP
+bridges in one place. Configure profiles there once. In Roundtable, choose
+**AgentLink (ACP)** on each seat and the chairman, and enter its saved profile name.
+The project uses the profile name; it does not install or copy the vendor bridge.
+
+Install the qualified public beta once:
+
+```sh
+npm install -g @prplkane/agentlink@0.3.0-beta.1
+```
+
+With AgentLink installed globally, Roundtable launches `agentlink acp PROFILE`.
+On Windows it resolves the npm script through Node, without a shell. For source
+checkouts, set the absolute path once in the shell that starts Roundtable:
+
+```powershell
+$env:ROUNDTABLE_AGENTLINK_CLI = 'C:\code\agentlink\src\cli.mjs'
+node src/server.js
+```
+
+On Linux/macOS use `export ROUNDTABLE_AGENTLINK_CLI=/absolute/path/agentlink/src/cli.mjs`.
+`AGENTLINK_HOME`, if set in that shell, selects the shared AgentLink store. Otherwise
+AgentLink uses its normal user store. The launcher override is local configuration;
+a review request cannot supply executable paths or arguments.
+
+For the JSON client, `vendor: "acp"` selects this connection and `account` names the
+AgentLink profile. For ACP this field is not a Roundtable login directory:
+
+```json
+{
+  "fieldNotes": { "decision": "Which rollout should we choose?", "options": ["Small trial", "Wait"] },
+  "seats": [
+    { "vendor": "acp", "account": "codex", "lens": "risk" },
+    { "vendor": "acp", "account": "claude", "lens": "cost" }
+  ],
+  "chairman": { "vendor": "acp", "account": "codex" },
+  "options": { "memory": "stateless", "critiqueRounds": 1, "allowLimitedIsolation": true }
+}
+```
+
+Save this as your own review JSON, then use `node src/cli.js agent check --input FILE`
+and `node src/cli.js agent start --input FILE`. Check validates the request; it does
+not start an agent. Start can make model calls. Follow the normal wait/answer flow
+through a ready chairman verdict.
+
+The initial integration deliberately has these limits:
+
+- **ACP v1 and text reviews.** Each turn gets a fresh process/session in its seat's
+  isolated working directory. The session is bound as its creation response arrives,
+  so even a following update in the same stdout chunk must belong to that session.
+  `memory: resume` is refused. No AgentLink library,
+  daemon, package installation or discovery is loaded into Roundtable.
+- **Profile-owned permissions and billing.** Roundtable advertises no filesystem
+  or terminal capabilities, supplies no MCP servers, denies permission requests,
+  and stops a seat on reported tool calls. ACP is not a sandbox and cannot disable
+  tools or customizations inside the agent. Use a trusted profile configured with
+  its own tools disabled. The board shows this limit; JSON clients must explicitly
+  accept it with `allowLimitedIsolation`. Check the selected vendor's applicable
+  terms separately. The direct adapters' vendor-specific restrictions do not apply
+  to an arbitrary ACP profile. Profile environment settings can select API billing.
+- **Agent defaults remain defaults.** Leave Model empty, or supply a model ID
+  advertised in the session's standard model configuration options. Unadvertised
+  model overrides fail before a prompt. Reasoning preferences stay with the profile;
+  Roundtable does not guess effort flags or a safe mode from their names.
+- **Usage is optional.** Roundtable reads the existing experimental
+  [end-turn usage field](https://docs.rs/agent-client-protocol/latest/agent_client_protocol/schema/v1/struct.PromptResponse.html#structfield.usage)
+  only when its counters and total agree. Missing/invalid usage remains unknown,
+  and the existing seat cap blocks that seat's next call, including a repair or
+  critique. The chairman may still summarize usable replies. ACP context occupancy
+  is not spending. No live subscription quota is inferred; dollar caps are refused.
+  An explicit `acp` token budget covers all ACP profiles in the review.
+- **Login stays with the agent.** Sign in through the vendor's own flow. Authentication
+  errors identify that step; Roundtable does not open a login terminal automatically.
+  The readiness lamp checks the launcher only. Use `agentlink check PROFILE` to
+  check initialization; a successful check does not prove task compatibility.
+- **Updates are central.** An explicit `agentlink bridge update NAME` changes new
+  connections, including the next Roundtable turn. In-flight connections retain
+  their AgentLink lease. There is no automatic update during connection startup.
+
+`npm test` exercises the ACP client with a local fake peer. With both source
+checkouts, run `node scripts/test-roundtable.mjs /absolute/path/to/roundtable`
+**from AgentLink** for the real gateway integration. It starts an isolated local
+Roundtable server with vendor discovery disabled, creates temporary managed fake
+bridges, completes a two-round review and chairman verdict, updates the bridge,
+and tests cancellation and missing usage. It never uses a real vendor account.
+
 ## 8. Run a debate without the browser
 
 ### Optional searcher before discussion

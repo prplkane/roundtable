@@ -422,11 +422,21 @@ export const ADAPTERS = {
     colour: 'steel',
     readOnly: 'no tools in the request',
   },
+  acp: {
+    kind: 'acp', label: 'AgentLink (ACP)', binary: 'agentlink',
+    npmBin: ['@local/agentlink', 'src/cli.mjs'],
+    args: [], resume: null, model: null, effort: null, home: null,
+    effortLevels: [], modelHints: [], paths: { cost: null, quota: null },
+    quota: null, usageUrl: null, colour: 'dusk', limitedIsolation: true,
+    pool: 'Selected AgentLink profile; billing and quota belong to its agent',
+    isolation: 'fresh ACP sessions in separate working directories; profile-owned tools and customization are not sandboxed',
+    readOnly: 'client tools denied; reported tool activity stops the seat; configure the profile agent to disable its own tools',
+  },
 };
 
 // A vendor whose seats draw on separate pools per account: a CLI with a state directory
 // (named login profiles), or an endpoint vendor (one pool per host). Pool keys (seats.poolKey)
 // carry the account only for these.
-export const poolsByAccount = (a) => !!a?.home || a?.kind === 'api';
+export const poolsByAccount = (a) => !!a?.home || a?.kind === 'api' || a?.kind === 'acp';
 
 export const ARGV_LIMIT = 24000;

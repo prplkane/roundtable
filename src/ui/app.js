@@ -128,6 +128,7 @@ const ENDPOINT_PRESETS = [
   { label: 'OpenAI', url: 'https://api.openai.com/v1', keyEnv: 'OPENAI_API_KEY' },
 ];
 const isApi = (vendor) => VENDOR_META[vendor]?.kind === 'api';
+const isAcp = (vendor) => VENDOR_META[vendor]?.kind === 'acp';
 // The pool a drafted seat draws on: a CLI's login profile, or an endpoint's host.
 const seatAccount = (s) => (isApi(s.vendor) ? hostKey(s.endpoint || '') : (s.account || '').trim());
 const chairAccount = () => (isApi($('chairman').value) ? hostKey($('chairman-endpoint').value) : $('chairman-account').value.trim());
@@ -441,6 +442,7 @@ function poolLamp(vendor, account, model = '') {
 const seatHidden = (s) => (s.mood === 'custom' ? hiddenMood(s.moodText) : null);
 function lockHidden(s) {
   if (!seatHidden(s)) return;
+  if (isAcp(s.vendor)) { s.effort = ''; return; }
   s.customModel = false;
   const lightest = lightestModel(s.vendor, VENDOR_META[s.vendor]?.catalogue?.models);
   if (lightest) s.model = lightest;
@@ -463,7 +465,7 @@ function seatRow(s, i) {
     <div class="seat-hd">
       <span class="avatar" title="${esc(s.mood === 'custom' ? 'custom mood' : s.mood)}">${avatar(hidden ? hidden.art : s.mood === 'custom' ? 'custom' : s.mood, hidden?.sprite)}</span>
       <div class="seat-id">
-        <span class="chair-title"><select class="flat vendor" aria-label="Vendor">${Object.keys(VENDOR_META).map((v) => `<option value="${v}" ${v === s.vendor ? 'selected' : ''}>${esc(VENDOR_LABEL[v])}</option>`).join('')}</select>${n ? `<span class="seat-note">${n.trim()}</span>` : ''}<span class="kind-tag ${api ? 'api' : ''}" title="${api ? 'Billed by the endpoint, not a subscription' : 'The vendor CLI on your subscription'}">${esc(seatKind(VENDOR_META[s.vendor], s.endpoint))}</span></span>
+        <span class="chair-title"><select class="flat vendor" aria-label="Vendor">${Object.keys(VENDOR_META).map((v) => `<option value="${v}" ${v === s.vendor ? 'selected' : ''}>${esc(VENDOR_LABEL[v])}</option>`).join('')}</select>${n ? `<span class="seat-note">${n.trim()}</span>` : ''}<span class="kind-tag ${api ? 'api' : ''}" title="${api ? 'Billed by the endpoint, not a subscription' : isAcp(s.vendor) ? 'Billing belongs to the selected AgentLink profile' : 'The vendor CLI on your subscription'}">${esc(seatKind(VENDOR_META[s.vendor], s.endpoint))}</span></span>
         ${hidden && !api ? picker.html.replace('<select', '<select disabled title="Locked to the lightest model"') : picker.html}<input class="flat model" aria-label="Model id" list="models-${s.vendor}" value="${esc(s.model)}" placeholder="${api ? 'model id (required)' : 'model id'}" ${picker.other ? '' : 'hidden'}>
       </div>
       <span class="lamp ${lamp.cls}" title="${esc(lamp.note)}"></span>
@@ -481,7 +483,7 @@ function seatRow(s, i) {
       <div class="f"><span class="label help-label" data-help="effort" tabindex="0" aria-describedby="help-effort">Effort</span><span class="pips ${hidden ? 'locked' : ''}">${pipsHtml(s.vendor, s.effort, s.model)}</span><select class="effort" hidden>${effortOptions(s.vendor, s.effort, s.model)}</select></div>
       <span class="seat-note lamp-note ${lamp.cls === 'danger' || lamp.cls === 'warn' ? lamp.cls : ''}" title="${esc(lamp.note)}" tabindex="0">${esc(lamp.note)}</span>
       ${cardNotices(s.vendor)}
-      ${api ? '' : `<details class="seat-more"><summary>Login profile${s.account ? `: ${esc(s.account)}` : ''}</summary><input class="flat account" aria-label="Login profile" value="${esc(s.account || '')}" placeholder="none: your usual login" title="A second login of this CLI, for example a work subscription; node src/doctor.js shows how to log a profile in"></details>`}
+      ${api ? '' : `<details class="seat-more" ${isAcp(s.vendor) ? 'open' : ''}><summary>${isAcp(s.vendor) ? 'AgentLink profile (required)' : 'Login profile'}${s.account ? `: ${esc(s.account)}` : ''}</summary><input class="flat account" aria-label="${isAcp(s.vendor) ? 'AgentLink profile' : 'Login profile'}" value="${esc(s.account || '')}" placeholder="${isAcp(s.vendor) ? 'saved profile name' : 'none: your usual login'}" title="${isAcp(s.vendor) ? 'A profile already configured centrally in AgentLink' : 'A second login of this CLI; node src/doctor.js shows how to log a profile in'}"></details>`}
     </div>
   </article>`;
 }
@@ -567,6 +569,10 @@ function renderChair() {
   $('chair-kind').textContent = seatKind(VENDOR_META[v], $('chairman-endpoint').value);
   $('chair-kind').classList.toggle('api', api);
   $('chair-api').hidden = !api; $('chair-profile').hidden = api;
+  $('chair-profile').querySelector('summary').textContent = isAcp(v) ? 'AgentLink profile (required)' : 'Login profile';
+  $('chair-profile').open = isAcp(v);
+  $('chairman-account').placeholder = isAcp(v) ? 'saved profile name' : 'none: your usual login';
+  $('chairman-account').setAttribute('aria-label', isAcp(v) ? 'Chairman AgentLink profile' : 'Chairman login profile');
   const picker = api ? { html: '', other: true } : modelPicker(v, $('chairman-model').value.trim(), 'id="chair-model-pick"', S.customChairModel);
   $('chair-model-slot').innerHTML = picker.html;
   $('chairman-model').hidden = !picker.other;
@@ -581,7 +587,8 @@ function renderChair() {
 // its tip explains, and choosing it there is the consent the board sends (isolationAccepted).
 // An agent request has no card, so it must send options.allowLimitedIsolation itself.
 const isoNote = (vendor) => (VENDOR_META[vendor]?.limitedIsolation
-  ? '<span class="seat-note warn iso-note help-label" data-help="isolation" tabindex="0" aria-describedby="help-isolation">Limited isolation: your Antigravity customizations and MCP servers still load</span>' : '');
+  ? isAcp(vendor) ? '<span class="seat-note warn iso-note">Limited isolation: the profile owns tools, customization and billing. Use a trusted profile with tools disabled. Stateless memory only; missing token usage stops further seat calls.</span>'
+    : '<span class="seat-note warn iso-note help-label" data-help="isolation" tabindex="0" aria-describedby="help-isolation">Limited isolation: your Antigravity customizations and MCP servers still load</span>' : '');
 const isolationAccepted = () => [...draftSeats(), draftChairman(), searcherOn() ? draftSearcher() : null].some((s) => VENDOR_META[s?.vendor]?.limitedIsolation);
 
 // A vendor whose own docs say wrapping its CLI is unsupported on some plans (config.js terms,
@@ -1505,12 +1512,15 @@ function renderGate() {
     const chairDown = S.verdict?.seat && seatDown(S.verdict.seat);
     // the CLI vendors by name; an endpoint only as a seat already at this table (its URL, key
     // variable and model are the seat's), since the endpoint vendor alone names no server
-    const pickable = Object.keys(VENDOR_LABEL).filter((v) => !isApi(v) && !Object.values(S.down).some((x) => x.vendor === v && !x.account && !x.group));
-    const apiSeats = S.seats.filter((s) => s.endpoint && !seatDown(s)).map((s) => ({ value: `seat:${s.id}`, label: `${s.label} (${s.model})` }));
+    const pickable = Object.keys(VENDOR_LABEL).filter((v) => !isApi(v) && !isAcp(v) && !Object.values(S.down).some((x) => x.vendor === v && !x.account && !x.group));
+    const apiSeats = S.seats.filter((s) => (s.endpoint || isAcp(s.vendor) && s.account) && !seatDown(s)).map((s) => ({ value: `seat:${s.id}`, label: `${s.label} (${s.model || s.account})` }));
     const savedChair = S.configuredChairman || S.chairman;
-    const first = chairDown || ['quota', 'auth', 'missing'].includes(S.verdict?.errorKind) ? pickable.find((v) => v !== S.verdict?.seat?.vendor) || pickable[0] : (savedChair?.vendor || pickable[0]);
+    if (isAcp(savedChair?.vendor) && savedChair.account && !seatDown(savedChair)) apiSeats.unshift({ value: 'chair:acp', label: `ACP ${savedChair.account} (chairman)` });
+    const first = chairDown || ['quota', 'auth', 'missing'].includes(S.verdict?.errorKind)
+      ? (isAcp(savedChair?.vendor) ? apiSeats[0]?.value : null) || pickable.find((v) => v !== S.verdict?.seat?.vendor) || pickable[0]
+      : isAcp(savedChair?.vendor) ? 'chair:acp' : (savedChair?.vendor || pickable[0]);
     const synth = S.status === 'done' && S.synthesis && S.synthesis !== 'done' && canFinish
-      ? ` <span class="synth">Write the verdict with <select id="synth-chair" aria-label="Chairman for the verdict">${pickable.map((v) => `<option value="${v}" ${v === first ? 'selected' : ''}>${esc(VENDOR_LABEL[v])}${v === savedChair?.vendor ? esc([savedChair.model, savedChair.effort, savedChair.account].filter(Boolean).map((s) => ` · ${s}`).join('')) : ''}</option>`).join('')}${apiSeats.map((o) => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join('')}</select> <button class="btn btn-small" id="synthesize" type="button" ${S.actionPending ? 'disabled' : ''}>${S.actionPending === 'synthesize' ? 'Starting…' : 'Write'}</button></span>` : '';
+      ? ` <span class="synth">Write the verdict with <select id="synth-chair" aria-label="Chairman for the verdict">${pickable.map((v) => `<option value="${v}" ${v === first ? 'selected' : ''}>${esc(VENDOR_LABEL[v])}${v === savedChair?.vendor ? esc([savedChair.model, savedChair.effort, savedChair.account].filter(Boolean).map((s) => ` · ${s}`).join('')) : ''}</option>`).join('')}${apiSeats.map((o) => `<option value="${esc(o.value)}" ${o.value === first ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select> <button class="btn btn-small" id="synthesize" type="button" ${S.actionPending ? 'disabled' : ''}>${S.actionPending === 'synthesize' ? 'Starting…' : 'Write'}</button></span>` : '';
     const focused = st.contains(document.activeElement) ? document.activeElement.id : null;
     st.innerHTML = link + (S.status === 'done' ? `<span class="status ${S.synthesis === 'done' ? 'ok' : 'warn'}">${S.synthesis === 'done' ? 'Review finished' : S.stopReason === 'human' ? 'Review stopped' : 'Review ended without a verdict'}</span> ${esc(stopExplanation(S.stopReason, S.stopContext))}${synth} Record saved locally.${S.exported ? ' Decision record exported.' : ''}${S.exportError ? ` <span class="danger">Export failed: ${esc(S.exportError)}</span>` : ''}${S.replayed ? ' <span class="muted">saved review</span>' : ''}`
       : interrupted ? `<span class="status warn">interrupted</span> ${S.interrupted?.round ? `after round ${S.interrupted.round - 1}` : 'before round 0 finished'}${S.interrupted?.partialRound != null ? `, round ${S.interrupted.partialRound} will be re-run` : ''}. Add a note or resume.`
@@ -1791,7 +1801,7 @@ $('gate-status').addEventListener('click', async (ev) => {
   const pick = $('synth-chair').value;
   const seat = pick.startsWith('seat:') && S.seats.find((s) => s.id === pick.slice(5));
   const savedChair = S.configuredChairman || S.chairman;
-  const chosen = seat || (pick === savedChair?.vendor ? savedChair : { vendor: pick });
+  const chosen = seat || (pick === 'chair:acp' || pick === savedChair?.vendor ? savedChair : { vendor: pick });
   const chairman = Object.fromEntries(['vendor', 'endpoint', 'keyEnv', 'model', 'effort', 'account'].filter((key) => chosen[key] != null).map((key) => [key, chosen[key]]));
   await boardAction('synthesize', { chairman });
   if (revision === viewRevision) $('synthesize')?.focus({ preventScroll: true });
