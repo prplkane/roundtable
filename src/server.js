@@ -7,6 +7,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { adapters, ADAPTERS, quotaReaders, poolsByAccount } from './adapters/index.js';
+import { agentLinkBinary } from './adapters/acp.js';
 import { profileHome, killAll, liveChildren, resolveBinary, runProcess, cleanEnv } from './adapters/spawn.js';
 import { checkPool, STATUS, endpointLamp, createPreflightCache } from './preflight.js';
 import { retired, quotaGroup } from './adapters/models.js';
@@ -310,6 +311,15 @@ async function preflight(keys, { refresh = false, fresh = false, endpoints = {} 
   return Promise.all(keys.map(async (key) => {
     const vendor = poolVendor(key), account = poolAccount(key);
     if (!Object.hasOwn(ADAPTERS, vendor)) return { key, state: 'danger', kind: 'missing', note: `unknown vendor ${vendor}` };
+    if (ADAPTERS[vendor].kind === 'acp') {
+      // No bridge is started or installed by a background readiness check.
+      if (FAKE) return { key, vendor, account, installed: null, loggedIn: null, quota: null, state: 'ok', kind: 'demo', note: 'Scripted demo; no AgentLink or vendor process is used' };
+      try {
+        agentLinkBinary();
+        return { key, vendor, account, installed: true, loggedIn: null, quota: null, state: 'warn', kind: 'unknown',
+          note: account ? 'AgentLink found; profile, login and ACP support are checked on the first call' : 'Choose a saved AgentLink profile' };
+      } catch (e) { return { key, vendor, account, installed: false, loggedIn: null, quota: null, state: 'danger', kind: 'missing', note: e.message }; }
+    }
     if (ADAPTERS[vendor].kind === 'api') {
       const ep = refresh ? endpoints[key] || {} : {};
       const url = typeof ep.url === 'string' ? ep.url.slice(0, 500) : '', keyEnv = typeof ep.keyEnv === 'string' ? ep.keyEnv.slice(0, 64) : null;
@@ -482,7 +492,7 @@ function prepareDebate(raw, { board = false } = {}) {
   if (unacknowledged) throw unacknowledged;
   if (!FAKE && !body.options.allowLimitedIsolation && [...seats, chairman, body.options.research].some((s) => s && ADAPTERS[s.vendor]?.limitedIsolation)) {
     // the board sends this whenever a card it shows runs on Antigravity; an agent must send it
-    throw Object.assign(new Error('Antigravity cannot be fully isolated. Send options.allowLimitedIsolation: true once the person accepts that, or choose another provider.'), { status: 400 });
+    throw Object.assign(new Error('Antigravity and ACP profiles cannot be fully isolated. Send options.allowLimitedIsolation: true once the person accepts the selected provider limits, or choose another provider.'), { status: 400 });
   }
   const options = { ...DEFAULTS, ...body.options };
   // the board always names the searcher's settings, even "default"; an agent may leave them out
@@ -555,6 +565,7 @@ function attachEngine(d, { fieldNotes, seats, chairman, options, resume = null, 
   const call = FAKE ? fakeRunner({ consensus: FAKE_CONSENSUS }) : (vendor, prompt, sessionId, opts) =>
     adapters[vendor](prompt, sessionId, {
       cwd: store.seatDir(opts.seat?.id || 'chairman'), home: opts.seat?.account && ADAPTERS[vendor].home ? profileHome(vendor, opts.seat.account) : null,
+      account: opts.seat?.account, signal: opts.signal,
       endpoint: opts.seat?.endpoint ? { url: opts.seat.endpoint, keyEnv: opts.seat.keyEnv || null } : null, // an API seat: where to send the round
       timeoutMs: opts.timeoutMs, prevCost: opts.prevCost, prevUsage: opts.prevUsage, model: opts.model || undefined, effort: opts.effort || undefined, tag: d.slug,
       allowLimitedIsolation: opts.allowLimitedIsolation,
@@ -791,7 +802,7 @@ const server = http.createServer(async (req, res) => {
       const body = refresh ? await readBody(req) : { pools: String(url.searchParams.get('pools') || '').split(',') };
       if (body.fresh != null && typeof body.fresh !== 'boolean') throw new Error('fresh must be a boolean.');
       const list = Array.isArray(body.pools) ? body.pools : String(body.pools || '').split(',');
-      const keys = [...new Set(list.map((k) => String(k).trim()).filter((k) => /^[a-z]+(@[a-z0-9][a-z0-9_.-]{0,39})?$/i.test(k)))].slice(0, 12);
+      const keys = [...new Set(list.map((k) => String(k).trim()).filter((k) => /^acp@[a-z0-9][a-z0-9_-]{0,63}$/.test(k) || /^[a-z]+(@[a-z0-9][a-z0-9_.-]{0,39})?$/i.test(k)))].slice(0, 12);
       const endpoints = req.method === 'POST' && body.endpoints && typeof body.endpoints === 'object' ? body.endpoints : {};
       return json(res, 200, { pools: await preflight(keys, { refresh, fresh: body.fresh === true, endpoints }) });
     }

@@ -80,7 +80,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       delete seat.lastRawUsage;
       return seat;
     }),
-    chairman: chairman || { vendor: seats[0].vendor },
+    chairman: chairman || { vendor: seats[0].vendor, ...(seats[0].vendor === 'acp' ? { account: seats[0].account, model: seats[0].model } : {}) },
     startedAt: null, deadlineAt: null, stopContext: null, fieldNotes, options: opts, usage: [], research: resume?.research || null,
   };
   const fire = (type, payload = {}) => emit(type, { ...payload, type });
@@ -516,7 +516,7 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
   // effort, once. The board is told which and why; the record keeps the fallback chairman.
   function fallbackChairman(from) {
     const tried = new Set([`${from.vendor}@${from.account || ''}`]);
-    const seat = state.seats.find((s) => !tried.has(`${s.vendor}@${s.account || ''}`) && !downOf(s) && !policyBlocked(s) && s.vendor !== from.vendor);
+    const seat = state.seats.find((s) => !tried.has(`${s.vendor}@${s.account || ''}`) && !downOf(s) && !policyBlocked(s) && (s.vendor !== from.vendor || s.vendor === 'acp'));
     return seat ? { vendor: seat.vendor, account: seat.account, colour: seat.colour, model: seat.endpoint ? seat.model : undefined, effort: undefined, ...(seat.endpoint ? { endpoint: seat.endpoint, keyEnv: seat.keyEnv } : {}) } : null;
   }
 

@@ -1,9 +1,28 @@
 # Security
 
-Roundtable runs a loopback server on your machine. Live debates use the vendor CLIs you
-installed or API endpoints you explicitly configure; demo mode uses scripted replies.
+Roundtable runs a loopback server on your machine. Live debates use the vendor CLIs,
+AgentLink ACP profiles or API endpoints you explicitly configure; demo mode uses
+scripted replies.
 
 ## Data and execution
+
+- **ACP profiles are trusted local executables, not sandboxes.** Roundtable launches
+  the installed AgentLink with a validated saved profile name. Executable overrides
+  come only from the server's environment, never review JSON. Each turn creates a
+  fresh ACP v1 session in a separate seat directory, advertises no client tools and
+  supplies no MCP servers. Permission requests are denied; filesystem/terminal
+  callbacks and reported tool activity stop the seat. The client binds the session
+  ID while receiving `session/new`, before processing any following frame, and
+  rejects foreign-session updates. Agents can still have their own built-in tools,
+  permissions, customizations and billing configuration. Use a
+  profile with those tools disabled and explicitly accept limited isolation. This
+  does not acknowledge a vendor's terms or guarantee its sandbox. Inherited API keys
+  are filtered as for direct CLIs, but AgentLink profile settings can add them back.
+  ACP output, including stderr, is bounded to 8 MiB per call. Roundtable sends
+  `session/cancel` on interruption and closes the connection, with process-tree
+  termination after a bounded grace period. Already-orphaned Windows descendants
+  are not guaranteed to be contained. Tokens are unknown unless valid optional
+  end-turn counters are reported; existing seat/vendor budget rules still apply.
 
 - **No telemetry or analytics service.** Usage statistics describe your own agents' calls in
   Roundtable. They are calculated and stored on your machine; Roundtable sends no usage

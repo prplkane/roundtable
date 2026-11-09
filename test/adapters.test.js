@@ -256,9 +256,9 @@ test('codexQuota normalises account/rateLimits/read, labelling windows by durati
   assert.equal(codexQuota({}), null);
 });
 
-test('every CLI vendor has a usage page for the strip fallback; the API vendor has none (its billing is the endpoint\'s)', () => {
+test('direct CLI vendors have a usage page; API and ACP billing belong to the selected endpoint or profile', () => {
   for (const [name, a] of Object.entries(ADAPTERS)) {
-    if (a.kind === 'api') { assert.equal(a.usageUrl, null, name); continue; }
+    if (a.kind !== 'cli') { assert.equal(a.usageUrl, null, name); continue; }
     assert.match(a.usageUrl, /^https:\/\//, name);
   }
 });
@@ -349,8 +349,10 @@ test('a profile home is created empty and no credential file is ever read or cop
 
 test('every vendor says its kind and declares effort levels and a pool for the strip; a CLI spells effort as argv', () => {
   for (const [name, a] of Object.entries(ADAPTERS)) {
-    assert.ok(['cli', 'api'].includes(a.kind), `${name} kind`);
-    assert.ok(Array.isArray(a.effortLevels) && a.effortLevels.length, name);
+    assert.ok(['cli', 'api', 'acp'].includes(a.kind), `${name} kind`);
+    assert.ok(Array.isArray(a.effortLevels), name);
+    if (a.kind === 'acp') assert.deepEqual(a.effortLevels, [], 'ACP does not invent reasoning levels');
+    else assert.ok(a.effortLevels.length, name);
     // an endpoint has no argv; its effort goes in the request body
     if (a.kind === 'cli') assert.ok(typeof a.effort === 'function', name); else assert.equal(a.effort, null, name);
     assert.ok(a.pool, name);

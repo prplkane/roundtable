@@ -15,6 +15,7 @@ export const HELP = {
     resume: 'Resume an interrupted review. May make provider calls.',
     verdict: 'Request a missing or failed verdict from saved replies. May make a provider call.',
   },
+  acp: 'To use a saved AgentLink profile, select vendor="acp" and account="profile-name" for each seat and the chairman. Requires stateless memory and allowLimitedIsolation=true after the person accepts profile-owned permissions, customization and billing. Roundtable denies client tools and stops reported tool activity. AgentLink must already be installed/configured. Missing token usage stays unknown and stops further calls for that seat under its cap; no live quota is inferred.',
   setup: 'Use roundtable server status to inspect the local board; roundtable server start launches it hidden if needed (add --fake for a free test). After an update, server restart refuses active reviews. This client reads its launch token locally; it never prints or stores the token.',
   input: 'check/start accept the same {fieldNotes,seats,chairman,options} JSON as the board. Check available providers first. Every result with an id carries board, a link where a person can watch the review in a browser; offer it, do not open it.',
   recipe: {
@@ -64,11 +65,17 @@ export async function runAgent(command, flags = {}, input, signal) {
       result = await request(`${route}/state`);
       if (['researching', 'running', 'verdict'].includes(result.status) || result.status === 'waiting' && (result.gate?.round === afterRound || result.gate?.mode === 'countdown' && !result.gate.questions.length)) {
         const controller = new AbortController(), timer = setTimeout(() => controller.abort(), seconds * 1000);
+        const waiting = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
         let reader;
+        // Node 22 can lose fetch's abort link after collection while an SSE body
+        // is idle. Cancel the held reader directly so its pending read settles.
+        const cancelRead = () => { reader?.cancel().catch(() => {}); };
+        waiting.addEventListener('abort', cancelRead, { once: true });
         try {
-          const response = await fetch(`${base}${route}/events`, { redirect: 'error', signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal, headers: { 'last-event-id': result.revision } });
+          const response = await fetch(`${base}${route}/events`, { redirect: 'error', signal: waiting, headers: { 'last-event-id': result.revision } });
           if (!response.ok) throw new Error('Could not wait for review events.');
           reader = response.body.getReader();
+          waiting.throwIfAborted();
           const decoder = new TextDecoder(); let buffer = '', finished = false;
           while (!finished) {
             const next = await reader.read(); if (next.done) break;
@@ -82,8 +89,13 @@ export async function runAgent(command, flags = {}, input, signal) {
               }
             }
           }
+          signal?.throwIfAborted();
         } catch (error) { signal?.throwIfAborted(); if (!controller.signal.aborted) throw error; }
-        finally { clearTimeout(timer); if (reader) await reader.cancel().catch(() => {}); }
+        finally {
+          clearTimeout(timer);
+          waiting.removeEventListener('abort', cancelRead);
+          if (reader) await reader.cancel().catch(() => {});
+        }
         result = await request(`${route}/state`);
       }
       result = { ...result, board: board(flags.id) };

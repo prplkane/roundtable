@@ -82,6 +82,29 @@ test('a 30-second MCP wait allows both slow state reads and does not hit the old
   assert.equal(stateReads, 2);
 });
 
+test('MCP wait deadlines survive garbage collection during an idle event stream', { timeout: 8000 }, async (t) => {
+  const dataDir = path.join(os.tmpdir(), 'synthetic-roundtable-gc');
+  let stateReads = 0;
+  const server = http.createServer((req, res) => {
+    if (req.url === '/api/health') res.end(JSON.stringify({ service: 'roundtable', apiVersion: LOCAL_API_VERSION, version: VERSION, instanceId: 'b'.repeat(32), mode: 'live', dataDir }));
+    else if (req.url.endsWith('/state')) {
+      stateReads++;
+      res.end(JSON.stringify({ id: 'example', revision: '1:0', status: 'running', nextAction: { type: 'wait' } }));
+    } else if (req.url.endsWith('/events')) { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write(': waiting\n\n'); }
+    else { res.writeHead(404); res.end('{}'); }
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const client = mcpClient(process.execPath, ['--expose-gc', path.join(ROOT, 'test/fixtures/gc-mcp.mjs'), '--port', String(server.address().port), '--no-start'], {
+    env: { ...process.env, ROUNDTABLE_DEBATES_DIR: dataDir }, requestTimeoutMs: 4000,
+  });
+  t.after(async () => { await client.close(); server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); });
+  await client.initialize();
+  const result = await client.tool('wait', { id: 'example', seconds: 1 });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.completed, false);
+  assert.equal(stateReads, 2, 'the wait must end and read fresh state');
+});
+
 test('readiness cancellation prevents dispatch and transient failures have a bounded retry window', async (t) => {
   let reads = 0;
   const server = http.createServer((req, res) => { reads++; res.writeHead(503); res.end('{}'); });

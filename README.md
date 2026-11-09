@@ -12,6 +12,12 @@ supports the same workflow for agents and scripts.
 Usage statistics describe your own agents' calls in Roundtable and stay on your machine.
 Roundtable has no telemetry or analytics service and sends no usage data to its developers.
 
+You can also choose **AgentLink (ACP)** for seats and the chairman, then enter a saved
+AgentLink profile name. Roundtable speaks standard ACP to the centrally installed
+launcher; AgentLink owns bridge installation and updates. This path uses stateless
+memory and has the selected profile's permissions and billing. See
+[AgentLink setup and limits](docs/workflow.md#7c-agentlink-acp-profiles-optional).
+
 **Requirements:** Node.js 22 or newer. No runtime dependencies. Live reviews use installed
 Claude, Codex or Antigravity CLIs, or an OpenAI-compatible endpoint for a local or hosted model.
 

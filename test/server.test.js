@@ -504,8 +504,11 @@ test('fake server end to end: three seats, gates answered through the API, trans
     };
     const post = async (p, b) => { const r = await fetch(`${srv.base}${p}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token }, body: JSON.stringify(b) }); return { ok: r.ok, body: await r.json() }; };
     const seatsApi = await (await fetch(`${srv.base}/api/seats`)).json();
-    assert.equal(seatsApi.vendors.length, 4); // three CLIs and the API endpoint vendor
-    assert.deepEqual(seatsApi.vendors.map((v) => v.kind), ['cli', 'cli', 'cli', 'api'], 'every vendor says whether it is a CLI or an API');
+    assert.deepEqual(seatsApi.vendors.map((v) => v.vendor), ['claude', 'codex', 'agy', 'api', 'acp']);
+    assert.deepEqual(seatsApi.vendors.map((v) => v.kind), ['cli', 'cli', 'cli', 'api', 'acp']);
+    assert.equal(seatsApi.vendors.find((v) => v.vendor === 'acp').profiles, true);
+    const acpLamp = await (await fetch(`${srv.base}/api/preflight?pools=acp%40synthetic`)).json();
+    assert.equal(acpLamp.pools[0].kind, 'demo', 'the demo does not require an installed AgentLink launcher');
     assert.equal(seatsApi.vendors.find((v) => v.vendor === 'api').profiles, true, 'API pools are per endpoint host');
     assert.equal(seatsApi.defaults.memory, 'stateless');
     assert.equal(seatsApi.defaults.critiqueRounds, 1, 'the default review has one critique round');

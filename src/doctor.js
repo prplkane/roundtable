@@ -54,6 +54,13 @@ async function main() {
     if (a.kind === 'cli') try { bin = resolveBinary(a.binary, a.npmBin); } catch (e) { lookup = e.message; }
     if (a.kind === 'cli' && !bin && only !== vendor) { missing.push(`${a.label} (${a.binary})`); continue; }
     console.log(`\n== ${paintVendor(a)} (${vendor})  pool: ${a.pool}`);
+    if (a.kind === 'acp') {
+      console.log('  seat it    choose AgentLink (ACP) and a saved profile on the board; use stateless memory');
+      console.log('  check it   agentlink doctor; agentlink check PROFILE (initialization only)');
+      console.log(`  isolation  ${a.isolation}`);
+      console.log('  live call  use an explicitly selected profile in a review; no default ACP agent is launched');
+      continue;
+    }
     if (a.kind === 'api') { // no binary: everything about an endpoint seat is on its card
       console.log('  seat it    on the board: base URL (…/v1), model id, and for a hosted API the NAME of the key variable');
       console.log(`  efforts    ${a.effortLevels.join(', ')}  (reasoning_effort, sent only when set)`);
