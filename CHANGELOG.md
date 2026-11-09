@@ -2,6 +2,9 @@
 
 ## 0.6.6
 
+- Keep MCP wait deadlines and caller cancellation connected on Node 22 when
+  garbage collection runs while an idle event stream is open.
+
 - Use the public `@prplkane/agentlink` package for optional ACP seats, including
   shell-free Windows npm launch resolution. Document the qualified beta version.
 

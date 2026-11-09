@@ -65,11 +65,17 @@ export async function runAgent(command, flags = {}, input, signal) {
       result = await request(`${route}/state`);
       if (['researching', 'running', 'verdict'].includes(result.status) || result.status === 'waiting' && (result.gate?.round === afterRound || result.gate?.mode === 'countdown' && !result.gate.questions.length)) {
         const controller = new AbortController(), timer = setTimeout(() => controller.abort(), seconds * 1000);
+        const waiting = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
         let reader;
+        // Node 22 can lose fetch's abort link after collection while an SSE body
+        // is idle. Cancel the held reader directly so its pending read settles.
+        const cancelRead = () => { reader?.cancel().catch(() => {}); };
+        waiting.addEventListener('abort', cancelRead, { once: true });
         try {
-          const response = await fetch(`${base}${route}/events`, { redirect: 'error', signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal, headers: { 'last-event-id': result.revision } });
+          const response = await fetch(`${base}${route}/events`, { redirect: 'error', signal: waiting, headers: { 'last-event-id': result.revision } });
           if (!response.ok) throw new Error('Could not wait for review events.');
           reader = response.body.getReader();
+          waiting.throwIfAborted();
           const decoder = new TextDecoder(); let buffer = '', finished = false;
           while (!finished) {
             const next = await reader.read(); if (next.done) break;
@@ -83,8 +89,13 @@ export async function runAgent(command, flags = {}, input, signal) {
               }
             }
           }
+          signal?.throwIfAborted();
         } catch (error) { signal?.throwIfAborted(); if (!controller.signal.aborted) throw error; }
-        finally { clearTimeout(timer); if (reader) await reader.cancel().catch(() => {}); }
+        finally {
+          clearTimeout(timer);
+          waiting.removeEventListener('abort', cancelRead);
+          if (reader) await reader.cancel().catch(() => {});
+        }
         result = await request(`${route}/state`);
       }
       result = { ...result, board: board(flags.id) };
