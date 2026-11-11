@@ -899,17 +899,21 @@ The initial integration deliberately has these limits:
   accept it with `allowLimitedIsolation`. Check the selected vendor's applicable
   terms separately. The direct adapters' vendor-specific restrictions do not apply
   to an arbitrary ACP profile. Profile environment settings can select API billing.
-- **Agent defaults remain defaults.** Leave Model empty, or supply a model ID
-  advertised in the session's standard model configuration options. Unadvertised
-  model overrides fail before a prompt. Reasoning preferences stay with the profile;
-  Roundtable does not guess effort flags or a safe mode from their names.
+- **Agent defaults remain defaults.** Leave Model and Effort empty, or supply values
+  the agent advertises in the session's standard configuration options: the model
+  option for Model, the reasoning-level option (ACP category `thought_level`) for
+  Effort. Roundtable sets them through `session/set_config_option` before the prompt
+  and fails before prompting when the agent did not advertise the value. It does not
+  guess effort flags or a safe mode from their names; the JSON API accepts any
+  identifier as an ACP effort and the agent decides.
 - **Usage is optional.** Roundtable reads the existing experimental
   [end-turn usage field](https://docs.rs/agent-client-protocol/latest/agent_client_protocol/schema/v1/struct.PromptResponse.html#structfield.usage)
   only when its counters and total agree. Missing/invalid usage remains unknown,
   and the existing seat cap blocks that seat's next call, including a repair or
   critique. The chairman may still summarize usable replies. ACP context occupancy
   is not spending. No live subscription quota is inferred; dollar caps are refused.
-  An explicit `acp` token budget covers all ACP profiles in the review.
+  An explicit `acp` token budget covers all ACP profiles in the review; `acp@PROFILE`
+  caps that one profile, and both may be set together.
 - **Login stays with the agent.** Sign in through the vendor's own flow. Authentication
   errors identify that step; Roundtable does not open a login terminal automatically.
   The readiness lamp checks the launcher only. Use `agentlink check PROFILE` to

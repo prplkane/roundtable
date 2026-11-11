@@ -3,6 +3,7 @@
 // the seats module or the exporter sees it. Pure, so it is unit tested.
 
 import { researchSettings } from './research.js';
+import { agentLinkProfile } from './seats.js';
 
 export const LIMITS = {
   decision: 2000, option: 200, options: [2, 12], field: 4000, exportTo: 1024, seats: [2, 8], message: 4000,
@@ -79,11 +80,17 @@ export function validateDebateRequest(body, { adapters }) {
   if (o.budget != null) {
     if (typeof o.budget !== 'object' || Array.isArray(o.budget)) fail('budget', 'an object');
     options_.budget = {};
-    for (const [vendor, cap] of Object.entries(o.budget)) {
+    for (const [key, cap] of Object.entries(o.budget)) {
+      // a bare vendor caps every seat of that vendor; `acp@profile` caps one AgentLink profile
+      const at = key.indexOf('@'), vendor = at < 0 ? key : key.slice(0, at), profile = at < 0 ? null : key.slice(at + 1);
       if (!adapters[vendor]) fail('budget', `unknown vendor ${vendor}`);
-      const tokens = amount(cap?.tokens, `${vendor} token cap`), usd = amount(cap?.usd, `${vendor} dollar cap`);
+      if (profile != null) {
+        if (adapters[vendor].kind !== 'acp') fail('budget', `${adapters[vendor].label} takes one budget for all its seats; use "${vendor}"`);
+        try { agentLinkProfile(profile); } catch (e) { fail('budget', `${key}: ${e.message}`); }
+      }
+      const tokens = amount(cap?.tokens, `${key} token cap`), usd = amount(cap?.usd, `${key} dollar cap`);
       if (usd > 0 && !adapters[vendor].paths?.cost) fail('budget', `${adapters[vendor].label} does not report cost, so it cannot take a dollar cap`);
-      options_.budget[vendor] = { ...(tokens != null ? { tokens } : {}), ...(usd != null ? { usd } : {}) };
+      options_.budget[key] = { ...(tokens != null ? { tokens } : {}), ...(usd != null ? { usd } : {}) };
     }
   }
   return { fieldNotes, seats: body.seats, chairman: body.chairman ?? null, options: options_ };

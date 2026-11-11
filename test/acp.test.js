@@ -46,6 +46,34 @@ test('ACP streams an answer, sends only standard methods and uses a fresh isolat
   assert.ok(events.some((e) => e.exit));
 });
 
+test('ACP selects an advertised reasoning level and refuses one the agent does not offer', async (t) => {
+  const c = setup(t);
+  const reply = await c.run('Synthetic review', null, { ...c.opts, effort: 'max' });
+  assert.match(reply.text, /^STANCE: opt-1/);
+  const set = c.events().filter((e) => e.rpc?.method === 'session/set_config_option').map((e) => [e.rpc.params.configId, e.rpc.params.value]);
+  assert.deepEqual(set, [['thought_level', 'max']], 'the level goes through the standard config option, nothing else is sent');
+  await assert.rejects(c.run('q', null, { ...c.opts, effort: 'ultra' }), { code: 'ACP_UNSUPPORTED' });
+  const bare = setup(t, 'no-levels');
+  await assert.rejects(bare.run('q', null, { ...bare.opts, effort: 'max' }), { code: 'ACP_UNSUPPORTED' });
+  assert.ok(!bare.events().some((e) => e.rpc?.method === 'session/prompt'), 'an agent without a reasoning setting is not prompted at one');
+});
+
+test('an ACP seat may name any identifier as its effort; the agent, not a static list, decides', () => {
+  const two = (effort) => [{ vendor: 'acp', account: 'work', lens: 'risk', effort }, { vendor: 'acp', account: 'work', lens: 'cost' }];
+  assert.equal(normaliseSeats(two('max'), { vendors: ADAPTERS })[0].effort, 'max');
+  assert.throws(() => normaliseSeats(two('very high!'), { vendors: ADAPTERS }), /identifier the agent advertises/);
+  assert.equal(normaliseChairman({ vendor: 'acp', account: 'work', effort: 'low' }, { vendors: ADAPTERS }).effort, 'low');
+  assert.throws(() => normaliseSeats([{ vendor: 'claude', lens: 'risk', effort: 'max' }, { vendor: 'codex', lens: 'cost' }], { vendors: ADAPTERS }), /does not accept effort "max"/, 'CLI vendors keep their lists');
+});
+
+test('a budget on one AgentLink profile is checked apart from other profiles and from the bare acp cap', () => {
+  const body = (budget) => validateDebateRequest({ fieldNotes: { decision: 'd', options: ['A', 'B'] }, seats: [{ vendor: 'acp', account: 'a', lens: 'risk' }, { vendor: 'acp', account: 'b', lens: 'cost' }], options: { budget } }, { adapters: ADAPTERS });
+  assert.deepEqual(body({ 'acp@a': { tokens: 500 }, acp: { tokens: 9000 } }).options.budget, { 'acp@a': { tokens: 500 }, acp: { tokens: 9000 } });
+  assert.throws(() => body({ 'claude@work': { tokens: 1 } }), /one budget for all its seats/);
+  assert.throws(() => body({ 'acp@Bad Name': { tokens: 1 } }), /acp@Bad Name: An ACP seat needs a valid saved AgentLink profile/);
+  assert.throws(() => body({ 'acp@a': { usd: 1 } }), /does not report cost/);
+});
+
 test('missing token usage stays unknown; context occupancy is never charged as tokens', async (t) => {
   const c = setup(t, 'no-usage');
   const reply = await c.run('Synthetic review', null, c.opts);
@@ -133,6 +161,34 @@ test('a complete offline review reaches chairman synthesis through ACP', async (
   assert.equal(result.verdict.seat.account, 'synthetic', 'the default chairman retains its ACP profile');
   assert.equal(records.filter((r) => r.type === 'attempt').length, 5);
   assert.equal(new Set(c.events().filter((e) => e.start).map((e) => e.pid)).size, 5);
+});
+
+test('a budget on one AgentLink profile counts that profile alone; the bare acp cap counts every ACP seat', async (t) => {
+  const c = setup(t);
+  // 110 tokens projected per call; the fixture then reports 1,100 per call
+  const baselines = { acp: { fresh: { input: 100, output: 10, n: 1, cost: null, nCost: 0 }, resumed: { input: 100, output: 10, n: 1, cost: null, nCost: 0 } } };
+  const run = async (budget) => {
+    const records = [], events = [];
+    const seats = normaliseSeats([{ vendor: 'acp', account: 'capped', lens: 'risk' }, { vendor: 'acp', account: 'open', lens: 'cost' }], { vendors: ADAPTERS });
+    const result = await createDebate({ fieldNotes: { decision: 'Synthetic profile budget', options: ['Trial', 'Wait'] }, seats, chairman: { vendor: 'acp', account: 'open' },
+      runner: (vendor, prompt, sid, opts) => c.run(prompt, sid, { ...c.opts, ...opts, account: opts.seat.account, cwd: path.join(c.root, opts.seat.id) }),
+      gate: async () => ({ action: 'continue', message: '' }),
+      store: { append: (r) => records.push(r), writeVerdict() {}, writeFieldNotes() {} }, emit: (type, p) => events.push(p),
+      options: { critiqueRounds: 0, allowLimitedIsolation: true, budget }, baselines }).run();
+    return { result, budget: events.find((e) => e.type === 'budget'), attempts: records.filter((r) => r.type === 'attempt') };
+  };
+  // 1,500 tokens: one profile's single call (1,100) fits under its own cap, so the review completes
+  const scoped = await run({ 'acp@capped': { tokens: 1500 } });
+  assert.equal(scoped.budget, undefined, 'the other profile and the chairman do not count against this profile');
+  assert.equal(scoped.result.verdict.failed, false);
+  // the same 1,500 on the bare vendor key counts both seats (2,200) and blocks the verdict
+  const bare = await run({ acp: { tokens: 1500 } });
+  assert.equal(bare.budget?.vendor, 'acp');
+  assert.equal(bare.result.verdict.skipped, true);
+  // a cap the profile's first call cannot fit stops the round before any call, named by profile
+  const tight = await run({ 'acp@capped': { tokens: 50 } });
+  assert.equal(tight.budget?.vendor, 'acp@capped'); assert.equal(tight.budget.kind, 'tokens');
+  assert.equal(tight.attempts.length, 0); assert.equal(tight.result.stopReason, 'budget');
 });
 
 test('an unavailable ACP chairman can fall back to another configured profile', async (t) => {

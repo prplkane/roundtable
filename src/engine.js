@@ -323,9 +323,12 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
     }
   }
 
-  const oneCall = (seat, round) => projectRound({ seats: [seat], round, baselines,
-    memory: resumes && seat.sessionId != null ? 'resume' : 'stateless', researchTokens: researchInputTokens(fieldNotes.research || []) });
-  const chairmanCall = (chairman = state.chairman) => projectChairman({ chairman, baselines, researchTokens: researchInputTokens(fieldNotes.research || []) });
+  // A seat on a named account is also projected under `vendor@account`, so a budget on one
+  // AgentLink profile can be checked on its own; the bare vendor key still carries every seat.
+  const profiled = (seat, projection) => seat?.account && projection[seat.vendor] ? { ...projection, [`${seat.vendor}@${seat.account}`]: { ...projection[seat.vendor] } } : projection;
+  const oneCall = (seat, round) => profiled(seat, projectRound({ seats: [seat], round, baselines,
+    memory: resumes && seat.sessionId != null ? 'resume' : 'stateless', researchTokens: researchInputTokens(fieldNotes.research || []) }));
+  const chairmanCall = (chairman = state.chairman) => profiled(chairman, projectChairman({ chairman, baselines, researchTokens: researchInputTokens(fieldNotes.research || []) }));
 
   // A seat's connection state, as the board shows it: idle, thinking, replied, reprompted,
   // failed, timed-out. Emitted here so the UI only renders.
@@ -586,8 +589,9 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
   function spentByVendor() {
     const out = {};
     const at = (vendor) => (out[vendor] ??= { tokens: 0, cost: 0, costUnknown: false, tokensUnknown: false });
-    for (const e of ledger) {
-      const v = at(e.seat.vendor);
+    // under the vendor, and under `vendor@account` for a seat on a named account (profile budgets)
+    for (const e of ledger) for (const key of e.seat.account ? [e.seat.vendor, `${e.seat.vendor}@${e.seat.account}`] : [e.seat.vendor]) {
+      const v = at(key);
       if (usageUnknown(e.usage)) v.tokensUnknown = true;
       if (e.usage) v.tokens += (e.usage.input || 0) + (e.usage.cacheRead || 0) + (e.usage.cacheWrite || 0) + (e.usage.output || 0);
       const cost = e.usage?.cost ?? e.cost;

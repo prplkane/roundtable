@@ -1613,7 +1613,9 @@ function updateQuestionTime() {
 // Which vendor would cross its cap, and by how much: shown wherever the gate status is.
 function budgetLine() {
   const b = S.budgetStop; if (!b) return '';
-  const name = esc(VENDOR_LABEL[b.vendor] || b.vendor);
+  // a cap on one AgentLink profile is keyed vendor@profile
+  const [vendor, profile] = String(b.vendor).split('@');
+  const name = esc((VENDOR_LABEL[vendor] || vendor) + (profile ? ` profile ${profile}` : ''));
   if (b.kind === 'usd-unknown') return `<span class="status danger">budget</span> ${name} has a dollar cap, but its cost is not reported, so the ${esc(b.what)} was not run. `;
   if (b.kind === 'tokens-unknown') return `<span class="status danger">budget</span> ${name} did not report token usage. Further calls to this vendor are blocked under its token cap; ${esc(b.what)} was not run. `;
   if (b.kind === 'seat-tokens-unknown') return `<span class="status warn">usage unknown</span> ${esc(unknownUsageMessage(b.cause))} Other seats can continue. `;

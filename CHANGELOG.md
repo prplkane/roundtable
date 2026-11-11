@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.7
+
+- Take an ACP seat's effort from the agent: the reasoning level the agent advertises in its
+  session configuration (ACP category `thought_level`) is selected the way a model is, and an
+  unadvertised level fails before the prompt. The JSON API accepts any identifier as an ACP
+  effort; the agent decides.
+- Budget one AgentLink profile on its own with `acp@PROFILE`, next to the bare `acp` cap that
+  still covers every ACP seat.
+- Refuse an option the board commands do not know instead of starting the board: a mistyped
+  flag such as `--prot 5000`, or `--version` before it existed, used to open the live server on
+  the default port. `--port` now needs a number from 1 to 65535.
+- Add `roundtable --version` (also `-v` and `version`).
+- Show the board in the README, with the one-command demo (`npx @prplkane/roundtable fake`)
+  first in the quick start.
+
 ## 0.6.6
 
 - Keep MCP wait deadlines and caller cancellation connected on Node 22 when

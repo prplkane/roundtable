@@ -233,6 +233,20 @@ function seatAccount(raw, row) {
 // vendors: { [vendor]: { label, effortLevels } } (the adapter table). efforts may widen a
 // vendor's levels from the catalogue (agy's come from its model ids); models is the
 // catalogue's model list per vendor, for the lightest model a hidden mood runs on.
+// An ACP agent advertises its reasoning levels when a session opens, so the adapter checks a
+// seat's effort against that list; here it is only a bounded identifier.
+const ACP_EFFORT_RE = /^[a-z0-9][a-z0-9_.-]{0,31}$/i;
+function checkEffort(raw, vendor, allowed, label) {
+  const effort = raw.effort ? String(raw.effort).trim() : null;
+  if (!effort) return null;
+  if (vendor.kind === 'acp') {
+    if (!ACP_EFFORT_RE.test(effort)) throw new Error(`${label}: an ACP effort is an identifier the agent advertises (letters, digits, dots, dashes or underscores, up to 32).`);
+    return effort;
+  }
+  if (!allowed.includes(effort)) throw new Error(`${label} does not accept effort "${effort}"${allowed.length ? ` (allowed: ${allowed.join(', ')})` : ''}.`);
+  return effort;
+}
+
 export function normaliseSeats(input, { vendors, efforts = {}, models = {}, hidden = false }) {
   const issue = seatSetupIssue((input || []).map((raw) => raw && vendors[raw.vendor] ? raw : null));
   if (issue) throw Object.assign(new Error(issue.message), issue, { status: 400 });
@@ -242,8 +256,7 @@ export function normaliseSeats(input, { vendors, efforts = {}, models = {}, hidd
     if (!raw || !vendors[raw.vendor]) continue;
     const lens = String(raw.lens || '').trim();
     const allowed = modelEfforts(raw.vendor, raw.model, efforts[raw.vendor] || vendors[raw.vendor].effortLevels || []);
-    const effort = raw.effort ? String(raw.effort).trim() : null;
-    if (effort && !allowed.includes(effort)) throw new Error(`${vendors[raw.vendor].label}${raw.model ? ` ${String(raw.model).trim()}` : ''} does not accept effort "${effort}" (allowed: ${allowed.join(', ')}).`);
+    const effort = checkEffort(raw, vendors[raw.vendor], allowed, `${vendors[raw.vendor].label}${raw.model ? ` ${String(raw.model).trim()}` : ''}`);
     perVendor[raw.vendor] = (perVendor[raw.vendor] || 0) + 1;
     // an endpoint seat: URL, model and key variable checked; its account is its host
     const ep = vendors[raw.vendor].kind === 'api' ? normaliseEndpoint(raw, `Seat "${lens}"`) : null;
@@ -279,8 +292,7 @@ export function normaliseChairman(raw, { vendors, efforts = {}, role = 'Chairman
   const vendor = raw?.vendor && vendors[raw.vendor] ? raw.vendor : null;
   if (!vendor) return null;
   const allowed = modelEfforts(vendor, raw.model, efforts[vendor] || vendors[vendor].effortLevels || []);
-  const effort = raw.effort ? String(raw.effort).trim() : null;
-  if (effort && !allowed.includes(effort)) throw new Error(`${role}: ${vendors[vendor].label}${raw.model ? ` ${String(raw.model).trim()}` : ''} does not accept effort "${effort}".`);
+  const effort = checkEffort(raw, vendors[vendor], allowed, `${role}: ${vendors[vendor].label}${raw.model ? ` ${String(raw.model).trim()}` : ''}`);
   const ep = vendors[vendor].kind === 'api' ? normaliseEndpoint(raw, role) : null;
   return { vendor, colour: vendors[vendor].colour || undefined, model: ep ? ep.model : raw.model ? String(raw.model).trim() : undefined, effort: effort || undefined,
     account: ep ? ep.account : seatAccount(raw, vendors[vendor]), ...(ep ? { endpoint: ep.endpoint, keyEnv: ep.keyEnv } : {}) };
