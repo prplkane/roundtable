@@ -15,9 +15,22 @@ const freePort = () => new Promise((resolve, reject) => { const s = net.createSe
 
 test('roundtable --help exits 0 and names every command; an unknown command exits 2', () => {
   const help = execFileSync(process.execPath, [CLI, '--help'], { encoding: 'utf8' });
-  for (const c of ['fake', 'doctor', 'export', 'debate', '--no-open']) assert.ok(help.includes(c), c);
+  for (const c of ['fake', 'doctor', 'export', 'debate', '--no-open', '--version']) assert.ok(help.includes(c), c);
   assert.doesNotMatch(help, /ROUNDTABLE|\x1b\[/, 'redirected help stays plain');
   assert.throws(() => execFileSync(process.execPath, [CLI, 'bogus'], { encoding: 'utf8', stdio: 'pipe' }), (e) => e.status === 2 && /unknown command: bogus/.test(e.stderr));
+});
+
+test('roundtable --version prints the version; a board command refuses options it does not know before starting anything', () => {
+  for (const flag of ['--version', '-v', 'version']) assert.equal(execFileSync(process.execPath, [CLI, flag], { encoding: 'utf8' }), `${VERSION}\n`, flag);
+  // each of these used to start the board; a refusal returns at once with the usage on stderr
+  const refused = (args, why) => assert.throws(() => execFileSync(process.execPath, [CLI, ...args], { encoding: 'utf8', stdio: 'pipe', timeout: 10_000 }),
+    (e) => e.status === 2 && e.stderr.startsWith(`${why}\n`) && /roundtable fake/.test(e.stderr) && e.stdout === '', args.join(' '));
+  refused(['--verison'], 'unknown option: --verison');
+  refused(['--prot', '5000'], 'unknown option: --prot');
+  refused(['fake', '--no-open', 'extra'], 'unknown option: extra');
+  refused(['fake', '--port'], '--port needs a number from 1 to 65535');
+  refused(['--port', '70000', '--no-open'], '--port needs a number from 1 to 65535');
+  refused(['fake', '--port', '47x8'], '--port needs a number from 1 to 65535');
 });
 
 test('terminal branding respects output capabilities and does not decorate pipes or CI', () => {

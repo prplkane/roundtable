@@ -7,6 +7,7 @@ export const PUBLIC = [
   /^LICENSE$/,
   /^package\.json$/,
   /^docs\/workflow\.md$/,
+  /^docs\/images\/[\w-]+\.png$/, // README screenshots of the demo board: in the repository, not in the npm package
   /^skills\/roundtable\/SKILL\.md$/,
   /^scripts\/[\w.-]+\.mjs$/,
   /^src\/[\w./-]+\.(js|html|css|svg)$/,
