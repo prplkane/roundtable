@@ -287,7 +287,9 @@ the page, keeps fetches and the event stream same-origin, forbids framing, and d
 sniffing, so a reply that slipped past the board's escaping could not read the launch token.
 
 Preflight `GET` reads cached status only, including when `fresh` is present in the query. Missing
-snapshots say not checked; expired snapshots are labelled stale. CLI status and quota refreshes
+snapshots say not checked; expired snapshots are labelled stale. Unrecognized login-status
+output leaves sign-in unconfirmed. A confirmed sign-out skips the account quota read.
+Review estimates use local usage history or defaults and remain available offline. CLI status and quota refreshes
 require authenticated `POST`. Concurrent refreshes share work per pool, with at most two pool
 checks running and twelve running or queued in total. Requests beyond that limit receive a busy
 status. Results are cached for one minute; forced refreshes have a five-second cooldown per pool.

@@ -1,6 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { groupQuestions, answerMessage, argumentHtml, remainingWindow, cancellationReason, stopExplanation, ceremonyOutcome, verdictView, verdictResultText, verdictHeadline, defaultSearchQuery } from '../src/review-view.js';
+import { providerWarning, groupQuestions, answerMessage, argumentHtml, remainingWindow, cancellationReason, stopExplanation, ceremonyOutcome, verdictView, verdictResultText, verdictHeadline, defaultSearchQuery } from '../src/review-view.js';
+
+test('setup groups affected roles by provider, profile and reason', () => {
+  const seat = { provider: 'Claude', lamp: { cls: 'danger', note: 'Sign in.' } };
+  const warning = providerWarning([
+    { ...seat, role: 'evidence' }, { ...seat, role: 'long-term effects' }, { ...seat, account: 'work', role: 'chairman' },
+    { ...seat, role: 'searcher', lamp: { cls: 'ok', note: 'ready' } },
+  ]);
+  assert.equal(warning, 'Claude — Sign in.\nAffected roles · evidence, long-term effects\n\nClaude (work) — Sign in.\nAffected roles · chairman');
+  assert.equal(providerWarning([{ ...seat, role: 'evidence', lamp: { cls: 'warn', note: 'Sign-in unconfirmed.' } }]), '');
+});
 
 test('questions share an answer only when their wording matches; distinct questions and sources survive', () => {
   const questions = [{ lens: 'risk', seat: 'seat-0', question: 'What is the budget?' }, { lens: 'cost', seat: 'seat-1', question: '  What is the budget? ' }, { lens: 'evidence', seat: 'seat-2', question: 'Is the budget approved?' }];

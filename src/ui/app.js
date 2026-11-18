@@ -15,7 +15,7 @@ import { loaderMarkup } from '/ui/loader.js';
 import { noteRecord, noteLabel } from '/src/notes.js';
 import { progressText } from '/src/progress.js';
 import { unlock as unlockSound, setSound, soundEnabled, playCue } from '/ui/sound.js';
-import { groupQuestions, answerMessage, stopExplanation, cancellationReason, remainingWindow, argumentHtml, ceremonyOutcome, verdictView, verdictResultText, verdictHeadline, defaultSearchQuery } from '/src/review-view.js';
+import { providerWarning, groupQuestions, answerMessage, stopExplanation, cancellationReason, remainingWindow, argumentHtml, ceremonyOutcome, verdictView, verdictResultText, verdictHeadline, defaultSearchQuery } from '/src/review-view.js';
 
 const $ = (id) => document.getElementById(id);
 const helpNotes = installHelp();
@@ -294,6 +294,7 @@ async function setup() {
   $('chairman-account').addEventListener('input', () => { renderChair(); requestPreflight(); });
   $('chairman').addEventListener('change', () => requestPreflight());
   $('refresh-status').addEventListener('click', () => requestPreflight({ fresh: true }));
+  $('start-refresh').addEventListener('click', () => requestPreflight({ fresh: true }));
   // an endpoint chairman: a preset URL prefills the key variable's usual name (never a key)
   $('chairman-endpoint').addEventListener('change', () => { const pre = ENDPOINT_PRESETS.find((e) => e.url === $('chairman-endpoint').value.trim()); if (pre?.keyEnv && !$('chairman-keyenv').value.trim()) $('chairman-keyenv').value = pre.keyEnv; renderChair(); requestPreflight(); });
   for (const id of ['chairman-endpoint', 'chairman-keyenv']) $(id).addEventListener('input', () => { renderChair(); requestPreflight(); });
@@ -418,20 +419,20 @@ function pipsHtml(vendor, chosen, model = '') {
 // quota; authenticated POST /api/preflight), else what the quota alone says. model: the seat's,
 // for a quota in groups (agy), where only its group's windows count. The server's answer is for
 // the whole pool, so its quota part is redone here with the latest figure for this model.
-function poolLamp(vendor, account, model = '') {
+function poolLamp(vendor, account, model = '', showChecking = true) {
   const terms = VENDOR_META[vendor]?.terms;
   if (terms && !terms.acknowledgedAt) return { cls: 'warn', kind: 'terms', note: 'Review the account notice before using this provider.' };
   const key = poolKey(vendor, account, !!VENDOR_META[vendor]?.profiles);
   const pf = S.preflight[key];
   const q = S.quota[key];
-  if (S.preflighting) return { cls: 'idle', note: 'checking…' };
+  if (showChecking && S.preflighting) return { cls: 'idle', note: 'checking…' };
   if (pf) {
     const own = q && pf.installed && pf.loggedIn !== false && !['busy', 'check-failed'].includes(pf.kind)
       ? preflightLamp({ vendor, installed: true, loggedIn: pf.loggedIn, quota: q, account, model }) : null;
     const at = own ? { ...pf, ...own } : pf;
     const stale = pf.stale || pf.checkedAt != null && Date.now() - pf.checkedAt >= PREFLIGHT_TTL_MS;
     return { cls: stale && at.state === 'ok' ? 'warn' : at.state,
-      note: at.note + (stale && pf.checkedAt != null ? ' · refresh status' : ''), kind: at.kind };
+      note: at.note + (stale && pf.checkedAt != null && !['auth', 'unknown'].includes(at.kind) ? ' · refresh status' : ''), kind: at.kind };
   }
   if (!quotaWindows(q, [model]).length) return { cls: 'idle', note: 'not checked yet' };
   const own = preflightLamp({ vendor, installed: true, loggedIn: null, quota: q, account, model });
@@ -535,7 +536,7 @@ function requestPreflight({ fresh = false } = {}) {
     } catch (e) {
       if (revision === preflightRevision) S.preflightError = e.message || 'Could not refresh status. Try Refresh status again.';
     } finally {
-      if (revision === preflightRevision) { S.preflighting = false; updateLamps(); }
+      if (revision === preflightRevision) { S.preflighting = false; updateLamps(); updateProjectionReadings(); }
     }
   }, 400);
 }
@@ -555,7 +556,11 @@ function updateLamps() {
   const c = poolLamp($('chairman').value, chairAccount(), $('chairman-model').value.trim());
   $('chair-lamp').className = `lamp ${c.cls}`; $('chair-lamp').title = c.note;
   $('chair-note').textContent = c.note; $('chair-note').title = c.note; $('chair-note').className = `seat-note lamp-note ${c.cls === 'danger' || c.cls === 'warn' ? c.cls : ''}`;
-  S.startConfirm = null; $('start').disabled = !!S.startPending; $('start').textContent = S.startPending ? 'Opening…' : 'Open the table';
+  if (S.startConfirm && $('setup-error').textContent === S.startConfirm) $('setup-error').textContent = '';
+  S.startConfirm = null;
+  $('start-refresh').hidden = true;
+  $('start').disabled = !!S.startPending;
+  $('start').textContent = S.startPending ? 'Opening…' : 'Open the table';
 }
 
 // The chairman card: vendor colour, the gavel, effort pips; its controls keep their ids.
@@ -911,27 +916,54 @@ const usageLink = (key) => { const m = VENDOR_META[poolVendor(key)]; return m?.u
 
 // One block per vendor pool: live windows, the projected draw for this table stacked per seat,
 // and the measured per-round share where a calibration exists.
-function renderProjection() {
+function draftProjection() {
   const seats = draftSeats().map((s, i) => ({ ...s, id: `seat-${i}` }));
   const chairman = draftChairman();
-  const p = project({ seats, chairman, critiqueRounds: Number($('critique-rounds').value) || 0, baselines: BASELINES, memory: $('memory').value, research: searcherOn() ? draftSearcher() : null });
   const researcher = draftSearcher();
+  const p = project({ seats, chairman, critiqueRounds: Number($('critique-rounds').value) || 0, baselines: BASELINES, memory: $('memory').value, research: searcherOn() ? researcher : null });
+  const seatOf = (id) => (id === 'chairman' ? chairman : id === 'research' ? researcher : seats[Number(id.slice(5))]);
+  return { seats, chairman, researcher, p, seatOf };
+}
+
+// A completed status refresh updates the readings in place, preserving cap and manual quota inputs.
+function updateProjectionReadings({ p, seatOf } = draftProjection()) {
+  for (const section of $('projection').querySelectorAll('.pool-window-section')) {
+    const { vendor, pool } = section.dataset;
+    const v = p.byVendor[vendor];
+    if (!v) continue;
+    const reading = section.querySelector('.pool-reading');
+    const manual = section.querySelector('.pool-manual');
+    const pf = S.preflight[pool];
+    section.closest('.pool').querySelector('.pool-id span').hidden = pf?.loggedIn === false;
+    if (!pool || pf?.loggedIn === false) {
+      reading.textContent = pool ? 'Signed out at the last check. Current account quota is unavailable.' : 'Multiple profiles selected. Check each seat for its account status.';
+      manual.hidden = false;
+      continue;
+    }
+    const pw = projectedWindows(S.calib, pool, v.seats.map((id) => p.bySeat[id])) || [];
+    const windows = quotaWindows(S.quota[pool], v.seats.map((id) => seatOf(id)?.model || ''));
+    manual.hidden = windows.length > 0;
+    if (windows.length) {
+      const estimates = windows.map((w) => { const x = pw.find((y) => y.label === w.label); return { ...w, adds: x?.pct ?? null, upper: !!x?.upperBound }; });
+      const at = S.quota[pool]?.at;
+      reading.innerHTML = `Usage reported${Number.isFinite(at) ? ' ' + agoText(at) : ' by provider'}<div class="readouts">${readouts(pool, estimates)}</div>`;
+    } else {
+      const estimates = pw.map((w) => w.upperBound
+        ? `Past reviews used ${k(w.pending)} tokens without a measurable change in the ${w.label} window.`
+        : `This review may use about ${pct(w.pct)} of the ${w.label} window.`);
+      reading.textContent = ['Current quota unavailable.', ...estimates].join(' ');
+    }
+  }
+}
+
+function renderProjection() {
+  const draft = draftProjection();
+  const { seats, chairman, researcher, p, seatOf } = draft;
   const label = (id) => (id === 'chairman' ? 'chairman' : id === 'research' ? 'searcher' : `${seats[Number(id.slice(5))]?.lens || id}`);
   const colourOf = (id) => (id === 'chairman' ? vendorColour(chairman.vendor) : id === 'research' ? vendorColour(researcher.vendor) : seats[Number(id.slice(5))]?.colour || 'ink');
   $('projection').innerHTML = Object.values(p.byVendor).map((v) => {
-    // the vendor's seats all on one account: that account's pool; mixed: the default one
-    const seatOf = (id) => (id === 'chairman' ? chairman : id === 'research' ? researcher : seats[Number(id.slice(5))]);
     const keys = new Set(v.seats.map((id) => seatPool(seatOf(id))));
-    const pool = keys.size === 1 ? [...keys][0] : v.vendor;
-    const q = S.quota[pool];
-    const pw = projectedWindows(S.calib, pool, v.seats.map((id) => p.bySeat[id])) || [];
-    // Live windows carry this debate's projected draw; without a live figure the projection is
-    // all there is, so it stays a sentence. A quota in groups (agy) shows the seated models' groups.
-    const windows = q ? quotaWindows(q, v.seats.map((id) => seatOf(id)?.model || '')).map((w) => { const x = pw.find((y) => y.label === w.label); return { ...w, adds: x ? x.pct : null, upper: !!x?.upperBound }; }) : [];
-    const projected = q ? '' : pw.length ? pw.map((w) => (w.upperBound
-      ? `No movement of the ${esc(w.label)} window seen over ${k(w.pending)} tokens yet.`
-      : `About +${pct(w.pct)} of the ${esc(w.label)} window (${w.samples} measured move${w.samples === 1 ? '' : 's'}).`)).join(' ')
-      : 'Window share is unmeasured until a debate runs.';
+    const pool = keys.size === 1 ? [...keys][0] : '';
     const cap = S.budget[v.vendor];
     // Seats of one vendor share its colour, so each segment of the bar gets its own shade and the
     // chairman a hatch; the legend beside each seat uses the same fill, so the split reads.
@@ -939,27 +971,29 @@ function renderProjection() {
     const segments = v.seats.filter((id) => id !== 'chairman');
     const order = [...segments, ...v.seats.filter((id) => id === 'chairman')];
     return `<div class="pool">
-      <div class="pool-top">${poolId(pool)}<div class="pool-total"><b>≈ ${k(v.total)}</b><span>tokens${v.cost != null ? ` · ≈ $${v.cost.toFixed(2)}` : ''}</span></div></div>
+      <div class="pool-top">${poolId(pool || v.vendor)}<div class="pool-total"><b>≈ ${k(v.total)}</b><span>estimated tokens${v.cost != null ? ` · ≈ $${v.cost.toFixed(2)}` : ''}</span></div></div>
       <div class="bar" aria-label="Projected share of the pool per seat">${order.map((id) => `<span class="${fill(id, segments.indexOf(id))}" style="--seat: var(--seat-${colourOf(id)}); width: ${(100 * p.bySeat[id].weighted / (v.weighted || 1)).toFixed(1)}%" title="${esc(label(id))}"></span>`).join('')}</div>
       <div class="pool-seats">${order.map((id) => {
         const row = p.bySeat[id];
         return `<span class="chip ${fill(id, segments.indexOf(id))}" style="--seat: var(--seat-${colourOf(id)})" title="${esc(row.calls)} calls${row.model ? ', ' + esc(row.model) : ''}${row.weight !== 1 ? `, model weight ×${row.weight}` : ''}"><span>${esc(label(id))}</span><b>${k(row.total)}</b><span>${row.cost != null ? `$${row.cost.toFixed(2)}` : ''}</span></span>`;
       }).join('')}</div>
       ${v.weighted !== v.total ? `<p class="pool-note">≈ ${k(v.weighted)} pool units after model weight.</p>` : ''}
-      <div class="pool-window-section">${windows.length ? `<div class="readouts">${readouts(pool, windows)}</div>` : `<p class="pool-note">${projected}</p>${poolEntry(v.vendor, v.weighted)}`}</div>
+      <div class="pool-window-section" data-vendor="${esc(v.vendor)}" data-pool="${esc(pool)}"><div class="pool-note pool-reading"></div><div class="pool-manual">${poolEntry(v.vendor, v.weighted)}</div></div>
       <div class="pool-cap" data-vendor="${esc(v.vendor)}"><label for="cap-${esc(v.vendor)}" title="Projected before each call, with the calls in flight and the verdict reserved. The vendor does not enforce it.">Cap</label><input id="cap-${esc(v.vendor)}" name="tokens" type="number" min="0" step="1000" placeholder="tokens" value="${cap?.tokens ?? ''}" aria-label="Token cap for ${esc(VENDOR_LABEL[v.vendor] || v.vendor)}">${v.cost != null || cap?.usd > 0 ? `<input name="usd" type="number" min="0" step="0.05" placeholder="$" value="${cap?.usd ?? ''}" aria-label="Dollar cap for ${esc(VENDOR_LABEL[v.vendor] || v.vendor)}">` : ''}${cap?.tokens > 0 && v.total > cap.tokens ? '<span class="warn">the projection is over this cap</span>' : ''}${usageLink(v.vendor)}</div>
       ${cap?.usd > 0 && v.cost == null ? '<p class="pool-note warn" data-dollar-warning>No dollar estimate is available. This dollar cap blocks calls; clear it to proceed with a token cap instead.</p>' : ''}
     </div>`;
   }).join('') || '<span class="muted">Seat at least one instance.</span>';
+  updateProjectionReadings(draft);
   $('projection-summary').textContent = Object.values(p.byVendor).map((v) => `${VENDOR_LABEL[v.vendor] || v.vendor} ≈ ${k(v.total)}`).join(' · ');
   const vs = Object.values(p.byVendor);
   const rounds = Number($('critique-rounds').value) || 0;
   const priced = vs.filter((v) => v.cost != null);
-  $('start-summary').innerHTML = seats.length ? `<b>${seats.length} seats</b> · ${seats.length * (rounds + 1) + 1 + (searcherOn() ? 1 : 0)} planned calls before retries · ≈ ${k(vs.reduce((n, v) => n + v.total, 0))} tokens${priced.length ? ` · ≈ $${priced.reduce((n, v) => n + v.cost, 0).toFixed(2)} for ${priced.map((v) => esc(VENDOR_LABEL[v.vendor] || v.vendor)).join(', ')}` : ''}` : '';
+  $('start-summary').innerHTML = seats.length ? `<b>${seats.length} seats</b> · ${seats.length * (rounds + 1) + 1 + (searcherOn() ? 1 : 0)} planned calls before retries · estimated ${k(vs.reduce((n, v) => n + v.total, 0))} tokens${priced.length ? ` · ≈ $${priced.reduce((n, v) => n + v.cost, 0).toFixed(2)} for ${priced.map((v) => esc(VENDOR_LABEL[v.vendor] || v.vendor)).join(', ')}` : ''}` : '';
 }
 
 function clearSetupValidation() {
   S.seatIssue = null;
+  $('start-refresh').hidden = true;
   $('setup-error').textContent = ''; $('seats-error').textContent = '';
   for (const el of $('seats').querySelectorAll('[aria-invalid]')) el.removeAttribute('aria-invalid');
   for (const el of $('seats').querySelectorAll('.seat-invalid')) el.classList.remove('seat-invalid');
@@ -1017,13 +1051,15 @@ async function start() {
   const unacknowledged = termsPending();
   if (unacknowledged.length) { openTerms(unacknowledged[0]); return; }
   // Confirm a known unavailable provider only after the form itself is valid.
-  const red = [...S.draft.map((s) => ({ name: `${VENDOR_LABEL[s.vendor]} (${s.lens})`, l: poolLamp(s.vendor, seatAccount(s), s.model) })),
-    { name: `the chairman (${VENDOR_LABEL[$('chairman').value]})`, l: poolLamp($('chairman').value, chairAccount(), $('chairman-model').value.trim()) },
-    ...(searcherOn() ? [{ name: `the searcher (${VENDOR_LABEL[$('searcher-vendor').value]})`, l: poolLamp($('searcher-vendor').value, searcherAccount(), $('searcher-model').value.trim()) }] : [])].filter((x) => x.l.cls === 'danger');
-  const sig = red.map((x) => `${x.name}:${x.l.note}`).join('|');
-  if (red.length && S.startConfirm !== sig) {
-    S.startConfirm = sig;
-    showSetupError({ message: `${red.map((x) => `${x.name}: ${x.l.note}`).join('; ')}. Those calls will fail.` });
+  const roles = [...body.seats, { ...body.chairman, lens: 'chairman' }];
+  if (body.options.research) roles.push({ ...body.options.research, lens: 'searcher' });
+  const warning = providerWarning(roles.map(({ vendor, account, model, lens }) => ({
+    provider: VENDOR_LABEL[vendor], account, role: lens, lamp: poolLamp(vendor, account, model, false),
+  })));
+  if (warning && S.startConfirm !== warning) {
+    S.startConfirm = warning;
+    showSetupError({ message: warning });
+    $('start-refresh').hidden = false;
     $('start').textContent = 'Open anyway';
     return;
   }
@@ -1613,7 +1649,9 @@ function updateQuestionTime() {
 // Which vendor would cross its cap, and by how much: shown wherever the gate status is.
 function budgetLine() {
   const b = S.budgetStop; if (!b) return '';
-  const name = esc(VENDOR_LABEL[b.vendor] || b.vendor);
+  // a cap on one AgentLink profile is keyed vendor@profile
+  const [vendor, profile] = String(b.vendor).split('@');
+  const name = esc((VENDOR_LABEL[vendor] || vendor) + (profile ? ` profile ${profile}` : ''));
   if (b.kind === 'usd-unknown') return `<span class="status danger">budget</span> ${name} has a dollar cap, but its cost is not reported, so the ${esc(b.what)} was not run. `;
   if (b.kind === 'tokens-unknown') return `<span class="status danger">budget</span> ${name} did not report token usage. Further calls to this vendor are blocked under its token cap; ${esc(b.what)} was not run. `;
   if (b.kind === 'seat-tokens-unknown') return `<span class="status warn">usage unknown</span> ${esc(unknownUsageMessage(b.cause))} Other seats can continue. `;

@@ -300,8 +300,8 @@ async function loginStatus(vendor, account) {
   const home = account && ADAPTERS[vendor].home ? { env: ADAPTERS[vendor].home.env, dir: profileHome(vendor, account) } : null;
   try {
     const r = await runProcess(resolveBinary(ADAPTERS[vendor].binary, ADAPTERS[vendor].npmBin), s.args, { env: cleanEnv(home), timeoutMs: 20_000 });
-    const out = `${r.stdout}\n${r.stderr}`;
-    return s.plan ? { loggedIn: s.read(out), plan: s.plan(out) } : s.read(out);
+    const loggedIn = s.read(r.stdout, r.stderr);
+    return s.plan ? { loggedIn, plan: loggedIn ? s.plan(r.stdout) : null } : loggedIn;
   } catch (e) { diagnostics.write({ code: 'status-failed', action: 'preflight', vendor }, e); return null; }
 }
 // endpoints: { [key]: { url, keyEnv } } for API pools, from the board (POST only: it names a

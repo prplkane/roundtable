@@ -6,6 +6,8 @@ const log = (event) => { if (process.env.ACP_FIXTURE_LOG) appendFileSync(process
 const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
 const sid = `fixture-${process.pid}`;
 const option = { id: 'model', category: 'model', name: 'Model', type: 'select', currentValue: 'fake-default', options: [{ value: 'fake-default', name: 'Default' }, { value: 'fake-choice', name: 'Choice' }] };
+const level = { id: 'thought_level', category: 'thought_level', name: 'Reasoning', type: 'select', currentValue: 'medium', options: [{ value: 'low', name: 'Low' }, { value: 'medium', name: 'Medium' }, { value: 'max', name: 'Max' }] };
+const configOptions = mode === 'no-levels' ? [option] : [option, level]; // no-levels: an agent with no reasoning setting
 let pending;
 log({ start: true, cwd: process.cwd(), script: process.argv[1] });
 const reader = createInterface({ input: process.stdin });
@@ -28,14 +30,14 @@ reader.on('line', (line) => {
   if (message.method === 'session/new') {
     if (mode === 'auth') return send({ id: message.id, error: { code: -32000, message: 'Login needed' } });
     if (mode === 'early-wrong-session') {
-      const frames = [{ jsonrpc: '2.0', id: message.id, result: { sessionId: sid, configOptions: [option] } },
+      const frames = [{ jsonrpc: '2.0', id: message.id, result: { sessionId: sid, configOptions } },
         { jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'another-session',
           update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Wrong session' } } } }];
       return process.stdout.write(frames.map(JSON.stringify).join('\n') + '\n');
     }
-    return answer({ sessionId: sid, configOptions: [option] });
+    return answer({ sessionId: sid, configOptions });
   }
-  if (message.method === 'session/set_config_option') return answer({ configOptions: [{ ...option, currentValue: message.params.value }] });
+  if (message.method === 'session/set_config_option') return answer({ configOptions: configOptions.map((o) => o.id === message.params.configId ? { ...o, currentValue: message.params.value } : o) });
   if (message.method === 'session/cancel') {
     if (pending != null) send({ id: pending, result: { stopReason: 'cancelled' } });
     return;

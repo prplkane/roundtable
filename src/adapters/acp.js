@@ -141,13 +141,24 @@ function connect(bin, profile, { cwd, env, signal, onUpdate }) {
   };
 }
 
+// A session's select-type config option by ACP category, or by id for an agent that labels
+// none, and the values it offers (flat, or grouped). Roundtable never invents a value: a model or
+// reasoning level is sent only when the agent advertised it for this session.
+const configOption = (session, category, ids) => Array.isArray(session.configOptions)
+  && session.configOptions.find((o) => o?.type === 'select' && (o.category === category || (!o.category && ids.includes(o.id))));
+const optionValues = (option) => Array.isArray(option?.options) ? option.options.flatMap((o) => Array.isArray(o?.options) ? o.options : [o]).filter(record) : [];
+async function selectOption(connection, session, value, { category, ids, what }) {
+  const option = configOption(session, category, ids);
+  if (!option || !optionValues(option).some((o) => o.value === value)) throw fault(`The ACP agent did not advertise this ${what}. Use its default or an advertised ${what} ID.`, 'ACP_UNSUPPORTED');
+  await connection.request('session/set_config_option', { sessionId: session.sessionId, configId: option.id, value });
+}
+
 export function makeAcpAdapter({ bin, env: suppliedEnv } = {}) {
   return async (prompt, previousSession = null, opts = {}) => {
     const profile = agentLinkProfile(opts.account);
     if (!opts.allowLimitedIsolation) throw fault('ACP profiles control their own permissions and customization. Accept limited isolation before using this profile.', 'ISOLATION_REQUIRED', 'policy');
     if (previousSession || opts.keepSession) throw fault('ACP seats currently require stateless memory; no previous session was loaded.', 'ACP_STATELESS_REQUIRED');
     if (opts.research) throw fault('ACP seats do not support Roundtable web research.', 'ACP_UNSUPPORTED');
-    if (opts.effort) throw fault('Set reasoning preferences in the AgentLink profile; this ACP client does not override effort.', 'ACP_UNSUPPORTED');
     const cwd = opts.cwd;
     if (!cwd || !path.isAbsolute(cwd)) throw fault('ACP seats need an absolute, isolated working directory.');
     mkdirSync(cwd, { recursive: true });
@@ -174,12 +185,9 @@ export function makeAcpAdapter({ bin, env: suppliedEnv } = {}) {
       const session = await connection.request('session/new', { cwd, mcpServers: [] });
       if (typeof session.sessionId !== 'string' || !session.sessionId) throw fault('ACP agent did not return a session ID.');
       connection.setSession(session.sessionId);
-      if (opts.model) {
-        const option = Array.isArray(session.configOptions) && session.configOptions.find((o) => o?.type === 'select' && (o.category === 'model' || (!o.category && o.id === 'model')));
-        const choices = Array.isArray(option?.options) ? option.options.flatMap((o) => Array.isArray(o?.options) ? o.options : [o]).filter(record) : [];
-        if (!option || !choices.some((o) => o.value === opts.model)) throw fault('The ACP agent did not advertise this model. Use its default or an advertised model ID.', 'ACP_UNSUPPORTED');
-        await connection.request('session/set_config_option', { sessionId: session.sessionId, configId: option.id, value: opts.model });
-      }
+      if (opts.model) await selectOption(connection, session, opts.model, { category: 'model', ids: ['model'], what: 'model' });
+      // the seat's effort is the agent's own reasoning level (ACP category thought_level)
+      if (opts.effort) await selectOption(connection, session, opts.effort, { category: 'thought_level', ids: ['thought_level', 'effort', 'reasoning_effort', 'reasoning'], what: 'reasoning level' });
       activePrompt = true;
       const result = await connection.request('session/prompt', { sessionId: session.sessionId, prompt: [{ type: 'text', text: prompt }] });
       connection.check();

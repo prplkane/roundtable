@@ -153,14 +153,17 @@
         </div>
       </section>
       <details class="panel" id="projection-panel">
-        <summary class="panel-title fold"><span>Quota picture</span><span class="hint" id="projection-summary"></span></summary>
-        <p class="hint panel-note">One pool per account: every seat on it draws from the same limit. Figures are estimates from past debates on this machine; other use of the same account moves the windows too.</p>
+        <summary class="panel-title fold"><span>Review estimate and account quota</span><span class="hint" id="projection-summary"></span></summary>
+        <p class="hint panel-note">Tokens and costs estimate what this review would use. Account usage comes from the provider’s last quota report.</p>
         <div id="projection" class="pools"></div>
       </details>
 
       <div class="startbar">
-        <span class="startbar-summary" id="start-summary"></span>
-        <span class="error" id="setup-error" role="alert"></span>
+        <div class="startbar-copy">
+          <div class="startbar-summary" id="start-summary"></div>
+          <div class="error" id="setup-error" role="alert"></div>
+        </div>
+        <button class="btn btn-small" id="start-refresh" type="button" hidden>Refresh status</button>
         <button class="btn btn-primary" id="start" type="button">Open the table</button>
       </div>
     </section>

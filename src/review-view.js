@@ -2,6 +2,17 @@
 import { verdictSections, recommendationPick, optionLabel } from './contract.js';
 export const escapeHtml = (value) => String(value ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
+export function providerWarning(roles) {
+  const issues = new Map();
+  for (const { provider, account, role, lamp } of roles) {
+    if (lamp.cls !== 'danger') continue;
+    const message = `${provider}${account ? ` (${account})` : ''} — ${lamp.note}`;
+    if (!issues.has(message)) issues.set(message, []);
+    issues.get(message).push(role);
+  }
+  return [...issues].map(([message, affected]) => `${message}\nAffected roles · ${affected.join(', ')}`).join('\n\n');
+}
+
 export function groupQuestions(questions = []) {
   const groups = new Map();
   for (const q of questions) {

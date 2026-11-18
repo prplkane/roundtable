@@ -1,104 +1,89 @@
 # Roundtable
 
-Roundtable runs structured decision reviews with multiple AI models. Provide a question,
-options and constraints; the models take independent positions, critique the alternatives
-and produce a recommendation. You can answer questions, add context and record your own
-decision alongside the result.
+[![npm version](https://img.shields.io/npm/v/@prplkane/roundtable)](https://www.npmjs.com/package/@prplkane/roundtable)
+[![tests](https://github.com/prplkane/roundtable/actions/workflows/test.yml/badge.svg)](https://github.com/prplkane/roundtable/actions/workflows/test.yml)
+[![Node.js](https://img.shields.io/node/v/@prplkane/roundtable)](package.json)
+[![license](https://img.shields.io/npm/l/@prplkane/roundtable)](LICENSE)
 
-Use it to compare technical approaches, review a product decision or examine a plan from
-different perspectives. The browser interface runs locally, and a JSON command-line client
-supports the same workflow for agents and scripts.
+Run decision reviews with multiple AI agents and export the outcome as Markdown.
 
-Usage statistics describe your own agents' calls in Roundtable and stay on your machine.
-Roundtable has no telemetry or analytics service and sends no usage data to its developers.
+Give the agents a question, alternatives and constraints. Each takes an independent position,
+then critiques the others. A chairman recommends an option and records the dissent. You can
+answer questions during the review and record your own decision at the end.
 
-You can also choose **AgentLink (ACP)** for seats and the chairman, then enter a saved
-AgentLink profile name. Roundtable speaks standard ACP to the centrally installed
-launcher; AgentLink owns bridge installation and updates. This path uses stateless
-memory and has the selected profile's permissions and billing. See
-[AgentLink setup and limits](docs/workflow.md#7c-agentlink-acp-profiles-optional).
+Roundtable runs on Node.js 22 or newer and stores reviews on your machine. Live seats use
+your chosen providers and their billing. This developer preview supports the following workflows.
 
-**Requirements:** Node.js 22 or newer. No runtime dependencies. Live reviews use installed
-Claude, Codex or Antigravity CLIs, or an OpenAI-compatible endpoint for a local or hosted model.
+## Review in the browser
+
+Try a review with scripted seats and no provider account:
+
+```sh
+npx @prplkane/roundtable fake
+```
+
+On the [demo board](http://localhost:4748/), enter a decision and at least two options.
+Choose seats with different perspectives, such as cost and risk. Open the table, answer
+the seats' questions, then read the recommendation. You can export it with your decision.
+
+![Browser demo with two questions awaiting answers and three seats split between shipping now and waiting a sprint](docs/images/board-questions.png)
+
+For a live review, install Roundtable and sign in to the provider CLIs you plan to use,
+or configure an OpenAI-compatible endpoint. Check the setup and open the board:
+
+```sh
+npm install -g @prplkane/roundtable
+roundtable doctor
+roundtable
+```
+
+The [live board](http://localhost:4747/) shows login warnings and an estimate before you start.
+A searcher can gather cited sources for every seat before the first round. For provider setup
+and a first live run, see the [test-drive guide](docs/workflow.md#a-first-live-test-drive).
+
+## Review in Codex with AgentLink seats
+
+Codex coordinates the review through Roundtable's Model Context Protocol (MCP) tools.
+Each seat runs through a named AgentLink profile using the Agent Client Protocol (ACP).
+You can use the same profile for several seats or choose a different one for each.
+
+Install both tools. This example uses Codex and Claude seats. Sign in to those CLIs and
+configure trusted review profiles with their tools disabled before sending them a decision.
+
+```sh
+npm install -g @prplkane/roundtable @prplkane/agentlink@0.3.0-beta.2
+agentlink add risk-review --provider codex
+agentlink add cost-review --provider claude
+agentlink check risk-review
+agentlink check cost-review
+roundtable setup --client codex
+```
+
+Restart Codex or reload its MCP connections. In any project, try:
+
+> Use Roundtable to decide whether to run a small rollout trial or wait one sprint.
+> Use the AgentLink profiles `risk-review` for risk and `cost-review` for cost.
+> Use `risk-review` as chairman. Run one critique round and bring me the seats' questions.
+
+Codex checks the request and relays questions and the final recommendation. ACP seats use
+fresh sessions and the selected profile's permissions and billing. Confirm that you accept
+limited isolation for these profiles before starting. [AgentLink setup and limits](docs/workflow.md#7c-agentlink-acp-profiles-optional).
+
+![Board opened from the Codex review showing both AgentLink profiles, the recommendation to run a trial and the cost seat's dissent](docs/images/codex-agentlink-review.png)
+
+In this offline example, Codex called `roundtable_check`, `roundtable_start` and
+`roundtable_wait`. Two scripted AgentLink seats completed five calls including the chairman.
+The screenshot shows the finished board linked from the tool result.
+
+To verify the connection, run `roundtable setup --client codex --check`. After updating,
+rerun setup and use `roundtable server restart` when the board is idle. The
+[assistant setup guide](docs/workflow.md#connect-an-assistant-for-every-project) also covers
+Claude, Antigravity and installation from a checkout.
 
 **Provider availability:** some vendors or models are unavailable in certain regions. Regional
 network paths can also interrupt replies even when login succeeds. Check the
 [availability and network guidance](docs/workflow.md#provider-availability-and-network-access)
 before your first live review.
-
-**Status:** early preview for developers. Feedback from real workflows is welcome. What does not
-work well yet is listed under [Known issues](docs/workflow.md#known-issues).
-
-## How a review works
-
-1. **Define the decision.** Add the alternatives, known facts and constraints. Choose two to
-   eight participants, called seats, and give each a perspective such as risk, cost or evidence.
-   Seats can use different models or share the same provider.
-2. **Gather sources first (optional).** Add a searcher: one extra call, on the provider you
-   pick. Its query starts from your question and options; review it or write a custom query.
-   Every seat and the chairman then read the same cited sources. Other context and discussion
-   answers stay out of research. The searcher never argues or votes.
-3. **Collect independent positions.** Each seat answers before seeing the others' responses.
-   The board then pauses for your input.
-4. **Discuss the differences.** A critique round lets seats review the previous replies and
-   revise their positions. Questions appear together so you can answer them in one place.
-5. **Review the recommendation.** A designated chairman summarizes the discussion and its
-   disagreements. Accept the recommendation or record a different decision, then export the
-   record as Markdown.
-
-## Quick start
-
-### Connect your assistant once
-
-Install Roundtable globally, then connect your assistant:
-
-```bash
-npm install -g @prplkane/roundtable
-roundtable setup --client codex
-```
-
-Use `--client claude`, `--client agy`, or `--client all` for the other supported assistants.
-Restart the assistant or reload its MCP connections. In any project, ask **"Use Roundtable
-to review this decision."** The installed MCP tools start the local board as needed, return
-questions to the coordinating assistant, and wait for the chairman's recommendation.
-You do not need to open this repository or start a browser for each review.
-
-Setup installs a user-level workflow skill and MCP connection. `roundtable setup --client codex
---check` checks it; `--remove` removes its unchanged entries. After updating Roundtable, rerun
-setup to refresh the skill, and use `roundtable server restart` once active reviews finish.
-No checkout is needed. To install a local checkout instead, run `npm pack` there and
-`npm install -g` with the printed `.tgz` filename; `npm install -g .` can create a link
-back to the checkout that breaks when it moves.
-See [assistant setup](docs/workflow.md#connect-an-assistant-for-every-project)
-for paths, demo mode and troubleshooting, or the [Linux walkthrough](docs/workflow.md#first-connection-on-linux).
-For a source snapshot before its npm release, use
-`npm install -g https://github.com/prplkane/roundtable/archive/refs/heads/main.tar.gz`.
-
-Interactive `roundtable --help`, `roundtable` and `roundtable fake` show the app's pixel logo
-tile in orchid, with the wordmark, a blinking cursor and the installed version beside it, then
-the provider CLIs found on this machine in their seat colors. Narrow terminals and terminals
-without UTF-8 use a short title; `NO_COLOR=1` disables color. Redirected output, CI, dumb
-terminals, MCP and JSON commands omit the decoration.
-
-### Try the demo
-
-The demo uses scripted replies. It needs no provider account and makes no model calls.
-
-```bash
-git clone https://github.com/prplkane/roundtable.git
-cd roundtable
-npm run fake
-```
-
-The board opens at [localhost:4748](http://localhost:4748/). If no browser window appears,
-open that address yourself. The header identifies the session as **Demo**. Press Ctrl+C in
-the terminal to stop the server.
-
-### Run a live review
-
-Install and sign in to a supported CLI, or configure an OpenAI-compatible endpoint using
-the [provider setup guide](docs/workflow.md). CLI seats use your existing logins; hosted API
-endpoints have separate billing.
 
 **Antigravity and your Google account:** Google's [Antigravity FAQ](https://antigravity.google/docs/faq)
 says wrapping `agy` inside third-party applications is not supported under consumer plans,
@@ -106,18 +91,6 @@ and that third-party access can lead to suspension or termination of the account
 runs `agy -p` in that way. It sends nothing to `agy`, not even a model-list or quota read,
 until you acknowledge this once on an Antigravity card; an agent request must send
 `options.acknowledgeTermsRisk: true` itself. Check your plan's terms, or use another provider.
-
-```bash
-npm run doctor
-npm start
-```
-
-Open [localhost:4747](http://localhost:4747/). The header identifies the session as **Live**.
-Start with two seats and one critique round; see the [first test-drive checklist](docs/workflow.md#a-first-live-test-drive)
-for a complete walkthrough. `npm run doctor` checks setup without making model calls.
-
-After updating, stop the running server with Ctrl+C, run `npm start` again and refresh the
-page. Refreshing the browser alone does not load an updated server or model list.
 
 ## Controls and limits
 
@@ -135,6 +108,7 @@ are not guaranteed billing ceilings.
 
 ## Records and privacy
 
+- Usage statistics stay on your machine. Roundtable sends no analytics to its developers.
 - **Local storage:** history is saved outside the checkout in the OS user-data folder, with
   separate live and demo directories. The board shows the active location under **Local data
   and backups**. Stop the server before copying or moving that folder.
@@ -170,8 +144,15 @@ for request examples and response fields.
 | `roundtable setup --client all` | Connect MCP tools and the skill across projects for Codex, Claude and AGY. |
 | `roundtable server status` | Inspect the background board; `stop` and `restart` refuse active reviews. |
 | `roundtable mcp` | Serve the agent workflow over MCP stdio. |
+| `roundtable --version` | Print the installed version. `roundtable --help` lists every command. |
 | `npm run export -- <debate> <folder>` | Export a decision record and update its index. |
 | `npm test` | Run offline unit and integration tests, without vendor CLIs or model calls. |
+
+Interactive `roundtable --help`, `roundtable` and `roundtable fake` show the app's pixel logo
+tile in orchid, with the wordmark, a blinking cursor and the installed version beside it, then
+the provider CLIs found on this machine in their seat colors. Narrow terminals and terminals
+without UTF-8 use a short title; `NO_COLOR=1` disables color. Redirected output, CI, dumb
+terminals, MCP and JSON commands omit the decoration.
 
 ## Documentation
 

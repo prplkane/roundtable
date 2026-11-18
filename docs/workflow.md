@@ -482,7 +482,8 @@ custom text.
   profile, and whatever the vendor applies to every request from your account.
 - Codex ignores your user configuration, so a default model or effort in that file does not
   control the seat. Choose both explicitly to reproduce a review. CLI resolution follows PATH
-  order across native binaries and npm installations, including on Windows.
+  order across native binaries and npm installations, including Windows environments
+  that spell the variable `Path` rather than `PATH`.
 - Codex seats use a short decision-review base prompt instead of general coding instructions.
   Parent Codex app routing/session variables are removed before starting CLIs or reading quota.
   Login profiles and inherited network restrictions are preserved. This also applies when a
@@ -541,8 +542,14 @@ custom text.
 
 ### Read the quota picture
 
-The **Quota picture** under the seats starts folded; its title lists each account's projected
-tokens. Open it for one card per vendor account: what each seat is likely to draw in this
+**Review estimate and account quota** lists the projected tokens for each provider.
+The board estimates tokens and costs locally, even when a seat is signed out. A signed-out
+account shows that its current quota is unavailable. If the CLI gives an unreadable login
+answer, the board marks sign-in as unconfirmed. When several roles share a sign-in problem,
+**Open the table** lists them together. Sign in using the command shown, then select
+**Refresh status** to recheck the account before opening the review.
+
+Open the panel to see what each seat is likely to draw in this
 debate as one bar segment per seat (seats of one vendor in steps of its colour, the chairman
 hatched), the vendor's live windows where it reports them, and an optional cap. Antigravity's
 windows are named by group ("Gemini 5h", "Claude and GPT 7d"), and its card shows the groups its
@@ -847,7 +854,7 @@ The project uses the profile name; it does not install or copy the vendor bridge
 Install the qualified public beta once:
 
 ```sh
-npm install -g @prplkane/agentlink@0.3.0-beta.1
+npm install -g @prplkane/agentlink@0.3.0-beta.2
 ```
 
 With AgentLink installed globally, Roundtable launches `agentlink acp PROFILE`.
@@ -899,17 +906,21 @@ The initial integration deliberately has these limits:
   accept it with `allowLimitedIsolation`. Check the selected vendor's applicable
   terms separately. The direct adapters' vendor-specific restrictions do not apply
   to an arbitrary ACP profile. Profile environment settings can select API billing.
-- **Agent defaults remain defaults.** Leave Model empty, or supply a model ID
-  advertised in the session's standard model configuration options. Unadvertised
-  model overrides fail before a prompt. Reasoning preferences stay with the profile;
-  Roundtable does not guess effort flags or a safe mode from their names.
+- **Agent defaults remain defaults.** Leave Model and Effort empty, or supply values
+  the agent advertises in the session's standard configuration options: the model
+  option for Model, the reasoning-level option (ACP category `thought_level`) for
+  Effort. Roundtable sets them through `session/set_config_option` before the prompt
+  and fails before prompting when the agent did not advertise the value. It does not
+  guess effort flags or a safe mode from their names; the JSON API accepts any
+  identifier as an ACP effort and the agent decides.
 - **Usage is optional.** Roundtable reads the existing experimental
   [end-turn usage field](https://docs.rs/agent-client-protocol/latest/agent_client_protocol/schema/v1/struct.PromptResponse.html#structfield.usage)
   only when its counters and total agree. Missing/invalid usage remains unknown,
   and the existing seat cap blocks that seat's next call, including a repair or
   critique. The chairman may still summarize usable replies. ACP context occupancy
   is not spending. No live subscription quota is inferred; dollar caps are refused.
-  An explicit `acp` token budget covers all ACP profiles in the review.
+  An explicit `acp` token budget covers all ACP profiles in the review; `acp@PROFILE`
+  caps that one profile, and both may be set together.
 - **Login stays with the agent.** Sign in through the vendor's own flow. Authentication
   errors identify that step; Roundtable does not open a login terminal automatically.
   The readiness lamp checks the launcher only. Use `agentlink check PROFILE` to
@@ -923,7 +934,9 @@ checkouts, run `node scripts/test-roundtable.mjs /absolute/path/to/roundtable`
 **from AgentLink** for the real gateway integration. It starts an isolated local
 Roundtable server with vendor discovery disabled, creates temporary managed fake
 bridges, completes a two-round review and chairman verdict, updates the bridge,
-and tests cancellation and missing usage. It never uses a real vendor account.
+and tests cancellation and missing usage. It also installs AgentLink into a temporary
+npm prefix offline and checks that a seat finds the installed launcher through the
+executable search path. All checks use scripted agents.
 
 ## 8. Run a debate without the browser
 

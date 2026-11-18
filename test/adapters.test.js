@@ -75,8 +75,13 @@ test('binary resolution respects PATH order across Windows npm scripts and nativ
   const exists = (p) => [script, exe, 'C:\\npm\\codex.cmd'].includes(p);
   assert.deepEqual(resolveBinary('codex', npmBin, { platform: 'win32', env: { PATH: 'C:\\npm;C:\\desktop' }, exists }), { file: process.execPath, prefix: [script] });
   assert.deepEqual(resolveBinary('codex', npmBin, { platform: 'win32', env: { PATH: 'C:\\desktop;C:\\npm' }, exists }), { file: exe, prefix: [] });
+  assert.deepEqual(resolveBinary('codex', npmBin, { platform: 'win32', env: { Path: 'C:\\npm;C:\\desktop' }, exists }), { file: process.execPath, prefix: [script] });
+  assert.deepEqual(resolveBinary('codex', npmBin, { platform: 'win32', env: { pAtH: 'C:\\desktop;C:\\npm' }, exists }), { file: exe, prefix: [] });
+  assert.deepEqual(resolveBinary('codex', npmBin, { platform: 'win32', env: { Path: 'C:\\desktop', PATH: 'C:\\npm' }, exists }), { file: process.execPath, prefix: [script] });
+  assert.throws(() => resolveBinary('codex', npmBin, { platform: 'win32', env: { Path: 'C:\\npm', PATH: '' }, exists }), /not found on PATH/);
   assert.deepEqual(resolveBinary('codex', npmBin, { platform: 'win32', env: { PATH: 'C:\\npm;C:\\desktop' }, exists: (p) => [script, exe].includes(p) }), { file: exe, prefix: [] }, 'a package without a PATH shim cannot shadow an executable');
   assert.deepEqual(resolveBinary('codex', npmBin, { platform: 'linux', env: { PATH: '/bin:/later' }, exists: (p) => p === '/bin/codex' }), { file: '/bin/codex', prefix: [] });
+  assert.throws(() => resolveBinary('codex', npmBin, { platform: 'linux', env: { Path: '/bin' }, exists: (p) => p === '/bin/codex' }), /not found on PATH/);
   assert.throws(() => resolveBinary('codex', npmBin, { env: { PATH: '' } }), /not found on PATH/);
 });
 
