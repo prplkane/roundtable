@@ -62,16 +62,32 @@ export function createPreflightCache({ check, now = Date.now, ttlMs = PREFLIGHT_
 // The CLI's own login-status command, and how to read its answer. Antigravity has none; its
 // model list (read at boot, and only answered for a logged-in user) stands in for it.
 // plan(out): the subscription the status names, where it names one (claude: subscriptionType).
+function textLoginStatus(out) {
+  const yes = /^logged in(?: using [^\r\n]+)?[.!]?$/im.test(out.trim());
+  const no = /^(?:not logged in|logged out|signed out)[.!]?$/im.test(out.trim());
+  return yes === no ? null : yes;
+}
+
+function claudeStatus(out) {
+  try { return JSON.parse(out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1)); } catch { return null; }
+}
+
 export const STATUS = {
   claude: {
     args: ['auth', 'status'],
-    read: (out) => { try { return JSON.parse(out.slice(out.indexOf('{'))).loggedIn === true; } catch { return /logged ?in/i.test(out) && !/not logged/i.test(out); } },
-    plan: (out) => { try { return JSON.parse(out.slice(out.indexOf('{'))).subscriptionType || null; } catch { return null; } },
+    read: (out, err = '') => {
+      if (out.includes('{')) {
+        const value = claudeStatus(out)?.loggedIn;
+        return typeof value === 'boolean' ? value : null;
+      }
+      return textLoginStatus(out + '\n' + err);
+    },
+    plan: (out) => claudeStatus(out)?.subscriptionType || null,
   },
-  codex: { args: ['login', 'status'], read: (out) => /logged in/i.test(out) && !/not logged in/i.test(out) },
+  codex: { args: ['login', 'status'], read: (out, err = '') => textLoginStatus(out + '\n' + err) },
 };
 
-const LOGIN = { claude: 'claude /login', codex: 'codex login', agy: 'agy (sign in once in a terminal)' };
+const LOGIN = { claude: 'Run claude auth login in a terminal', codex: 'Run codex login in a terminal', agy: 'Open agy in a terminal and sign in' };
 
 function untilText(ms, now) {
   const s = Math.max(0, Math.round((ms - now) / 1000));
@@ -84,7 +100,10 @@ function untilText(ms, now) {
 // limits differ by model (agy): only its group's windows count. Without one, every window does.
 export function lamp({ vendor, installed, loggedIn, quota, account = null, model = null }, now = Date.now()) {
   if (!installed) return { state: 'danger', kind: 'missing', note: `${vendor} CLI not found on this machine` };
-  if (loggedIn === false) return { state: 'danger', kind: 'auth', note: `not logged in${account ? ` (profile ${account})` : ''}: run ${LOGIN[vendor] || 'its login'}` };
+  if (loggedIn === false) {
+    const action = account ? `Follow the profile sign-in instructions from roundtable doctor --vendor ${vendor} --profile ${account}` : LOGIN[vendor] || 'Sign in';
+    return { state: 'danger', kind: 'auth', note: `Signed out at the last check. ${action}, then select Refresh status.` };
+  }
   const windows = quotaWindows(quota, model ? [model] : []);
   if (windows.length) {
     const worst = windows.reduce((a, w) => (w.used > a.used ? w : a));
@@ -92,9 +111,10 @@ export function lamp({ vendor, installed, loggedIn, quota, account = null, model
     const reset = worst.resetsAt ? `, resets ${untilText(worst.resetsAt * 1000, now)}` : '';
     if (worst.used >= 1) return { state: 'danger', kind: 'quota', note: `quota used up (${worst.label}${reset})`, resetsAt: worst.resetsAt ? worst.resetsAt * 1000 : null };
     if (worst.used >= 0.9) return { state: 'warn', kind: 'quota-low', note: `quota nearly used: ${text}${reset}` };
+    if (loggedIn == null) return { state: 'warn', kind: 'unknown', note: `Sign-in unconfirmed · last reported usage: ${text}` };
     return { state: 'ok', kind: null, note: `ready · ${text}` };
   }
-  if (loggedIn === null) return { state: 'warn', kind: 'unknown', note: 'login not checked: this CLI has no status command' };
+  if (loggedIn == null) return { state: 'warn', kind: 'unknown', note: 'Sign-in could not be confirmed. Select Refresh status to check again.' };
   return { state: 'ok', kind: null, note: 'logged in · quota unavailable' };
 }
 

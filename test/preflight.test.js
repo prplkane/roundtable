@@ -97,7 +97,8 @@ test('lamp: missing and logged out are red; a used-up window is red with its res
   assert.equal(lamp({ vendor: 'codex', installed: false }, NOW).kind, 'missing');
   const out = lamp({ vendor: 'claude', installed: true, loggedIn: false, account: 'work' }, NOW);
   assert.deepEqual([out.state, out.kind], ['danger', 'auth']);
-  assert.match(out.note, /profile work.*claude \/login/);
+  assert.match(out.note, /roundtable doctor --vendor claude --profile work/);
+  assert.match(lamp({ vendor: 'claude', installed: true, loggedIn: false }, NOW).note, /claude auth login/);
   const spent = lamp({ vendor: 'codex', installed: true, loggedIn: true, quota: { windows: [win('5h', 0.12), win('7d', 1, 5 * 86400)] } }, NOW);
   assert.deepEqual([spent.state, spent.kind], ['danger', 'quota']);
   assert.match(spent.note, /quota used up \(7d, resets in 5d 0h\)/);
@@ -119,6 +120,21 @@ test('checkPool reads no quota for a logged-out CLI, and the status readers unde
   assert.equal(STATUS.claude.read('{ "loggedIn": false }'), false);
   assert.equal(STATUS.codex.read('Logged in using ChatGPT'), true);
   assert.equal(STATUS.codex.read('Not logged in'), false);
+});
+
+test('unreadable login status stays unknown even when a quota reading exists', () => {
+  for (const status of [STATUS.claude, STATUS.codex]) {
+    for (const out of ['', 'error reading configuration', '{}', '{"loggedIn": "false"}', 'please check whether you are logged in']) {
+      assert.equal(status.read(out), null);
+    }
+  }
+  assert.equal(STATUS.claude.read('{"loggedIn":false}', 'warning from the CLI'), false);
+  assert.equal(STATUS.claude.read('{"loggedIn":true}', 'warning from the CLI'), true);
+  assert.equal(STATUS.codex.read('', 'Logged in using ChatGPT'), true);
+  assert.equal(STATUS.codex.read('', 'Not logged in'), false);
+  const status = lamp({ vendor: 'claude', installed: true, loggedIn: null, quota: { windows: [win('5h', 0.12)] } }, NOW);
+  assert.equal(status.state, 'warn');
+  assert.match(status.note, /Sign-in unconfirmed/);
 });
 
 test('the pre-flight carries the plan the CLI names: claude from its status, codex from its quota read', async () => {

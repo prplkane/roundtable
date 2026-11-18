@@ -542,8 +542,14 @@ custom text.
 
 ### Read the quota picture
 
-The **Quota picture** under the seats starts folded; its title lists each account's projected
-tokens. Open it for one card per vendor account: what each seat is likely to draw in this
+**Review estimate and account quota** lists the projected tokens for each provider.
+The board estimates tokens and costs locally, even when a seat is signed out. A signed-out
+account shows that its current quota is unavailable. If the CLI gives an unreadable login
+answer, the board marks sign-in as unconfirmed. When several roles share a sign-in problem,
+**Open the table** lists them together. Sign in using the command shown, then select
+**Refresh status** to recheck the account before opening the review.
+
+Open the panel to see what each seat is likely to draw in this
 debate as one bar segment per seat (seats of one vendor in steps of its colour, the chairman
 hatched), the vendor's live windows where it reports them, and an optional cap. Antigravity's
 windows are named by group ("Gemini 5h", "Claude and GPT 7d"), and its card shows the groups its

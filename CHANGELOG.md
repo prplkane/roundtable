@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Distinguish estimated review usage from provider quota on the setup board. Group
+  sign-in warnings for roles sharing an account and offer a status refresh beside
+  the warning. Inconclusive CLI status output leaves sign-in unconfirmed.
+
 - Resolve Windows CLI paths regardless of the environment key's casing, including
   `Path` after ACP environment filtering. Duplicate keys follow Node's ordering;
   POSIX lookup remains case-sensitive.
