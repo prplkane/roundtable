@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Resolve Windows CLI paths regardless of the environment key's casing, including
+  `Path` after ACP environment filtering. Duplicate keys follow Node's ordering;
+  POSIX lookup remains case-sensitive.
+
 ## 0.6.7
 
 - Take an ACP seat's effort from the agent: the reasoning level the agent advertises in its

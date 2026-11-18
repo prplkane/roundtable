@@ -482,7 +482,8 @@ custom text.
   profile, and whatever the vendor applies to every request from your account.
 - Codex ignores your user configuration, so a default model or effort in that file does not
   control the seat. Choose both explicitly to reproduce a review. CLI resolution follows PATH
-  order across native binaries and npm installations, including on Windows.
+  order across native binaries and npm installations, including Windows environments
+  that spell the variable `Path` rather than `PATH`.
 - Codex seats use a short decision-review base prompt instead of general coding instructions.
   Parent Codex app routing/session variables are removed before starting CLIs or reading quota.
   Login profiles and inherited network restrictions are preserved. This also applies when a
@@ -847,7 +848,7 @@ The project uses the profile name; it does not install or copy the vendor bridge
 Install the qualified public beta once:
 
 ```sh
-npm install -g @prplkane/agentlink@0.3.0-beta.1
+npm install -g @prplkane/agentlink@0.3.0-beta.2
 ```
 
 With AgentLink installed globally, Roundtable launches `agentlink acp PROFILE`.
@@ -927,7 +928,9 @@ checkouts, run `node scripts/test-roundtable.mjs /absolute/path/to/roundtable`
 **from AgentLink** for the real gateway integration. It starts an isolated local
 Roundtable server with vendor discovery disabled, creates temporary managed fake
 bridges, completes a two-round review and chairman verdict, updates the bridge,
-and tests cancellation and missing usage. It never uses a real vendor account.
+and tests cancellation and missing usage. It also installs AgentLink into a temporary
+npm prefix offline and checks that a seat finds the installed launcher through the
+executable search path. All checks use scripted agents.
 
 ## 8. Run a debate without the browser
 

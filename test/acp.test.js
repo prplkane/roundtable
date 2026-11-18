@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makeAcpAdapter, promptUsage, agentLinkBinary } from '../src/adapters/acp.js';
-import { liveChildren, killAll } from '../src/adapters/spawn.js';
+import { liveChildren, killAll, cleanEnv } from '../src/adapters/spawn.js';
 import { normaliseSeats, normaliseChairman, seatKind } from '../src/seats.js';
 import { ADAPTERS } from '../src/adapters/config.js';
 import { validateDebateRequest } from '../src/validate.js';
@@ -21,8 +21,10 @@ test('AgentLink resolves and launches the public scoped npm package from PATH', 
   mkdirSync(path.dirname(script), { recursive: true });
   writeFileSync(script, "console.log('synthetic-public-agentlink');\n");
   writeFileSync(path.join(root, 'agentlink.cmd'), '@echo off\n');
-  const bin = agentLinkBinary({ PATH: root });
-  assert.equal(execFileSync(bin.file, bin.prefix, { encoding: 'utf8', windowsHide: true }).trim(), 'synthetic-public-agentlink');
+  for (const key of process.platform === 'win32' ? ['PATH', 'Path', 'pAtH'] : ['PATH']) {
+    const bin = agentLinkBinary(cleanEnv(null, { source: { [key]: root } }));
+    assert.equal(execFileSync(bin.file, bin.prefix, { encoding: 'utf8', windowsHide: true }).trim(), 'synthetic-public-agentlink');
+  }
 });
 
 function setup(t, mode = 'review') {

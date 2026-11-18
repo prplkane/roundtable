@@ -11,7 +11,9 @@ const WIN = process.platform === 'win32';
 // without one, and a shell would mangle quoted prompt text).
 export function resolveBinary(name, npmBin, { platform = process.platform, env = process.env, exists = existsSync } = {}) {
   const P = platform === 'win32' ? path.win32 : path.posix;
-  const dirs = (env.PATH || '').split(P.delimiter).filter(Boolean);
+  // Match Node's Windows environment handling, including duplicate-key ordering.
+  const pathKey = platform === 'win32' ? Object.keys(env).sort().find(key => key.toUpperCase() === 'PATH') || 'PATH' : 'PATH';
+  const dirs = (env[pathKey] || '').split(P.delimiter).filter(Boolean);
   const exts = platform === 'win32' ? ['.exe'] : [''];
   for (const dir of dirs) {
     for (const ext of exts) {
