@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { makeAcpAdapter, promptUsage, agentLinkBinary } from '../src/adapters/acp.js';
+import { makeAcpAdapter, promptUsage, agentLinkBinary, discoverProfile } from '../src/adapters/acp.js';
 import { liveChildren, killAll, cleanEnv } from '../src/adapters/spawn.js';
 import { normaliseSeats, normaliseChairman, seatKind } from '../src/seats.js';
 import { ADAPTERS } from '../src/adapters/config.js';
@@ -31,8 +31,8 @@ function setup(t, mode = 'review') {
   const root = mkdtempSync(path.join(os.tmpdir(), 'roundtable-acp-'));
   const log = path.join(root, 'wire.jsonl');
   t.after(() => { assert.equal(path.dirname(root), path.resolve(os.tmpdir())); rmSync(root, { recursive: true, force: true }); });
-  const run = makeAcpAdapter({ bin: { file: process.execPath, prefix: [fixture] }, env: { ...process.env, ACP_FIXTURE_MODE: mode, ACP_FIXTURE_LOG: log } });
-  return { root, run, opts: { cwd: root, account: 'synthetic', allowLimitedIsolation: true, timeoutMs: 10000 },
+  const launch = { bin: { file: process.execPath, prefix: [fixture] }, env: { ...process.env, ACP_FIXTURE_MODE: mode, ACP_FIXTURE_LOG: log } };
+  return { root, launch, run: makeAcpAdapter(launch), opts: { cwd: root, account: 'synthetic', allowLimitedIsolation: true, timeoutMs: 10000 },
     events: () => readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse) };
 }
 
@@ -204,4 +204,19 @@ test('an unavailable ACP chairman can fall back to another configured profile', 
     }, gate: async () => ({ action: 'continue' }), emit() {}, options: { critiqueRounds: 0, allowLimitedIsolation: true },
   }).run();
   assert.equal(state.verdict.failed, false); assert.equal(state.verdict.seat.account, 'working');
+});
+
+test('profile discovery reads the selected model’s current reasoning levels without a prompt', async (t) => {
+  const c = setup(t, 'model-dependent');
+  const cat = await discoverProfile('synthetic', 'fake-choice', c.launch);
+  assert.deepEqual(cat.models.map((m) => m.id), ['fake-default', 'fake-choice']);
+  assert.deepEqual(cat.efforts, ['deep']);
+  assert.equal(cat.effortModel, 'fake-choice');
+  const stale = await discoverProfile('synthetic', 'removed', c.launch);
+  assert.equal(stale.effortModel, '');
+  assert.deepEqual(stale.efforts, ['low', 'medium', 'max']);
+  assert.ok(!c.events().some((e) => e.rpc?.method === 'session/prompt'));
+  const opts = { ...c.opts, model: 'fake-choice' };
+  await assert.rejects(c.run('q', null, { ...opts, effort: 'medium' }), { code: 'ACP_UNSUPPORTED' });
+  assert.match((await c.run('q', null, { ...opts, effort: 'deep' })).text, /^STANCE/);
 });

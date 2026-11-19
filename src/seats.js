@@ -13,7 +13,7 @@ export const DEFAULT_MOOD = 'grill';
 // A custom mood matching a persona code uses its prompt, avatar and light model settings.
 // The server opts board requests into these shortcuts; ordinary API requests keep custom text.
 import { HIDDEN_MOODS } from './personas.js';
-import { modelEfforts } from './adapters/models.js';
+import { modelEfforts, MODELS, effortSuffix } from './adapters/models.js';
 export { HIDDEN_MOODS } from './personas.js';
 export function hiddenMood(text) {
   const word = String(text || '').trim().toLowerCase();
@@ -41,14 +41,15 @@ export function filterReply(mood, text) {
 // The cheapest model each CLI offers (adapters/models.js marks claude's and codex's lightest).
 // agy: Flash-low over gpt-oss-120b-medium, measured on a hidden-mood prompt: the same input,
 // but gpt-oss wrote 1.7k-4k output tokens to Flash-low's ~190, and took two to four times longer.
-export const LIGHTEST = { claude: 'claude-haiku-4-5', codex: 'gpt-6-luna', agy: 'gemini-3.8-flash-low' };
+export const LIGHTEST = { claude: MODELS.claude.find((m) => m.note === 'lightest').id, codex: MODELS.codex.find((m) => m.note === 'lightest').id, agy: 'gemini-3.8-flash-low' };
 // agy's list depends on the account (`agy models`): a Flash-Lite model, where offered, is lighter
 // than Flash, and a family's "-low" level is its lightest. LIGHTEST.agy when the list has neither.
 export function lightestModel(vendor, models = []) {
+  if (vendor === 'codex' && models.length) return models.find((m) => m.note === 'lightest')?.id;
   if (vendor !== 'agy') return LIGHTEST[vendor];
   const rank = (id) => (/flash-lite/.test(id) ? 0 : 3) + (/-low$/.test(id) ? 0 : /-medium$/.test(id) ? 1 : 2);
   const ids = models.map((m) => m?.id || m).filter((id) => /^gemini-.*flash/.test(String(id)));
-  return ids.sort((a, b) => rank(a) - rank(b))[0] || LIGHTEST.agy;
+  return ids.sort((a, b) => rank(a) - rank(b))[0] || (models.length ? undefined : LIGHTEST.agy);
 }
 
 const STARTER_LENSES = ['risk and failure modes', 'cost and effort', 'evidence and assumptions',
@@ -247,6 +248,17 @@ function checkEffort(raw, vendor, allowed, label) {
   return effort;
 }
 
+function validateAgyModel(vendor, model, models, label) {
+  if (vendor !== 'agy' || !model) return;
+  const id = String(model).trim();
+  const offered = models.agy || [];
+  if (offered.some((m) => (m.id || m) === id)) return;
+  const level = effortSuffix.exec(id);
+  if (offered.length || (level && effortSuffix.test(id.slice(0, level.index)))) {
+    throw new Error(`${label}: Antigravity model "${id}" is unavailable. Choose a model and one effort level from the picker.`);
+  }
+}
+
 export function normaliseSeats(input, { vendors, efforts = {}, models = {}, hidden = false }) {
   const issue = seatSetupIssue((input || []).map((raw) => raw && vendors[raw.vendor] ? raw : null));
   if (issue) throw Object.assign(new Error(issue.message), issue, { status: 400 });
@@ -255,14 +267,15 @@ export function normaliseSeats(input, { vendors, efforts = {}, models = {}, hidd
   for (const raw of input || []) {
     if (!raw || !vendors[raw.vendor]) continue;
     const lens = String(raw.lens || '').trim();
-    const allowed = modelEfforts(raw.vendor, raw.model, efforts[raw.vendor] || vendors[raw.vendor].effortLevels || []);
+    validateAgyModel(raw.vendor, raw.model, models, `Seat "${lens}"`);
+    const allowed = modelEfforts(raw.vendor, raw.model, efforts[raw.vendor] || vendors[raw.vendor].effortLevels || [], models[raw.vendor]);
     const effort = checkEffort(raw, vendors[raw.vendor], allowed, `${vendors[raw.vendor].label}${raw.model ? ` ${String(raw.model).trim()}` : ''}`);
     perVendor[raw.vendor] = (perVendor[raw.vendor] || 0) + 1;
     // an endpoint seat: URL, model and key variable checked; its account is its host
     const ep = vendors[raw.vendor].kind === 'api' ? normaliseEndpoint(raw, `Seat "${lens}"`) : null;
     const mood = normaliseMood(raw.mood, { hidden });
     // a hidden mood always runs as cheaply as the seat's vendor allows
-    const locked = mood.hidden ? { model: ep ? ep.model : lightestModel(raw.vendor, models[raw.vendor]) || (raw.model ? String(raw.model).trim() : undefined), effort: allowed[0] || undefined } : null;
+    const locked = mood.hidden ? { model: ep ? ep.model : vendors[raw.vendor].kind === 'acp' ? raw.model || undefined : lightestModel(raw.vendor, models[raw.vendor]), effort: allowed[0] || undefined } : null;
     seats.push({
       id: `seat-${seats.length}`,
       vendor: raw.vendor,
@@ -288,10 +301,11 @@ export function normaliseSeats(input, { vendors, efforts = {}, models = {}, hidd
 }
 
 // role: who the error names; the searcher's settings are checked here too
-export function normaliseChairman(raw, { vendors, efforts = {}, role = 'Chairman' }) {
+export function normaliseChairman(raw, { vendors, efforts = {}, models = {}, role = 'Chairman' }) {
   const vendor = raw?.vendor && vendors[raw.vendor] ? raw.vendor : null;
   if (!vendor) return null;
-  const allowed = modelEfforts(vendor, raw.model, efforts[vendor] || vendors[vendor].effortLevels || []);
+  validateAgyModel(vendor, raw.model, models, role);
+  const allowed = modelEfforts(vendor, raw.model, efforts[vendor] || vendors[vendor].effortLevels || [], models[vendor]);
   const effort = checkEffort(raw, vendors[vendor], allowed, `${role}: ${vendors[vendor].label}${raw.model ? ` ${String(raw.model).trim()}` : ''}`);
   const ep = vendors[vendor].kind === 'api' ? normaliseEndpoint(raw, role) : null;
   return { vendor, colour: vendors[vendor].colour || undefined, model: ep ? ep.model : raw.model ? String(raw.model).trim() : undefined, effort: effort || undefined,

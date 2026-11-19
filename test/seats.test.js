@@ -231,6 +231,21 @@ test('a hidden mood on agy runs the lightest Gemini the account lists', async ()
   const here = ['gemini-4-argon-low', 'gemini-3.8-flash-high', 'gemini-3.8-flash-low', 'claude-opus-5-5-low', 'gpt-oss-120b-medium'];
   assert.equal(lightestModel('agy', here.map((id) => ({ id }))), 'gemini-3.8-flash-low');
   assert.equal(lightestModel('agy', [...here, 'gemini-3.8-flash-lite-medium', 'gemini-3.8-flash-lite-low']), 'gemini-3.8-flash-lite-low', 'Flash Lite where offered');
+  assert.equal(lightestModel('agy', [{ id: 'new-neon' }]), undefined, 'an old Flash fallback may have disappeared');
+  assert.equal(lightestModel('codex', [{ id: 'new-sol' }]), undefined, 'a removed Luna is not selected automatically');
   assert.equal(lightestModel('agy', []), LIGHTEST.agy, 'no list yet: the measured default');
   assert.equal(lightestModel('claude', here), LIGHTEST.claude);
+});
+
+test('Antigravity preview normalization checks variant IDs for each role and handles an unavailable catalogue', () => {
+  const ctx = { vendors: V, models: { agy: [{ id: 'gemini-4-neon-xhigh' }] }, efforts: { agy: ['xhigh'] } };
+  const seat = { vendor: 'agy', model: 'gemini-4-neon-xhigh', lens: 'risk', effort: 'xhigh' };
+  const invalid = { ...seat, model: 'gemini-4-neon-xhigh-medium' };
+  const other = { vendor: 'codex', lens: 'cost' };
+  assert.equal(normaliseSeats([seat, other], ctx)[0].model, seat.model);
+  assert.throws(() => normaliseSeats([invalid, other], ctx), /Antigravity model.*unavailable/);
+  for (const role of ['Chairman', 'Searcher']) assert.throws(() => normaliseChairman(invalid, { ...ctx, role }), /unavailable/);
+  assert.throws(() => normaliseChairman(invalid, { ...ctx, models: {} }), /unavailable/);
+  assert.throws(() => normaliseChairman({ ...seat, model: 'unlisted' }, ctx), /unavailable/);
+  assert.equal(normaliseChairman({ ...seat, model: 'new-id' }, { ...ctx, models: {} }).model, 'new-id');
 });

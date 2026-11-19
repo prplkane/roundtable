@@ -30,6 +30,7 @@ const review = { type: 'object', required: ['fieldNotes', 'seats'], additionalPr
 const descriptors = [
   ['guide', 'Read the Roundtable workflow, request recipe and question/completion rules. No model calls.', object(), true],
   ['status', 'Check provider setup, or read a review by id. Starts the local board if needed. refresh checks free provider status; no model call.', object({ id, refresh: { type: 'boolean' } }), true],
+  ['models', 'Read model choices and reasoning levels from a trusted AgentLink profile. Opens a new session without sending a prompt. Requires acceptance of profile-owned permissions.', object({ account: text(64), model: text(LIMITS.seatField), allowLimitedIsolation: { type: 'boolean' } }, ['account', 'allowLimitedIsolation']), false],
   ['check', 'Validate a proposed review and estimate its calls/tokens before starting. Makes no model call.', object({ review }, ['review']), true],
   ['start', 'Start the requested Roundtable review after check. Makes model calls within its limits. Returns an id, NOT a recommendation; keep calling wait through the chairman.', object({ review }, ['review']), false],
   ['wait', 'Wait up to 25 seconds for questions or completion. A wait timeout is progress, not completion. After showing questions, pass afterRound to await the next step without repeating them.', object({ id, seconds: integer(LIMITS.waitSeconds), afterRound: round }, ['id']), true],
@@ -103,6 +104,7 @@ async function serve(config) {
     const flags = { port: config.port, id: input.id, refresh: input.refresh, seconds: input.seconds, 'after-round': input.afterRound };
     let body;
     if (['start', 'check'].includes(command)) body = input.review;
+    else if (command === 'models') body = input;
     else if (['answer', 'hold', 'finish', 'stop', 'resume', 'verdict'].includes(command)) { body = { ...input }; delete body.id; }
     const result = { service: 'roundtable', transport: 'mcp', ok: true, ...await runAgent(command, flags, body, signal) };
     if (result.id) {

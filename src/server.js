@@ -7,7 +7,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { adapters, ADAPTERS, quotaReaders, poolsByAccount } from './adapters/index.js';
-import { agentLinkBinary } from './adapters/acp.js';
+import { agentLinkBinary, discoverProfile } from './adapters/acp.js';
 import { profileHome, killAll, liveChildren, resolveBinary, runProcess, cleanEnv } from './adapters/spawn.js';
 import { checkPool, STATUS, endpointLamp, createPreflightCache } from './preflight.js';
 import { retired, quotaGroup } from './adapters/models.js';
@@ -78,10 +78,12 @@ const termsHeld = (vendor, acknowledged = false) => !acknowledged && !termsRecor
 // the background at boot, or once Antigravity's terms notice is acknowledged; the setup screen
 // gets the static hints until it lands.
 let catalogue = null;
-const staticCatalogue = await vendorCatalogue({ agyModels: async () => [] });
-const readCatalogue = () => (FAKE || termsHeld('agy') ? vendorCatalogue({ agyModels: async () => [] }) : vendorCatalogue())
-  .then((c) => { catalogue = c; return c; })
-  .catch((e) => { diagnostics.write({ code: 'status-failed', action: 'catalogue' }, e); console.error('[catalogue]', e.message); return vendorCatalogue({ agyModels: async () => [] }).then((c) => (catalogue = c)); });
+const emptyModels = async () => [];
+const staticCatalogue = await vendorCatalogue({ agyModels: emptyModels, codexModels: emptyModels });
+const readCatalogue = async () => {
+  catalogue = FAKE ? staticCatalogue : await vendorCatalogue(termsHeld('agy') ? { agyModels: emptyModels } : {});
+  return catalogue;
+};
 let catalogueReady = readCatalogue();
 const effortsByVendor = () => Object.fromEntries(Object.entries(catalogue || staticCatalogue).map(([v, c]) => [v, c.efforts]));
 const modelsByVendor = () => Object.fromEntries(Object.entries(catalogue || staticCatalogue).map(([v, c]) => [v, c.models || []]));
@@ -394,7 +396,7 @@ function synthesizeDebate(d, body = {}) {
   let chairman = rb.chairman;
   if (body.chairman) {
     for (const k of ['vendor', 'model', 'effort', 'account', 'keyEnv', 'endpoint']) if (body.chairman[k] != null && (typeof body.chairman[k] !== 'string' || body.chairman[k].length > (k === 'endpoint' ? 500 : 200))) throw new Error(`chairman ${k}: text of at most ${k === 'endpoint' ? 500 : 200} characters`);
-    chairman = normaliseChairman(body.chairman, { vendors: ADAPTERS, efforts: effortsByVendor() });
+    chairman = normaliseChairman(body.chairman, { vendors: ADAPTERS, efforts: effortsByVendor(), models: modelsByVendor() });
     if (!chairman) throw new Error('chairman vendor: one of ' + Object.keys(ADAPTERS).join(', '));
   }
   prepareTranscript(d);
@@ -486,7 +488,7 @@ function prepareDebate(raw, { board = false } = {}) {
     const r = s?.model && retired(s.vendor, String(s.model).trim());
     if (r) throw new Error(`${ADAPTERS[s.vendor].label} retired ${s.model} (${r.date}); use ${r.instead}.`);
   }
-  const chairman = normaliseChairman(body.chairman, { vendors: ADAPTERS, efforts: effortsByVendor() });
+  const chairman = normaliseChairman(body.chairman, { vendors: ADAPTERS, efforts: effortsByVendor(), models: modelsByVendor() });
   // the board sends acknowledgeTermsRisk once the person has acknowledged on a card; an agent must send it
   const unacknowledged = FAKE ? null : termsRefusal([...seats, chairman, body.options.research], body.options, ADAPTERS);
   if (unacknowledged) throw unacknowledged;
@@ -506,7 +508,7 @@ function prepareDebate(raw, { board = false } = {}) {
 function searcherSettings(research, named) {
   const v = research.vendor;
   const efforts = effortsByVendor()[v] || ADAPTERS[v].effortLevels || [];
-  const s = normaliseChairman({ vendor: v, model: named ? research.model : lightestModel(v, modelsByVendor()[v]), effort: named ? research.effort : efforts.includes('low') ? 'low' : undefined, account: research.account }, { vendors: ADAPTERS, efforts: effortsByVendor(), role: 'Searcher' });
+  const s = normaliseChairman({ vendor: v, model: named ? research.model : lightestModel(v, modelsByVendor()[v]), effort: named ? research.effort : efforts.includes('low') ? 'low' : undefined, account: research.account }, { vendors: ADAPTERS, efforts: effortsByVendor(), models: modelsByVendor(), role: 'Searcher' });
   const gone = s.model && retired(v, s.model);
   if (gone) throw Object.assign(new Error(`Searcher: ${ADAPTERS[v].label} retired ${s.model} (${gone.date}); use ${gone.instead}.`), { status: 400 });
   const { model, effort, account, ...rest } = research;
@@ -788,8 +790,16 @@ const server = http.createServer(async (req, res) => {
       try { const chosen = await pickFolder(); return json(res, 200, chosen ? { path: chosen } : { cancelled: true }); }
       finally { pickingFolder = false; }
     }
+    if (req.method === 'POST' && p === '/api/profile-models') {
+      const body = await readBody(req);
+      if (FAKE) throw new Error('Profile discovery is available in live mode.');
+      if (body.allowLimitedIsolation !== true) throw new Error('Select a trusted AgentLink profile and accept limited isolation to read its models.');
+      return json(res, 200, await discoverProfile(body.account, body.model));
+    }
     if (req.method === 'POST' && p === '/api/preview') {
-      const plan = prepareDebate(await readBody(req), { board: fromBoard(req) });
+      const body = await readBody(req);
+      await catalogueReady;
+      const plan = prepareDebate(body, { board: fromBoard(req) });
       return json(res, 200, { valid: true, mode: FAKE ? 'demo' : 'live',
         plannedCalls: plan.seats.length * (plan.options.critiqueRounds + 1) + 1 + (plan.options.research ? 1 : 0),
         projection: project({ seats: plan.seats, chairman: plan.chairman || { vendor: plan.seats[0].vendor }, critiqueRounds: plan.options.critiqueRounds, memory: plan.options.memory, research: plan.options.research, baselines }),
@@ -808,6 +818,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && p === '/api/debates') {
       const body = await readBody(req);
+      await catalogueReady;
       return json(res, 200, { slug: startDebate(body, { board: fromBoard(req) }) });
     }
     const m = p.match(/^\/api\/debates\/([^/]+)\/(events|state|continue|finish|stop|hold|resume|export|synthesize|accept)$/);

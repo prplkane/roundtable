@@ -37,6 +37,9 @@ reader.on('line', (line) => {
     }
     return answer({ sessionId: sid, configOptions });
   }
+  if (mode === 'model-dependent' && message.method === 'session/set_config_option' && message.params.value === 'fake-choice') {
+    return answer({ configOptions: [{ ...option, currentValue: 'fake-choice' }, { ...level, currentValue: 'deep', options: [{ value: 'deep', name: 'Deep' }] }] });
+  }
   if (message.method === 'session/set_config_option') return answer({ configOptions: configOptions.map((o) => o.id === message.params.configId ? { ...o, currentValue: message.params.value } : o) });
   if (message.method === 'session/cancel') {
     if (pending != null) send({ id: pending, result: { stopReason: 'cancelled' } });

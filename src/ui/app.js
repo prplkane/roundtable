@@ -2,7 +2,7 @@ import { rollup, hasUsableRound, positions } from '/src/engine.js';
 import { optionLabel } from '/src/contract.js';
 import { poolKey, poolVendor, poolAccount, hostKey, seatKind, initialSeatVendors, nextSeatLens, fillMissingSeatLenses, seatSetupIssue, hiddenMood, lightestModel, keyEnvName, HIDDEN_MOODS } from '/src/seats.js';
 import { avatar } from '/ui/avatars.js';
-import { modelsByCapability, retired, quotaWindows, quotaGroup, modelEfforts } from '/src/adapters/models.js';
+import { agyFamily, agySelection, modelsByCapability, retired, quotaWindows, quotaGroup, modelEfforts } from '/src/adapters/models.js';
 import { project, projectedWindows, unknownUsageMessage } from '/src/estimate.js';
 import { PREFLIGHT_TTL_MS, lamp as preflightLamp } from '/src/preflight.js';
 import { createBrowserDiagnostics, requestAction } from '/ui/diagnostics.js';
@@ -249,6 +249,7 @@ async function setup() {
     for (const field of ['model', 'account', 'endpoint', 'keyEnv']) if (typeof ch[field] === 'string') $(`chairman-${field === 'keyEnv' ? 'keyenv' : field}`).value = ch[field];
   }
   chairEffortOptions();
+  if (ch?.effort && isAcp(ch.vendor)) $('chairman-effort').innerHTML = effortOptions(ch.vendor, ch.effort, ch.model, undefined, ch.account);
   if (ch?.effort && [...$('chairman-effort').options].some((o) => o.value === ch.effort)) $('chairman-effort').value = ch.effort;
   renderSeats();
 
@@ -256,6 +257,10 @@ async function setup() {
   $('seats').addEventListener('input', onSeatEdit);
   $('seats').addEventListener('change', onSeatEdit);
   $('seats').addEventListener('click', (ev) => {
+    if (ev.target.closest('.profile-models')) {
+      const seat = S.draft[Number(ev.target.closest('.seat').dataset.i)];
+      void loadProfileModels(seat.account, seat.model, true); return;
+    }
     const pip = ev.target.closest('.pip');
     if (pip) {
       S.initialDraft = null;
@@ -288,10 +293,14 @@ async function setup() {
     S.customChairModel = v === '__other';
     if (S.customChairModel) { $('chairman-model').value = ''; renderChair(); $('chairman-model').focus(); return; }
     const p = pickedModel($('chairman').value, v, $('chairman-effort').value);
-    $('chairman-model').value = p.model; if (p.effort !== undefined) $('chairman-effort').value = p.effort || '';
+    $('chairman-model').value = p.model; chairEffortOptions(); if (p.effort !== undefined) $('chairman-effort').value = p.effort || '';
+    if (isAcp($('chairman').value) && profileChoices.get(chairAccount())?.models) void loadProfileModels(chairAccount(), p.model);
     renderChair(); renderProjection();
   });
-  $('chairman-account').addEventListener('input', () => { renderChair(); requestPreflight(); });
+  $('chair-model-discovery').addEventListener('click', (ev) => {
+    if (ev.target.closest('.profile-models')) void loadProfileModels(chairAccount(), $('chairman-model').value.trim(), true);
+  });
+  $('chairman-account').addEventListener('input', () => { chairEffortOptions(); renderChair(); requestPreflight(); });
   $('chairman').addEventListener('change', () => requestPreflight());
   $('refresh-status').addEventListener('click', () => requestPreflight({ fresh: true }));
   $('start-refresh').addEventListener('click', () => requestPreflight({ fresh: true }));
@@ -370,12 +379,56 @@ function poolEntry(vendor, weightedTokens) {
 // reports one (codex's config.toml is not a source: the seat runs with --ignore-user-config).
 const defaultEffortLabel = (vendor) => { const d = VENDOR_META[vendor]?.catalogue?.defaultEffort; return d ? `default (${d})` : 'default'; };
 // model: a model that takes fewer levels than its vendor offers (models.js modelEfforts) offers only those
-const effortOptions = (vendor, chosen, model = '', none = defaultEffortLabel(vendor)) => `<option value="">${esc(none)}</option>${modelEfforts(vendor, model, VENDOR_META[vendor]?.catalogue?.efforts || []).map((e) => `<option value="${e}" ${e === chosen ? 'selected' : ''}>${e}</option>`).join('')}`;
+const profileChoices = new Map();
+function catalogueFor(vendor, account, model = '') {
+  if (!isAcp(vendor)) return VENDOR_META[vendor]?.catalogue || {};
+  const state = profileChoices.get(account?.trim());
+  return { models: state?.models || [], efforts: state?.levels.get(model) || [] };
+}
+function levelsFor(vendor, model, account) {
+  const cat = catalogueFor(vendor, account, model);
+  return modelEfforts(vendor, model, cat.efforts || [], cat.models);
+}
+const effortOptions = (vendor, chosen, model = '', none = defaultEffortLabel(vendor), account = '') => {
+  const levels = levelsFor(vendor, model, account);
+  // Retain a saved ACP selection until the user edits it, including before discovery.
+  const options = isAcp(vendor) && chosen && !levels.includes(chosen) ? [...levels, chosen] : levels;
+  return `<option value="">${esc(none)}</option>` + options.map((e) => `<option value="${esc(e)}" ${e === chosen ? 'selected' : ''}>${esc(e)}</option>`).join('');
+};
+
+function profileControl(account) {
+  const name = account?.trim();
+  const state = profileChoices.get(name);
+  const busy = !!state?.pending.size;
+  return `<button class="btn btn-small profile-models" type="button" ${!name || busy ? 'disabled' : ''}>${busy ? 'Reading models…' : state?.models ? 'Refresh profile models' : 'Load profile models'}</button>
+    <span class="seat-note" role="status">${esc(state?.message || '')}</span>`;
+}
+
+async function loadProfileModels(account, model = '', refresh = false) {
+  const name = account?.trim();
+  if (!name) return;
+  let state = profileChoices.get(name);
+  if (!state || refresh) {
+    state = { levels: new Map(), pending: new Set(), message: '' };
+    profileChoices.set(name, state);
+  }
+  if (state.pending.has(model)) return;
+  state.pending.add(model);
+  const redraw = () => { chairEffortOptions(); renderChair(); renderSeats(); };
+  redraw();
+  try {
+    const result = await requestJson('/api/profile-models', { account: name, model, allowLimitedIsolation: true }, 25_000);
+    state.models = result.models;
+    state.levels.set(result.effortModel, result.efforts);
+    state.message = !result.models.length ? 'This profile offers its default model.' : model && !result.models.some((m) => m.id === model) ? 'The saved model is no longer offered. Choose a listed model or the profile default.' : '';
+  } catch (e) { state.message = e.message; }
+  finally { state.pending.delete(model); if (profileChoices.get(name) === state) redraw(); }
+}
 
 function chairEffortOptions() {
   const sel = $('chairman-effort');
   const keep = sel.value;
-  sel.innerHTML = effortOptions($('chairman').value, keep, $('chairman-model').value.trim());
+  sel.innerHTML = effortOptions($('chairman').value, keep, $('chairman-model').value.trim(), undefined, chairAccount());
   $('chairman-model').setAttribute('list', `models-${$('chairman').value}`);
 }
 
@@ -386,32 +439,31 @@ const vendorColour = (vendor) => VENDOR_META[vendor]?.colour || 'ink';
 // The model picker: capability order, simple names and a separate custom-id mode.
 // Antigravity lists one entry per model; its effort
 // pips pick the variant. Returns { html, other } (other: show the free-text id field).
-const familyOf = (vendor, model) => (VENDOR_META[vendor]?.catalogue?.families || []).find((f) => model === f.id || String(model).startsWith(`${f.id}-`));
-function modelPicker(vendor, value, idAttr = '', custom = false) {
-  const cat = VENDOR_META[vendor]?.catalogue || {};
-  const models = modelsByCapability(vendor === 'agy' ? cat.families || [] : cat.models || []);
+const familyOf = (vendor, model) => agyFamily(VENDOR_META[vendor]?.catalogue?.families || [], model);
+function modelPicker(vendor, value, idAttr = '', custom = false, account = '') {
+  const cat = catalogueFor(vendor, account, value);
+  const models = isAcp(vendor) ? cat.models : modelsByCapability(vendor === 'agy' ? cat.families || [] : cat.models || []);
   const selected = vendor === 'agy' ? familyOf(vendor, value)?.id || value : value;
   let current = !value ? '' : models.some((m) => m.id === selected) ? selected : '__other';
   if (custom) current = '__other';
   const opt = (m) => `<option value="${esc(m.id)}" ${m.id === current ? 'selected' : ''}>${esc(m.label)}${m.note ? ` · ${esc(m.note)}` : ''}</option>`;
-  const html = `<select class="flat model-pick" ${idAttr} aria-label="Model"><option value="">default</option>${models.length ? `<optgroup label="Models · most capable first">${models.map(opt).join('')}</optgroup>` : ''}<option value="__other" ${current === '__other' ? 'selected' : ''}>Custom model ID…</option></select>`;
+  const html = `<select class="flat model-pick" ${idAttr} aria-label="Model"><option value="">default</option>${models.length ? `<optgroup label="${isAcp(vendor) ? 'Profile models' : 'Models · most capable first'}">${models.map(opt).join('')}</optgroup>` : ''}<option value="__other" ${current === '__other' ? 'selected' : ''}>Custom model ID…</option></select>`;
   return { html, other: current === '__other' };
 }
 // A picked model as the id to send: an Antigravity model takes its effort as the suffix.
 function pickedModel(vendor, picked, effort) {
+  if (isAcp(vendor)) return { model: picked, effort: '' };
   // a level the newly picked model does not take is dropped, back to the CLI's default
-  if (vendor !== 'agy' || !picked) return { model: picked, effort: effort && !modelEfforts(vendor, picked, VENDOR_META[vendor]?.catalogue?.efforts || []).includes(effort) ? '' : effort };
-  const fam = familyOf(vendor, picked);
-  const level = fam?.levels.includes(effort) ? effort : fam?.levels.includes('medium') ? 'medium' : fam?.levels[0];
-  return { model: level ? `${picked}-${level}` : picked, effort: level || '' };
+  if (vendor !== 'agy' || !picked) return { model: picked, effort: effort && !levelsFor(vendor, picked).includes(effort) ? '' : effort };
+  return agySelection(familyOf(vendor, picked), picked, effort);
 }
 
 // Effort as pips, one per level the CLI accepts; none filled is the CLI's own default. An
 // Antigravity model offers the levels its id comes in.
-function pipsHtml(vendor, chosen, model = '') {
-  const levels = (vendor === 'agy' && familyOf(vendor, model)?.levels) || modelEfforts(vendor, model, VENDOR_META[vendor]?.catalogue?.efforts || []);
+function pipsHtml(vendor, chosen, model = '', account = '') {
+  const levels = (vendor === 'agy' && familyOf(vendor, model)?.levels) || levelsFor(vendor, model, account);
   const at = levels.indexOf(chosen);
-  return '<span class="pip-buttons">' + levels.map((l, i) => `<button type="button" class="pip ${i <= at ? 'on' : ''}" data-level="${l}" title="${l}" aria-label="Effort ${l}" aria-pressed="${l === chosen}"></button>`).join('') + '</span>'
+  return '<span class="pip-buttons">' + levels.map((l, i) => `<button type="button" class="pip ${i <= at ? 'on' : ''}" data-level="${esc(l)}" title="${esc(l)}" aria-label="Effort ${esc(l)}" aria-pressed="${l === chosen}"></button>`).join('') + '</span>'
     + `<span class="pip-label">${esc(chosen || defaultEffortLabel(vendor))}</span>`;
 }
 
@@ -446,7 +498,7 @@ function lockHidden(s) {
   if (isAcp(s.vendor)) { s.effort = ''; return; }
   s.customModel = false;
   const lightest = lightestModel(s.vendor, VENDOR_META[s.vendor]?.catalogue?.models);
-  if (lightest) s.model = lightest;
+  s.model = lightest || (isApi(s.vendor) ? s.model : '');
   s.effort = 'low';
 }
 
@@ -458,7 +510,7 @@ function seatRow(s, i) {
   const n = same.length > 1 ? ` ${same.indexOf(s) + 1}` : '';
   const lamp = poolLamp(s.vendor, seatAccount(s), s.model);
   // an endpoint seat has no catalogue: the model id is typed, and the card says it is required
-  const picker = api ? { html: '', other: true } : modelPicker(s.vendor, s.model || '', '', s.customModel);
+  const picker = api ? { html: '', other: true } : modelPicker(s.vendor, s.model || '', '', s.customModel, s.account);
   const gone = retired(s.vendor, (s.model || '').trim());
   const issue = S.seatIssue?.seatIndex === i ? S.seatIssue : null;
   const invalid = (field) => issue?.field === field ? 'aria-invalid="true"' : '';
@@ -481,10 +533,10 @@ function seatRow(s, i) {
       ${gone ? `<span class="seat-note danger">${esc(s.model)} was retired (${esc(gone.date)}); use ${esc(gone.instead)}.</span>` : ''}
       ${api ? `<label class="f"><span class="label">Endpoint</span><input class="flat endpoint" aria-label="Endpoint base URL" list="endpoints" value="${esc(s.endpoint || '')}" placeholder="http://localhost:11434/v1" title="The base URL of an OpenAI-compatible server, ending in /v1. Plain http only on this machine or a private network."></label>
       <label class="f"><span class="label">Key var</span><input class="flat keyenv" aria-label="Key environment variable" value="${esc(s.keyEnv || '')}" placeholder="none (local server)" title="The NAME of the environment variable that holds the key, set in the shell roundtable was started from. Never the key itself."></label>` : ''}
-      <div class="f"><span class="label help-label" data-help="effort" tabindex="0" aria-describedby="help-effort">Effort</span><span class="pips ${hidden ? 'locked' : ''}">${pipsHtml(s.vendor, s.effort, s.model)}</span><select class="effort" hidden>${effortOptions(s.vendor, s.effort, s.model)}</select></div>
+      <div class="f"><span class="label help-label" data-help="effort" tabindex="0" aria-describedby="help-effort">Effort</span><span class="pips ${hidden ? 'locked' : ''}">${pipsHtml(s.vendor, s.effort, s.model, s.account)}</span><select class="effort" hidden>${effortOptions(s.vendor, s.effort, s.model, undefined, s.account)}</select></div>
       <span class="seat-note lamp-note ${lamp.cls === 'danger' || lamp.cls === 'warn' ? lamp.cls : ''}" title="${esc(lamp.note)}" tabindex="0">${esc(lamp.note)}</span>
       ${cardNotices(s.vendor)}
-      ${api ? '' : `<details class="seat-more" ${isAcp(s.vendor) ? 'open' : ''}><summary>${isAcp(s.vendor) ? 'AgentLink profile (required)' : 'Login profile'}${s.account ? `: ${esc(s.account)}` : ''}</summary><input class="flat account" aria-label="${isAcp(s.vendor) ? 'AgentLink profile' : 'Login profile'}" value="${esc(s.account || '')}" placeholder="${isAcp(s.vendor) ? 'saved profile name' : 'none: your usual login'}" title="${isAcp(s.vendor) ? 'A profile already configured centrally in AgentLink' : 'A second login of this CLI; node src/doctor.js shows how to log a profile in'}"></details>`}
+      ${api ? '' : `<details class="seat-more" ${isAcp(s.vendor) ? 'open' : ''}><summary>${isAcp(s.vendor) ? 'AgentLink profile (required)' : 'Login profile'}${s.account ? `: ${esc(s.account)}` : ''}</summary><input class="flat account" aria-label="${isAcp(s.vendor) ? 'AgentLink profile' : 'Login profile'}" value="${esc(s.account || '')}" placeholder="${isAcp(s.vendor) ? 'saved profile name' : 'none: your usual login'}" title="${isAcp(s.vendor) ? 'A profile already configured centrally in AgentLink' : 'A second login of this CLI; node src/doctor.js shows how to log a profile in'}">${isAcp(s.vendor) ? profileControl(s.account) : ''}</details>`}
     </div>
   </article>`;
 }
@@ -578,11 +630,12 @@ function renderChair() {
   $('chair-profile').open = isAcp(v);
   $('chairman-account').placeholder = isAcp(v) ? 'saved profile name' : 'none: your usual login';
   $('chairman-account').setAttribute('aria-label', isAcp(v) ? 'Chairman AgentLink profile' : 'Chairman login profile');
-  const picker = api ? { html: '', other: true } : modelPicker(v, $('chairman-model').value.trim(), 'id="chair-model-pick"', S.customChairModel);
+  const picker = api ? { html: '', other: true } : modelPicker(v, $('chairman-model').value.trim(), 'id="chair-model-pick"', S.customChairModel, chairAccount());
   $('chair-model-slot').innerHTML = picker.html;
   $('chairman-model').hidden = !picker.other;
   $('chairman-model').placeholder = api ? 'model id (required)' : 'model id';
-  $('chair-pips').innerHTML = pipsHtml(v, $('chairman-effort').value, $('chairman-model').value.trim());
+  $('chair-pips').innerHTML = pipsHtml(v, $('chairman-effort').value, $('chairman-model').value.trim(), chairAccount());
+  $('chair-model-discovery').innerHTML = isAcp(v) ? profileControl(chairAccount()) : '';
   $('chair-iso').innerHTML = cardNotices(v);
   updateLamps();
   restoreFocus();
@@ -797,6 +850,7 @@ function onSeatEdit(ev) {
     s.customModel = v === '__other';
     if (s.customModel) { s.model = ''; renderSeats(); $('seats').querySelectorAll('.seat')[S.draft.indexOf(s)]?.querySelector('.model')?.focus(); return; }
     Object.assign(s, pickedModel(s.vendor, v, s.effort));
+    if (isAcp(s.vendor) && profileChoices.get(s.account?.trim())?.models) void loadProfileModels(s.account, s.model);
     renderSeats(); renderProjection(); return;
   }
   const vendorBefore = s.vendor;
@@ -823,8 +877,8 @@ function onSeatEdit(ev) {
   row.querySelector('.mood-text').hidden = s.mood !== 'custom';
   if (ev.target.classList.contains('model')) {
     // a typed id: drop a level that model does not take, and redraw its pips
-    if (s.vendor !== 'agy' && s.effort && !modelEfforts(s.vendor, s.model, VENDOR_META[s.vendor]?.catalogue?.efforts || []).includes(s.effort)) { s.effort = ''; row.querySelector('.effort').value = ''; }
-    const pips = row.querySelector('.pips'); if (pips) pips.innerHTML = pipsHtml(s.vendor, s.effort, s.model);
+    if (s.vendor !== 'agy' && !isAcp(s.vendor) && s.effort && !levelsFor(s.vendor, s.model).includes(s.effort)) { s.effort = ''; row.querySelector('.effort').value = ''; }
+    const pips = row.querySelector('.pips'); if (pips) pips.innerHTML = pipsHtml(s.vendor, s.effort, s.model, s.account);
     updateLamps(); // agy: the lamp follows the model's quota group
   }
   renderProjection();

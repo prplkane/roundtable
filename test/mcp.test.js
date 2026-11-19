@@ -150,7 +150,8 @@ test('MCP discovery, protocol errors and guide work without starting a server or
   assert.equal(init.protocolVersion, '2025-06-18');
   assert.equal(init.serverInfo.name, 'roundtable');
   const listed = await client.request('tools/list');
-  assert.equal(listed.tools.length, 11);
+  assert.equal(listed.tools.length, 12);
+  assert.deepEqual(listed.tools.find((t) => t.name === 'roundtable_models').inputSchema.required, ['account', 'allowLimitedIsolation']);
   const waitSchema = listed.tools.find((t) => t.name === 'roundtable_wait').inputSchema.properties;
   assert.equal(waitSchema.seconds.maximum, LIMITS.waitSeconds[1]);
   assert.equal(waitSchema.afterRound.maximum, LIMITS.critiqueRounds[1]);
