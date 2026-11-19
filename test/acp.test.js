@@ -38,7 +38,7 @@ function setup(t, mode = 'review') {
 
 test('listing profiles returns only usable public identities without opening an ACP session', async (t) => {
   const c = setup(t);
-  assert.deepEqual(await listProfiles(c.launch), [{ name: 'work', provider: 'codex' }, { name: 'claude', provider: 'claude' }, { name: 'agy', provider: 'antigravity' }]);
+  assert.deepEqual(await listProfiles(c.launch), [{ name: 'work', provider: 'codex', defaults: { model: 'fake-default' } }, { name: 'claude', provider: 'claude' }, { name: 'agy', provider: 'antigravity' }]);
   assert.throws(c.events, { code: 'ENOENT' });
 });
 
@@ -66,10 +66,20 @@ test('ACP selects an advertised reasoning level and refuses one the agent does n
   assert.ok(!bare.events().some((e) => e.rpc?.method === 'session/prompt'), 'an agent without a reasoning setting is not prompted at one');
 });
 
+test('session overrides use advertised config IDs and require confirmation before prompting', async (t) => {
+  const c = setup(t, 'config-id');
+  await c.run('q', null, { ...c.opts, effort: 'max' });
+  assert.equal(c.events().find((e) => e.rpc?.method === 'session/set_config_option').rpc.params.configId, 'depth');
+  const unchanged = setup(t, 'unconfirmed');
+  await assert.rejects(unchanged.run('q', null, { ...unchanged.opts, model: 'fake-choice' }), /did not confirm/);
+  assert.ok(!unchanged.events().some((e) => e.rpc?.method === 'session/prompt'));
+});
+
 test('an ACP seat may name any identifier as its effort; the agent, not a static list, decides', () => {
   const two = (effort) => [{ vendor: 'acp', account: 'work', lens: 'risk', effort }, { vendor: 'acp', account: 'work', lens: 'cost' }];
   assert.equal(normaliseSeats(two('max'), { vendors: ADAPTERS })[0].effort, 'max');
-  assert.throws(() => normaliseSeats(two('very high!'), { vendors: ADAPTERS }), /identifier the agent advertises/);
+  assert.equal(normaliseSeats(two('very high!'), { vendors: ADAPTERS })[0].effort, 'very high!');
+  assert.throws(() => normaliseSeats(two('very\nhigh'), { vendors: ADAPTERS }), /control characters/);
   assert.equal(normaliseChairman({ vendor: 'acp', account: 'work', effort: 'low' }, { vendors: ADAPTERS }).effort, 'low');
   assert.throws(() => normaliseSeats([{ vendor: 'claude', lens: 'risk', effort: 'max' }, { vendor: 'codex', lens: 'cost' }], { vendors: ADAPTERS }), /does not accept effort "max"/, 'CLI vendors keep their lists');
 });
@@ -210,6 +220,26 @@ test('an unavailable ACP chairman can fall back to another configured profile', 
     }, gate: async () => ({ action: 'continue' }), emit() {}, options: { critiqueRounds: 0, allowLimitedIsolation: true },
   }).run();
   assert.equal(state.verdict.failed, false); assert.equal(state.verdict.seat.account, 'working');
+});
+
+test('AgentLink model reports preserve names, effective profile choices and stale-default recovery', async (t) => {
+  const c = setup(t, 'saved-default');
+  const cat = await discoverProfile('synthetic', '', c.launch);
+  assert.deepEqual(cat.defaults, { model: 'fake-choice', effort: 'deep' });
+  assert.equal(cat.profileModel, 'fake-choice');
+  assert.equal(cat.effortModel, '');
+  assert.equal(cat.defaultEffort, 'deep');
+  assert.deepEqual(cat.effortChoices, [{ id: 'deep', label: 'Think deeply' }]);
+  const changed = await discoverProfile('synthetic', 'fake-default', c.launch);
+  assert.equal(changed.defaultEffort, '', 'an override can reset the centrally configured effort during the real session');
+  assert.ok(changed.efforts.includes('medium'));
+  assert.equal(changed.effortModel, 'fake-default');
+  assert.ok(!c.events().some((e) => e.rpc || e.start), 'inspection uses the management command');
+  const stale = await discoverProfile('synthetic', '', setup(t, 'stale-default').launch);
+  assert.match(stale.warning, /agentlink defaults synthetic/);
+  assert.equal(stale.models[1].id, 'fake-choice');
+  const legacy = await discoverProfile('synthetic', '', setup(t, 'beta2').launch);
+  assert.deepEqual(legacy.efforts, ['low', 'medium', 'max']);
 });
 
 test('profile discovery reads the selected model’s current reasoning levels without a prompt', async (t) => {

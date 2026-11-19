@@ -857,7 +857,7 @@ Codex, Claude and Antigravity seats and chairmen use saved AgentLink profiles by
 Install AgentLink and add the providers you want to use. Existing profiles can be reused.
 
 ```sh
-npm install -g @prplkane/agentlink@0.3.0-beta.2
+npm install -g @prplkane/agentlink@0.3.0-beta.3
 agentlink add codex --provider codex
 agentlink add claude --provider claude
 agentlink add agy --provider antigravity
@@ -938,10 +938,16 @@ The initial integration deliberately has these limits:
   Refresh status checks whether the named profile is saved. Use `agentlink check PROFILE` to
   check initialization; a successful check does not prove task compatibility.
 - Choose **Load profile models** on a seat or the chairman to read a trusted profile’s
-  current ACP model choices. Selecting a model reads its reasoning levels. **Refresh profile
+  current model and effort names from `agentlink models PROFILE`. The picker shows the
+  advertised display names and keeps their IDs for requests. Selecting a model reads its reasoning levels. **Refresh profile
   models** checks again after an adapter or vendor update. These actions open a temporary
   session without sending a prompt. Leaving the model and effort blank follows the profile
-  defaults on every new turn. For the CLI, use `roundtable agent models --input profile.json`
+  defaults on every new turn. Set shared choices with
+  `agentlink defaults PROFILE --model MODEL_ID --effort EFFORT_ID`. An omitted flag
+  keeps its saved setting. Use `--clear-model --clear-effort` to follow vendor defaults.
+  If a saved ID disappears, discovery still lists replacements. Update the profile in
+  AgentLink for all its clients. A seat override applies only to that session.
+  AgentLink beta.2 uses the older ACP discovery path. For the CLI, use `roundtable agent models --input profile.json`
   with `{"account":"codex","allowLimitedIsolation":true}` and an optional `model`.
   The `roundtable_models` MCP tool accepts the same fields.
 - **Updates are central.** An explicit `agentlink bridge update NAME` changes new

@@ -3,7 +3,7 @@ import { createInterface } from 'node:readline';
 import { appendFileSync } from 'node:fs';
 if (process.argv[2] === 'list') {
   console.log(JSON.stringify([
-    { name: 'work', provider: 'codex', env: { PRIVATE: 'fixture' }, args: ['private'] },
+    { name: 'work', provider: 'codex', defaults: { model: 'fake-default', privateField: 'omit' }, env: { PRIVATE: 'fixture' }, args: ['private'] },
     { name: 'claude', provider: 'claude' }, { name: 'agy', provider: 'antigravity' },
     { name: 'broken', error: 'fixture' },
   ]));
@@ -15,7 +15,22 @@ const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', 
 const sid = `fixture-${process.pid}`;
 const option = { id: 'model', category: 'model', name: 'Model', type: 'select', currentValue: 'fake-default', options: [{ value: 'fake-default', name: 'Default' }, { value: 'fake-choice', name: 'Choice' }] };
 const level = { id: 'thought_level', category: 'thought_level', name: 'Reasoning', type: 'select', currentValue: 'medium', options: [{ value: 'low', name: 'Low' }, { value: 'medium', name: 'Medium' }, { value: 'max', name: 'Max' }] };
-const configOptions = mode === 'no-levels' ? [option] : [option, level]; // no-levels: an agent with no reasoning setting
+let configOptions = mode === 'no-levels' ? [option] : [option, level]; // no-levels: an agent with no reasoning setting
+if (mode === 'config-id') configOptions = [
+  { ...level, category: undefined, id: 'effort', options: [] },
+  { ...level, configId: 'depth', id: undefined },
+];
+if (process.argv[2] === 'models') {
+  const chosen = process.argv.includes('--model') ? process.argv[process.argv.indexOf('--model') + 1] : option.currentValue;
+  log({ inspect: chosen });
+  if (mode === 'beta2') { console.error('INVALID_ARGUMENT: Unknown command. Run agentlink --help.'); process.exit(1); }
+  const defaults = mode === 'stale-default' ? { model: 'removed' } : mode === 'saved-default' ? { model: 'fake-choice', effort: 'deep' } : {};
+  const choices = (o) => o.options.map(({ value: id, name }) => ({ id, name }));
+  console.log(JSON.stringify({ name: process.argv[3], defaults,
+    model: { current: chosen, choices: choices(option) },
+    effort: chosen === 'fake-choice' ? { current: 'deep', choices: [{ id: 'deep', name: 'Think deeply' }] } : { current: level.currentValue, choices: choices(level) } }));
+  process.exit(0);
+}
 let pending;
 log({ start: true, account: process.argv[3], cwd: process.cwd(), script: process.argv[1] });
 const reader = createInterface({ input: process.stdin });
@@ -46,9 +61,13 @@ reader.on('line', (line) => {
     return answer({ sessionId: sid, configOptions });
   }
   if (mode === 'model-dependent' && message.method === 'session/set_config_option' && message.params.value === 'fake-choice') {
-    return answer({ configOptions: [{ ...option, currentValue: 'fake-choice' }, { ...level, currentValue: 'deep', options: [{ value: 'deep', name: 'Deep' }] }] });
+    configOptions = [{ ...option, currentValue: 'fake-choice' }, { ...level, currentValue: 'deep', options: [{ value: 'deep', name: 'Deep' }] }];
+    return answer({ configOptions });
   }
-  if (message.method === 'session/set_config_option') return answer({ configOptions: configOptions.map((o) => o.id === message.params.configId ? { ...o, currentValue: message.params.value } : o) });
+  if (message.method === 'session/set_config_option') {
+    if (mode !== 'unconfirmed') configOptions = configOptions.map((o) => (o.configId ?? o.id) === message.params.configId ? { ...o, currentValue: message.params.value } : o);
+    return answer({ configOptions });
+  }
   if (message.method === 'session/cancel') {
     if (pending != null) send({ id: pending, result: { stopReason: 'cancelled' } });
     return;

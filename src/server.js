@@ -7,7 +7,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { adapters, ADAPTERS, quotaReaders, poolsByAccount } from './adapters/index.js';
-import { agentLinkBinary, discoverProfile, listProfiles } from './adapters/acp.js';
+import { agentLinkBinary, discoverProfile, inspectProfileSession, listProfiles } from './adapters/acp.js';
 import { profileHome, killAll, liveChildren, resolveBinary, runProcess, cleanEnv } from './adapters/spawn.js';
 import { checkPool, STATUS, endpointLamp, createPreflightCache } from './preflight.js';
 import { retired, quotaGroup } from './adapters/models.js';
@@ -540,7 +540,7 @@ async function prepareDebate(raw, { board = false } = {}) {
       if (s.effort) checks.get(key).efforts.add(s.effort);
     }
     await Promise.all([...checks.values()].map(async ({ account, model, efforts }) => {
-      const cat = await discoverProfile(account, model);
+      const cat = await inspectProfileSession(account, model);
       if (model && !cat.models.some((m) => m.id === model)) throw new Error(`AgentLink profile ${account} no longer offers model ${model}. Refresh profile models or choose the profile default.`);
       for (const effort of efforts) {
         if (!cat.efforts.includes(effort)) throw new Error(`AgentLink profile ${account} does not offer effort ${effort} for ${model || 'its default model'}. Refresh profile models.`);

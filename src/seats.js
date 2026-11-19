@@ -291,12 +291,12 @@ function seatAccount(raw, row) {
 // catalogue's model list per vendor, for the lightest model a hidden mood runs on.
 // An ACP agent advertises its reasoning levels when a session opens, so the adapter checks a
 // seat's effort against that list; here it is only a bounded identifier.
-const ACP_EFFORT_RE = /^[a-z0-9][a-z0-9_.-]{0,31}$/i;
+
 function checkEffort(raw, vendor, allowed, label) {
   const effort = raw.effort ? String(raw.effort).trim() : null;
   if (!effort) return null;
   if (vendor.kind === 'acp') {
-    if (!ACP_EFFORT_RE.test(effort)) throw new Error(`${label}: an ACP effort is an identifier the agent advertises (letters, digits, dots, dashes or underscores, up to 32).`);
+    if (effort.length > 200 || /[\u0000-\u001f\u007f]/.test(effort)) throw new Error(`${label}: an ACP effort must be an advertised ID of at most 200 characters without control characters.`);
     return effort;
   }
   if (!allowed.includes(effort)) throw new Error(`${label} does not accept effort "${effort}"${allowed.length ? ` (allowed: ${allowed.join(', ')})` : ''}.`);

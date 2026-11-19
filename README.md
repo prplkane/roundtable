@@ -32,7 +32,7 @@ For live reviews, sign in to the provider CLIs you use and create their AgentLin
 profiles once. The browser and the Codex workflow use the same profiles.
 
 ```sh
-npm install -g @prplkane/roundtable @prplkane/agentlink@0.3.0-beta.2
+npm install -g @prplkane/roundtable @prplkane/agentlink@0.3.0-beta.3
 agentlink add codex --provider codex
 agentlink add claude --provider claude
 agentlink add agy --provider antigravity
@@ -42,7 +42,10 @@ roundtable
 On the [live board](http://localhost:4747/), choose a profile for each seat and the
 chairman. Leave Model and Effort blank to follow the profile defaults. Choose **Load
 profile models** to see the available choices and **Refresh profile models** after a
-provider update. Direct CLI seats and OpenAI-compatible endpoints are also available.
+provider update. To set a default once for every project, inspect the IDs with
+`agentlink models PROFILE`, then use `agentlink defaults PROFILE --model MODEL_ID --effort EFFORT_ID`.
+Roundtable displays the advertised names and sends the IDs for seat-specific overrides.
+Direct CLI seats and OpenAI-compatible endpoints are also available.
 A searcher can gather cited sources for every seat before the first round. For provider setup
 and a first live run, see the [test-drive guide](docs/workflow.md#a-first-live-test-drive).
 
@@ -56,7 +59,7 @@ Install both tools. This example uses Codex and Claude seats. Sign in to those C
 configure trusted review profiles with their tools disabled before sending them a decision.
 
 ```sh
-npm install -g @prplkane/roundtable @prplkane/agentlink@0.3.0-beta.2
+npm install -g @prplkane/roundtable @prplkane/agentlink@0.3.0-beta.3
 agentlink add risk-review --provider codex
 agentlink add cost-review --provider claude
 agentlink check risk-review

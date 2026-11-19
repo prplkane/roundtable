@@ -132,6 +132,10 @@ async function refreshConnections() {
   try {
     const inventory = await requestJson('/api/profiles', {});
     const vendor = chairVendor(), account = chairAccount();
+    for (const [name, state] of profileChoices) {
+      const saved = inventory.profiles.find((p) => p.name === name);
+      if (!saved || saved.defaults?.model !== state.defaults?.model || saved.defaults?.effort !== state.defaults?.effort) profileChoices.delete(name);
+    }
     profileInventory = inventory;
     $('chairman').innerHTML = providerOptions(vendor, account);
     $('seat-setup-note').textContent = inventory.error || '';
@@ -303,7 +307,7 @@ async function setup() {
     for (const field of ['model', 'account', 'endpoint', 'keyEnv']) if (typeof ch[field] === 'string') $(`chairman-${field === 'keyEnv' ? 'keyenv' : field}`).value = ch[field];
   }
   chairEffortOptions();
-  if (ch?.effort && isAcp(ch.vendor)) $('chairman-effort').innerHTML = effortOptions(ch.vendor, ch.effort, ch.model, undefined, ch.account);
+  if (ch?.effort && isAcp(ch.vendor)) $('chairman-effort').innerHTML = effortOptions(ch.vendor, ch.effort, ch.model, ch.account);
   if (ch?.effort && [...$('chairman-effort').options].some((o) => o.value === ch.effort)) $('chairman-effort').value = ch.effort;
   renderSeats();
 
@@ -439,17 +443,31 @@ const profileChoices = new Map();
 function catalogueFor(vendor, account, model = '') {
   if (!isAcp(vendor)) return VENDOR_META[vendor]?.catalogue || {};
   const state = profileChoices.get(account?.trim());
-  return { models: state?.models || [], efforts: state?.levels.get(model) || [] };
+  const defaults = state?.defaults || profileInventory.profiles.find((p) => p.name === account)?.defaults || {};
+  const detail = state?.levels.get(model);
+  return { models: state?.models || [], efforts: detail?.efforts || [], effortChoices: detail?.effortChoices || [],
+    profileModel: state?.profileModel || defaults.model, defaultEffort: detail?.defaultEffort || (!model ? defaults.effort : '') };
+}
+function choiceName(choices, id) {
+  return choices?.find((c) => c.id === id)?.label || id;
+}
+function inheritedLabel(value, prefix = 'Profile default') {
+  return value ? `${prefix} · ${value}` : prefix;
+}
+function inheritedEffort(cat, model) {
+  return inheritedLabel(choiceName(cat.effortChoices, cat.defaultEffort), model && model !== cat.profileModel ? 'Session default' : 'Profile default');
 }
 function levelsFor(vendor, model, account) {
   const cat = catalogueFor(vendor, account, model);
   return modelEfforts(vendor, model, cat.efforts || [], cat.models);
 }
-const effortOptions = (vendor, chosen, model = '', none = defaultEffortLabel(vendor), account = '') => {
+const effortOptions = (vendor, chosen, model = '', account = '') => {
+  const cat = catalogueFor(vendor, account, model);
+  const none = isAcp(vendor) ? inheritedEffort(cat, model) : defaultEffortLabel(vendor);
   const levels = levelsFor(vendor, model, account);
   // Retain a saved ACP selection until the user edits it, including before discovery.
   const options = isAcp(vendor) && chosen && !levels.includes(chosen) ? [...levels, chosen] : levels;
-  return `<option value="">${esc(none)}</option>` + options.map((e) => `<option value="${esc(e)}" ${e === chosen ? 'selected' : ''}>${esc(e)}</option>`).join('');
+  return `<option value="">${esc(none)}</option>` + options.map((e) => `<option value="${esc(e)}" ${e === chosen ? 'selected' : ''}>${esc(choiceName(cat.effortChoices, e))}</option>`).join('');
 };
 
 function profileControl(account) {
@@ -474,10 +492,12 @@ async function loadProfileModels(account, model = '', refresh = false) {
   const redraw = () => { chairEffortOptions(); renderChair(); renderSeats(); };
   redraw();
   try {
-    const result = await requestJson('/api/profile-models', { account: name, model, allowLimitedIsolation: true }, 25_000);
+    const result = await requestJson('/api/profile-models', { account: name, model, allowLimitedIsolation: true }, 45_000);
     state.models = result.models;
-    state.levels.set(result.effortModel, result.efforts);
-    state.message = !result.models.length ? 'This profile offers its default model.' : model && !result.models.some((m) => m.id === model) ? 'The saved model is no longer offered. Choose a listed model or the profile default.' : '';
+    state.defaults = result.defaults;
+    state.profileModel = result.profileModel;
+    state.levels.set(result.effortModel, result);
+    state.message = result.warning || (!result.models.length ? 'This profile offers its default model.' : model && !result.models.some((m) => m.id === model) ? 'The saved model is no longer offered. Choose a listed model or the profile default.' : '');
   } catch (e) { state.message = e.message; }
   finally { state.pending.delete(model); if (profileChoices.get(name) === state) redraw(); }
 }
@@ -485,7 +505,7 @@ async function loadProfileModels(account, model = '', refresh = false) {
 function chairEffortOptions() {
   const sel = $('chairman-effort');
   const keep = sel.value;
-  sel.innerHTML = effortOptions(chairVendor(), keep, $('chairman-model').value.trim(), undefined, chairAccount());
+  sel.innerHTML = effortOptions(chairVendor(), keep, $('chairman-model').value.trim(), chairAccount());
   $('chairman-model').setAttribute('list', `models-${chairVendor()}`);
 }
 
@@ -504,7 +524,7 @@ function modelPicker(vendor, value, idAttr = '', custom = false, account = '') {
   let current = !value ? '' : models.some((m) => m.id === selected) ? selected : '__other';
   if (custom) current = '__other';
   const opt = (m) => `<option value="${esc(m.id)}" ${m.id === current ? 'selected' : ''}>${esc(m.label)}${m.note ? ` · ${esc(m.note)}` : ''}</option>`;
-  const html = `<select class="flat model-pick" ${idAttr} aria-label="Model"><option value="">default</option>${models.length ? `<optgroup label="${isAcp(vendor) ? 'Profile models' : 'Models · most capable first'}">${models.map(opt).join('')}</optgroup>` : ''}<option value="__other" ${current === '__other' ? 'selected' : ''}>Custom model ID…</option></select>`;
+  const html = `<select class="flat model-pick" ${idAttr} aria-label="Model"><option value="">${esc(isAcp(vendor) ? inheritedLabel(choiceName(models, cat.profileModel)) : 'default')}</option>${models.length ? `<optgroup label="${isAcp(vendor) ? 'Profile models' : 'Models · most capable first'}">${models.map(opt).join('')}</optgroup>` : ''}<option value="__other" ${current === '__other' ? 'selected' : ''}>Custom model ID…</option></select>`;
   return { html, other: current === '__other' };
 }
 // A picked model as the id to send: an Antigravity model takes its effort as the suffix.
@@ -519,9 +539,11 @@ function pickedModel(vendor, picked, effort) {
 // Antigravity model offers the levels its id comes in.
 function pipsHtml(vendor, chosen, model = '', account = '') {
   const levels = (vendor === 'agy' && familyOf(vendor, model)?.levels) || levelsFor(vendor, model, account);
+  const cat = catalogueFor(vendor, account, model);
+  const label = (id) => choiceName(cat.effortChoices, id);
   const at = levels.indexOf(chosen);
-  return '<span class="pip-buttons">' + levels.map((l, i) => `<button type="button" class="pip ${i <= at ? 'on' : ''}" data-level="${esc(l)}" title="${esc(l)}" aria-label="Effort ${esc(l)}" aria-pressed="${l === chosen}"></button>`).join('') + '</span>'
-    + `<span class="pip-label">${esc(chosen || defaultEffortLabel(vendor))}</span>`;
+  return '<span class="pip-buttons">' + levels.map((l, i) => `<button type="button" class="pip ${i <= at ? 'on' : ''}" data-level="${esc(l)}" title="${esc(label(l) === l ? l : label(l) + ' (' + l + ')')}" aria-label="Effort ${esc(label(l))}" aria-pressed="${l === chosen}"></button>`).join('') + '</span>'
+    + `<span class="pip-label">${esc(chosen ? label(chosen) : isAcp(vendor) ? inheritedEffort(cat, model) : defaultEffortLabel(vendor))}</span>`;
 }
 
 // The lamp: the pre-flight answer for the seat's pool when there is one (installed, logged in,
@@ -590,7 +612,7 @@ function seatRow(s, i) {
       ${gone ? `<span class="seat-note danger">${esc(s.model)} was retired (${esc(gone.date)}); use ${esc(gone.instead)}.</span>` : ''}
       ${api ? `<label class="f"><span class="label">Endpoint</span><input class="flat endpoint" aria-label="Endpoint base URL" list="endpoints" value="${esc(s.endpoint || '')}" placeholder="http://localhost:11434/v1" title="The base URL of an OpenAI-compatible server, ending in /v1. Plain http only on this machine or a private network."></label>
       <label class="f"><span class="label">Key var</span><input class="flat keyenv" aria-label="Key environment variable" value="${esc(s.keyEnv || '')}" placeholder="none (local server)" title="The NAME of the environment variable that holds the key, set in the shell roundtable was started from. Never the key itself."></label>` : ''}
-      <div class="f"><span class="label help-label" data-help="effort" tabindex="0" aria-describedby="help-effort">Effort</span><span class="pips ${hidden ? 'locked' : ''}">${pipsHtml(s.vendor, s.effort, s.model, s.account)}</span><select class="effort" hidden>${effortOptions(s.vendor, s.effort, s.model, undefined, s.account)}</select></div>
+      <div class="f"><span class="label help-label" data-help="effort" tabindex="0" aria-describedby="help-effort">Effort</span><span class="pips ${hidden ? 'locked' : ''}">${pipsHtml(s.vendor, s.effort, s.model, s.account)}</span><select class="effort" hidden>${effortOptions(s.vendor, s.effort, s.model, s.account)}</select></div>
       <span class="seat-note lamp-note ${lamp.cls === 'danger' || lamp.cls === 'warn' ? lamp.cls : ''}" title="${esc(lamp.note)}" tabindex="0">${esc(lamp.note)}</span>
       ${cardNotices(s.vendor)}
       ${api ? '' : `<details class="seat-more" ${isAcp(s.vendor) ? 'open' : ''}><summary>${isAcp(s.vendor) ? 'AgentLink profile (required)' : 'Login profile'}${s.account ? `: ${esc(s.account)}` : ''}</summary><input class="flat account" aria-label="${isAcp(s.vendor) ? 'AgentLink profile' : 'Login profile'}" value="${esc(s.account || '')}" placeholder="${isAcp(s.vendor) ? 'saved profile name' : 'none: your usual login'}" title="${isAcp(s.vendor) ? 'A profile already configured centrally in AgentLink' : 'A second login of this CLI; node src/doctor.js shows how to log a profile in'}">${isAcp(s.vendor) ? profileControl(s.account) : ''}</details>`}

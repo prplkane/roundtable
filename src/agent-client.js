@@ -6,7 +6,7 @@ export const HELP = {
   usage: 'roundtable agent <status|models|check|start|wait|answer|hold|finish|stop|resume|verdict> [--port 4747] [--id review-id] [--input file|-] [--seconds 25] [--after-round round] [--refresh]',
   commands: {
     status: 'Without --id: cached provider setup. With --id: current step, questions, latest positions and verdict. --refresh checks saved AgentLink profile availability without opening sessions.',
-    models: 'Read model IDs and effort levels from a trusted AgentLink profile without sending a prompt. Supply --input with account, allowLimitedIsolation: true and an optional model.',
+    models: 'Read advertised model and effort names, IDs and saved profile defaults without sending a prompt. Supply --input with account, allowLimitedIsolation: true and an optional model.',
     check: 'Validate --input and estimate calls/tokens without creating a review.',
     start: 'Start the review in --input. Uses the selected providers. Returns its id immediately.',
     wait: 'Wait up to --seconds (1–30) for a question or completion. After presenting questions, use --after-round N to wait for the next step without asking the same questions again. Returns one state object, not an event log.',
@@ -26,7 +26,7 @@ export const HELP = {
     completion: 'A start acknowledgement or seat positions are not a completed review. Keep waiting through status running and verdict until status done and verdict.status ready. If interrupted, failed, skipped or missing, report that limitation instead of supplying your own chairman result. Include the review id, board link and depth.completedCritiqueRounds in the final report.',
     lenses: 'Give every seat a different lens, taken from what the decision could get wrong: risk, cost, evidence, reversibility, long-term effects, user impact. Two seats with one lens mostly agree, which wastes a call.',
     moods: 'Pair one sceptical seat (grill) with one practical seat (builder). Use steelman when the user already leans one way, contrarian when the seats would otherwise agree too early.',
-    effort: 'Leave model and effort blank to follow the profile defaults. To pin a model or reasoning level, use the choices advertised by roundtable_models for that profile.',
+    effort: 'Leave model and effort blank to follow the profile defaults. To pin a model or reasoning level, show the names reported by roundtable_models and send the corresponding IDs. Shared defaults are managed with agentlink defaults PROFILE.',
     context: 'constraints, known, assumed, reversibility and deadline go into every prompt. Fill them only with facts the user stated; put guesses under assumed, never under known. Leave a field empty rather than invent it.',
     unattended: 'Use options.unattended true for a background job with nobody to answer: it skips all pauses and keeps missing facts as assumptions. Live chat or browser reviews leave it false: ordinary checkpoints last autoContinueMs (15 seconds by default), questions last questionWaitMs (2 minutes). No answer continues automatically, without accepting a recommendation. Both modes respect the review wall clock.',
     isolation: 'AgentLink seats and direct Antigravity require options.allowLimitedIsolation=true. Set it only when the user has agreed to its limits: session rules deny documented tools, but the CLI cannot disable all shared customizations or MCP discovery. Choose another provider otherwise. Reported prohibited tool activity still stops the seat.',
@@ -56,13 +56,13 @@ export async function runAgent(command, flags = {}, input, signal) {
     result = { mode: setup.runtime.mode, cataloguePending: setup.runtime.cataloguePending === true, defaultTransport: 'agentlink', agentLink: inventory,
       providers: Object.keys(PROFILE_PROVIDERS).map((vendor) => {
         const profile = providerProfile(vendor, inventory.profiles);
-        return { vendor, transport: 'agentlink', account: profile?.name || null, configured: !!profile };
+        return { vendor, transport: 'agentlink', account: profile?.name || null, configured: !!profile, ...(profile?.defaults ? { defaults: profile.defaults } : {}) };
       }),
       directProviders: setup.vendors.filter((v) => v.kind !== 'acp').map((v) => ({ vendor: v.vendor, kind: v.kind, ...(v.kind === 'cli' ? { transport: 'cli' } : {}),
       models: (v.catalogue?.models || []).map((m) => typeof m === 'string' ? m : m.id), efforts: v.catalogue?.efforts || [],
       ...(v.terms ? { terms: { notice: v.terms.notice, url: v.terms.url, acknowledgedOnBoard: v.terms.acknowledgedAt != null } } : {}) })),
       readiness: readiness.pools, defaults: setup.defaults, next: 'Check a JSON review with agent check --input file. No model call has been made.' };
-  } else if (command === 'models') result = await request('/api/profile-models', input || {}, 25_000);
+  } else if (command === 'models') result = await request('/api/profile-models', input || {}, 45_000);
   else if (command === 'check') result = await request('/api/preview', input, 40_000);
   else if (command === 'start') { const started = await request('/api/debates', input, 40_000); result = { id: started.slug, board: board(started.slug), next: `agent wait --port ${port} --id ${started.slug}` }; }
   else {
