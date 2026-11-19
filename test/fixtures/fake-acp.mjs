@@ -1,6 +1,14 @@
 // Local ACP peer. No vendor, network, credentials or project access.
 import { createInterface } from 'node:readline';
 import { appendFileSync } from 'node:fs';
+if (process.argv[2] === 'list') {
+  console.log(JSON.stringify([
+    { name: 'work', provider: 'codex', env: { PRIVATE: 'fixture' }, args: ['private'] },
+    { name: 'claude', provider: 'claude' }, { name: 'agy', provider: 'antigravity' },
+    { name: 'broken', error: 'fixture' },
+  ]));
+  process.exit(0);
+}
 const mode = process.env.ACP_FIXTURE_MODE || 'review';
 const log = (event) => { if (process.env.ACP_FIXTURE_LOG) appendFileSync(process.env.ACP_FIXTURE_LOG, JSON.stringify({ pid: process.pid, ...event }) + '\n'); };
 const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
@@ -9,7 +17,7 @@ const option = { id: 'model', category: 'model', name: 'Model', type: 'select', 
 const level = { id: 'thought_level', category: 'thought_level', name: 'Reasoning', type: 'select', currentValue: 'medium', options: [{ value: 'low', name: 'Low' }, { value: 'medium', name: 'Medium' }, { value: 'max', name: 'Max' }] };
 const configOptions = mode === 'no-levels' ? [option] : [option, level]; // no-levels: an agent with no reasoning setting
 let pending;
-log({ start: true, cwd: process.cwd(), script: process.argv[1] });
+log({ start: true, account: process.argv[3], cwd: process.cwd(), script: process.argv[1] });
 const reader = createInterface({ input: process.stdin });
 if (mode === 'stubborn') setInterval(() => {}, 1000);
 reader.on('close', () => { if (mode === 'stubborn') return; log({ exit: true }); process.exit(0); });

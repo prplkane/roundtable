@@ -5,7 +5,7 @@ import { mkdirSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { cleanEnv, resolveBinary, registerCall, killTree } from './spawn.js';
+import { cleanEnv, resolveBinary, registerCall, killTree, runProcess } from './spawn.js';
 import { agentLinkProfile } from '../seats.js';
 import { VERSION } from '../version.js';
 
@@ -24,6 +24,20 @@ export function agentLinkBinary(env = process.env) {
   }
   try { return resolveBinary('agentlink', ['@prplkane/agentlink', 'src/cli.mjs'], { env }); }
   catch { throw fault('AgentLink is not installed. Run npm install -g @prplkane/agentlink@beta, or set ROUNDTABLE_AGENTLINK_CLI to its absolute src/cli.mjs path.', 'ENOENT', 'missing'); }
+}
+
+// AgentLink's list includes launch arguments and environment settings. Only names and
+// provider identities cross the local HTTP boundary. Listing never opens a session.
+export async function listProfiles(launch = {}) {
+  const env = cleanEnv(null, { source: launch.env || process.env });
+  const bin = launch.bin || agentLinkBinary(env);
+  const result = await runProcess(bin, ['list', '--json'], { env, timeoutMs: 5000, maxOutputBytes: 2 * 1024 * 1024 });
+  if (result.code !== 0) throw new Error('Could not list saved AgentLink profiles. Run agentlink list.');
+  const rows = JSON.parse(result.stdout);
+  if (!Array.isArray(rows)) throw new Error('AgentLink returned an unreadable profile list.');
+  return rows.filter((p) => p && !p.error).map((p) => ({
+    name: agentLinkProfile(p.name), provider: typeof p.provider === 'string' ? p.provider : null,
+  }));
 }
 
 // Optional ACP end-turn usage is still experimental. Fresh sessions avoid the

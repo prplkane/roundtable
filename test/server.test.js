@@ -17,14 +17,14 @@ const freePort = () => new Promise((resolve, reject) => {
   srv.on('error', reject);
 });
 
-async function startFakeServer(debatesDir, args = []) {
+async function startServer(debatesDir, args, env = process.env) {
   const port = await freePort();
-  const child = spawn(process.execPath, ['src/server.js', '--fake', ...args], { env: { ...process.env, PORT: String(port), ROUNDTABLE_DEBATES_DIR: debatesDir }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  const child = spawn(process.execPath, ['src/server.js', ...args], { env: { ...env, PORT: String(port), ROUNDTABLE_DEBATES_DIR: debatesDir }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   let log = '';
   child.stdout.setEncoding('utf8').on('data', (d) => { log += d; });
   child.stderr.setEncoding('utf8').on('data', (d) => { log += d; });
   const t0 = Date.now();
-  while (!/roundtable \(fake seats\)/.test(log)) {
+  while (!/roundtable(?: \(fake seats\))?: http/.test(log)) {
     if (Date.now() - t0 > 15_000) throw new Error(`server did not start: ${log}`);
     if (child.exitCode != null) throw new Error(`server exited ${child.exitCode}: ${log}`);
     await new Promise((r) => setTimeout(r, 50));
@@ -32,6 +32,8 @@ async function startFakeServer(debatesDir, args = []) {
   const token = /token ([0-9a-f]{32})/.exec(log)?.[1];
   return { port, child, log: () => log, base: `http://127.0.0.1:${port}`, token };
 }
+
+const startFakeServer = (dir, args = []) => startServer(dir, ['--fake', ...args]);
 
 // Read `data:` events from an SSE response until `until(event)` is true (or the stream ends).
 // events.lastId is the last `id:` seen, what a browser would send back as Last-Event-ID.
@@ -71,7 +73,7 @@ test('attended answer windows extend briefly, then continue with unknowns; unatt
     child.stdin.end(body ? JSON.stringify(body) : '');
   });
   const body = { fieldNotes: { decision: 'Synthetic response window', options: ['Trial', 'Wait'] },
-    seats: [{ vendor: 'claude', lens: 'risk' }, { vendor: 'codex', lens: 'cost' }],
+    seats: [{ transport: 'cli', vendor: 'claude', lens: 'risk' }, { transport: 'cli', vendor: 'codex', lens: 'cost' }],
     options: { critiqueRounds: 0, autoContinueMs: 100, questionWaitMs: 5000 } };
   try {
     const started = await cli(['start'], body), id = started.id, route = `/api/debates/${id}`;
@@ -129,7 +131,7 @@ test('agent wait passes an empty correction window without asking for a meaningl
   try {
     const started = await fetch(`${srv.base}/api/debates`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token },
       body: JSON.stringify({ fieldNotes: { decision: 'Synthetic complete context', options: ['Trial', 'Wait'] },
-        seats: [{ vendor: 'claude', lens: 'risk' }, { vendor: 'codex', lens: 'cost' }],
+        seats: [{ transport: 'cli', vendor: 'claude', lens: 'risk' }, { transport: 'cli', vendor: 'codex', lens: 'cost' }],
         options: { critiqueRounds: 0, autoContinueMs: 3000, questionWaitMs: 100 } }) }).then((r) => r.json());
     await readEvents(await fetch(`${srv.base}/api/debates/${started.slug}/events`), (e) => e.type === 'gate');
     const before = await fetch(`${srv.base}/api/debates/${started.slug}/state`).then((r) => r.json());
@@ -158,17 +160,18 @@ test('the JSON agent checks without calls, answers grouped questions, rejects st
     child.stdin.end(body ? JSON.stringify(body) : '');
   });
   const body = { fieldNotes: { decision: 'Synthetic automated review', options: ['Trial', 'Wait'] },
-    seats: [{ vendor: 'claude', lens: 'risk' }, { vendor: 'codex', lens: 'cost' }, { vendor: 'agy', lens: 'evidence' }],
-    chairman: { vendor: 'claude', effort: 'low' }, options: { critiqueRounds: 1 } };
+    seats: [{ transport: 'cli', vendor: 'claude', lens: 'risk' }, { transport: 'cli', vendor: 'codex', lens: 'cost' }, { transport: 'cli', vendor: 'agy', lens: 'evidence' }],
+    chairman: { transport: 'cli', vendor: 'claude', effort: 'low' }, options: { critiqueRounds: 1 } };
   try {
     assert.equal((await fetch(`${srv.base}/api/preview`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })).status, 401);
     const setup = await agent('status');
     assert.equal(setup.exit, 0); assert.equal(setup.result.mode, 'demo');
-    const agyProvider = setup.result.providers.find((p) => p.vendor === 'agy');
+    assert.equal(setup.result.providers.find((p) => p.vendor === 'agy').account, 'agy');
+    const agyProvider = setup.result.directProviders.find((p) => p.vendor === 'agy');
     assert.match(agyProvider.terms.notice, /not supported under consumer plans/, 'status shows the agent the notice to put to the person');
     assert.equal(agyProvider.terms.url, 'https://antigravity.google/docs/faq');
     assert.equal(agyProvider.terms.acknowledgedOnBoard, false);
-    assert.equal(setup.result.providers.find((p) => p.vendor === 'claude').terms, undefined);
+    assert.equal(setup.result.directProviders.find((p) => p.vendor === 'claude').terms, undefined);
     const preview = await agent('check', [], body);
     assert.equal(preview.exit, 0); assert.equal(preview.result.plannedCalls, 7);
     assert.equal((await fetch(`${srv.base}/api/debates`).then((r) => r.json())).debates.length, 0);
@@ -296,8 +299,8 @@ test('an empty added lens is a field error before calls; corrected seats start a
   const post = (p, body = {}) => fetch(`${srv.base}${p}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token }, body: JSON.stringify(body) });
   try {
     const body = { fieldNotes: { decision: 'Synthetic starter lens check', options: ['Trial', 'Wait'] },
-      seats: [{ vendor: 'claude', lens: 'risk' }, { vendor: 'claude', lens: 'cost' }, { vendor: 'claude', lens: '' }],
-      chairman: { vendor: 'claude', effort: 'medium' }, options: { critiqueRounds: 0, autoContinueMs: 5000, wallClockMs: 300000, memory: 'stateless', budget: {} } };
+      seats: [{ transport: 'cli', vendor: 'claude', lens: 'risk' }, { transport: 'cli', vendor: 'claude', lens: 'cost' }, { transport: 'cli', vendor: 'claude', lens: '' }],
+      chairman: { transport: 'cli', vendor: 'claude', effort: 'medium' }, options: { critiqueRounds: 0, autoContinueMs: 5000, wallClockMs: 300000, memory: 'stateless', budget: {} } };
     const invalid = await post('/api/debates', body);
     assert.equal(invalid.status, 400);
     const problem = await invalid.json();
@@ -328,8 +331,8 @@ test('a board that reconnects gets what it missed as new events; a fresh board g
   let slug;
   try {
     ({ slug } = await post('/api/debates', { fieldNotes: { decision: 'Synthetic reconnect check', options: ['Trial', 'Wait'] },
-      seats: [{ vendor: 'claude', lens: 'risk' }, { vendor: 'claude', lens: 'cost' }],
-      chairman: { vendor: 'claude', effort: 'medium' }, options: { critiqueRounds: 1, autoContinueMs: 400, wallClockMs: 300000, memory: 'stateless', budget: {} } }).then((r) => r.json()));
+      seats: [{ transport: 'cli', vendor: 'claude', lens: 'risk' }, { transport: 'cli', vendor: 'claude', lens: 'cost' }],
+      chairman: { transport: 'cli', vendor: 'claude', effort: 'medium' }, options: { critiqueRounds: 1, autoContinueMs: 400, wallClockMs: 300000, memory: 'stateless', budget: {} } }).then((r) => r.json()));
     // The board watches until the first gate, then its connection drops.
     const before = await readEvents(await stream(), (e) => e.type === 'gate');
     assert.ok(before.lastId, 'every event carries an id');
@@ -360,8 +363,8 @@ test('only the board can unlock a hidden mood; an agent request gets plain custo
   const headers = { 'content-type': 'application/json', 'x-roundtable-token': srv.token };
   const code = HIDDEN_MOODS[0].codes[0];
   const body = (n) => ({ fieldNotes: { decision: `Synthetic hidden mood check ${n}`, options: ['Trial', 'Wait'] },
-    seats: [{ vendor: 'claude', lens: 'risk', model: 'opus', effort: 'high', mood: { preset: 'custom', text: code } }, { vendor: 'codex', lens: 'cost' }],
-    chairman: { vendor: 'claude', effort: 'low' }, options: { critiqueRounds: 0 } });
+    seats: [{ transport: 'cli', vendor: 'claude', lens: 'risk', model: 'opus', effort: 'high', mood: { preset: 'custom', text: code } }, { transport: 'cli', vendor: 'codex', lens: 'cost' }],
+    chairman: { transport: 'cli', vendor: 'claude', effort: 'low' }, options: { critiqueRounds: 0 } });
   const seatsOf = async (extra, n) => {
     const { slug } = await fetch(`${srv.base}/api/debates`, { method: 'POST', headers: { ...headers, ...extra }, body: JSON.stringify(body(n)) }).then((r) => r.json());
     const events = await readEvents(await fetch(`${srv.base}/api/debates/${slug}/events`), (e) => e.type === 'started');
@@ -417,7 +420,7 @@ test('a torn record replays with a warning, resumes with an exact backup, and ex
   const file = path.join(dir, 'transcript.jsonl');
   const seats = [{ id: 'seat-0', vendor: 'claude', lens: 'risk', colour: 'rust', index: 0 }, { id: 'seat-1', vendor: 'codex', lens: 'cost', colour: 'olive', index: 1 }];
   const original = Buffer.from(JSON.stringify({ type: 'field-notes', schemaVersion: 3, fake: true,
-    fieldNotes: { decision: 'Recovery check?', options: ['Ship', 'Wait'] }, seats, chairman: { vendor: 'claude' },
+    fieldNotes: { decision: 'Recovery check?', options: ['Ship', 'Wait'] }, seats, chairman: { transport: 'cli', vendor: 'claude' },
     options: { critiqueRounds: 0, memory: 'stateless' } }) + '\n{"type":"attempt","usage":');
   writeFileSync(file, original);
   let srv = await startFakeServer(root);
@@ -498,8 +501,8 @@ test('fake server end to end: three seats, gates answered through the API, trans
   try {
     const body = {
       fieldNotes: { decision: 'Integration: ship the new checkout?', options: ['Ship now', 'Wait a sprint'], constraints: 'two devs' },
-      seats: [{ vendor: 'claude', lens: 'risk' }, { vendor: 'codex', lens: 'cost', mood: 'builder' }, { vendor: 'agy', lens: 'customer' }],
-      chairman: { vendor: 'claude' },
+      seats: [{ transport: 'cli', vendor: 'claude', lens: 'risk' }, { transport: 'cli', vendor: 'codex', lens: 'cost', mood: 'builder' }, { transport: 'cli', vendor: 'agy', lens: 'customer' }],
+      chairman: { transport: 'cli', vendor: 'claude' },
       options: { critiqueRounds: 1, autoContinueMs: 400 },
     };
     const post = async (p, b) => { const r = await fetch(`${srv.base}${p}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token }, body: JSON.stringify(b) }); return { ok: r.ok, body: await r.json() }; };
@@ -613,7 +616,7 @@ test('local API boundary: token, Host, Origin, method, content type and size are
   const srv = await startFakeServer(debatesDir);
   try {
     assert.match(srv.token || '', /^[0-9a-f]{32}$/, 'the startup line prints the launch token');
-    const body = JSON.stringify({ fieldNotes: { decision: 'Boundary?', options: ['A', 'B'] }, seats: [{ vendor: 'claude', lens: 'one' }, { vendor: 'codex', lens: 'two' }], chairman: { vendor: 'claude' } });
+    const body = JSON.stringify({ fieldNotes: { decision: 'Boundary?', options: ['A', 'B'] }, seats: [{ transport: 'cli', vendor: 'claude', lens: 'one' }, { transport: 'cli', vendor: 'codex', lens: 'two' }], chairman: { transport: 'cli', vendor: 'claude' } });
     const json = { 'content-type': 'application/json' };
     const call = (p, init = {}) => fetch(`${srv.base}${p}`, { method: 'POST', body, ...init, headers: { ...json, 'x-roundtable-token': srv.token, ...(init.headers || {}) } }).then((r) => r.status);
     assert.equal(await call('/api/debates', { headers: { 'x-roundtable-token': '' } }), 401, 'no token');
@@ -698,7 +701,7 @@ test('a seat on a named profile gets its own quota pool', { timeout: 60_000 }, a
   const debatesDir = mkdtempSync(path.join(os.tmpdir(), 'rt-debates-'));
   const srv = await startFakeServer(debatesDir);
   try {
-    const body = { fieldNotes: { decision: 'Profiles?', options: ['A', 'B'] }, seats: [{ vendor: 'claude', lens: 'one' }, { vendor: 'codex', lens: 'two', account: 'work' }], chairman: { vendor: 'claude' }, options: { critiqueRounds: 0 } };
+    const body = { fieldNotes: { decision: 'Profiles?', options: ['A', 'B'] }, seats: [{ transport: 'cli', vendor: 'claude', lens: 'one' }, { transport: 'cli', vendor: 'codex', lens: 'two', account: 'work' }], chairman: { transport: 'cli', vendor: 'claude' }, options: { critiqueRounds: 0 } };
     const r = await fetch(`${srv.base}/api/debates`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token }, body: JSON.stringify(body) }).then((x) => x.json());
     const stream = await fetch(`${srv.base}/api/debates/${r.slug}/events`);
     const events = await readEvents(stream, (e) => e.type === 'quota' && e.vendor === 'codex@work');
@@ -713,7 +716,7 @@ test('accept is refused before the debate is done, checks the option, and is rec
   const srv = await startFakeServer(debatesDir);
   try {
     const post = (p, b) => fetch(`${srv.base}${p}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token }, body: JSON.stringify(b) });
-    const body = { fieldNotes: { decision: 'Accept flow?', options: ['Ship now', 'Wait a sprint'] }, seats: [{ vendor: 'claude', lens: 'one' }, { vendor: 'codex', lens: 'two' }], chairman: { vendor: 'claude' }, options: { critiqueRounds: 0 } };
+    const body = { fieldNotes: { decision: 'Accept flow?', options: ['Ship now', 'Wait a sprint'] }, seats: [{ transport: 'cli', vendor: 'claude', lens: 'one' }, { transport: 'cli', vendor: 'codex', lens: 'two' }], chairman: { transport: 'cli', vendor: 'claude' }, options: { critiqueRounds: 0 } };
     const { slug } = await post('/api/debates', body).then((r) => r.json());
     assert.equal((await post(`/api/debates/${slug}/accept`, { option: 'opt-1' })).status, 400, 'refused while the debate runs');
     const stream = await fetch(`${srv.base}/api/debates/${slug}/events`);
@@ -817,7 +820,7 @@ test('a verdict that failed for quota can be written with another chairman', { t
   try {
     const post = (b) => fetch(`${srv.base}/api/debates/${slug}/synthesize`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token }, body: JSON.stringify(b) });
     assert.equal((await post({ chairman: { vendor: 'nope' } })).status, 400);
-    assert.equal((await post({ chairman: { vendor: 'agy' } })).status, 200);
+    assert.equal((await post({ chairman: { transport: 'cli', vendor: 'agy' } })).status, 200);
     const events = await readEvents(await fetch(`${srv.base}/api/debates/${slug}/events`), (e) => e.type === 'done' && !e.replayed);
     assert.ok(events.some((e) => e.type === 'pool-down' && e.vendor === 'claude'), 'the replay carries the login that went down');
     assert.equal(events.find((e) => e.type === 'verdict' && e.failed).errorKind, 'quota', 'replay keeps the reason for the failed chairman');
@@ -838,7 +841,7 @@ test('Stop cancels all work at a gate and during automatic or manual verdicts', 
   try {
     for (const atGate of [true, false]) {
       const created = await post('/api/debates', { fieldNotes: { decision: `Synthetic Stop ${atGate ? 'gate' : 'chairman'}`, options: ['Trial', 'Wait'] },
-        seats: [{ vendor: 'claude', lens: 'risk' }, { vendor: 'codex', lens: 'cost' }], options: { critiqueRounds: 0 } });
+        seats: [{ transport: 'cli', vendor: 'claude', lens: 'risk' }, { transport: 'cli', vendor: 'codex', lens: 'cost' }], options: { critiqueRounds: 0 } });
       const { slug } = await created.json(), route = `/api/debates/${slug}`;
       await readEvents(await fetch(`${srv.base}${route}/events`), (e) => e.type === 'gate');
       if (!atGate) {
@@ -890,7 +893,7 @@ test('history cleanup protects live calls, preserves exports and statistics, and
   const ids = Array.from({ length: 55 }, (_, i) => `saved-${i}`);
   const seats = [{ id: 'seat-0', vendor: 'claude', lens: 'risk', colour: 'rust', index: 0 }];
   const head = { type: 'field-notes', schemaVersion: 3, fieldNotes: { decision: 'PRIVATE_CLEANUP_TEST', options: ['Trial', 'Wait'] },
-    seats, chairman: { vendor: 'claude' }, options: { critiqueRounds: 0 } };
+    seats, chairman: { transport: 'cli', vendor: 'claude' }, options: { critiqueRounds: 0 } };
   const reply = { type: 'reply', round: 0, seat: seats[0], valid: true, failed: false, stanceKey: 'opt-1',
     text: 'STANCE: opt-1\nAGREE_WITH: []\nDISAGREE: none\nNEW: bounded trial\nASSUMPTIONS: budget',
     parsed: { agreeWith: [], disagree: ['none'], new: ['bounded trial'], assumptions: ['budget'] },
@@ -918,7 +921,7 @@ test('history cleanup protects live calls, preserves exports and statistics, and
     const exportBytes = readFileSync(exportPaths.path), indexBytes = readFileSync(exportPaths.indexPath);
 
     const created = await post('/api/debates', { fieldNotes: { decision: 'Synthetic live cleanup protection', options: ['Trial', 'Wait'] },
-      seats: [{ vendor: 'claude', lens: 'risk' }, { vendor: 'codex', lens: 'cost' }], options: { critiqueRounds: 0 } });
+      seats: [{ transport: 'cli', vendor: 'claude', lens: 'risk' }, { transport: 'cli', vendor: 'codex', lens: 'cost' }], options: { critiqueRounds: 0 } });
     const activeId = (await created.json()).slug, activeRoute = `/api/debates/${activeId}`;
     await readEvents(await fetch(`${srv.base}${activeRoute}/events`), (e) => e.type === 'gate');
     assert.equal((await post(`${activeRoute}/delete`)).status, 409, 'waiting for answers is still active');
@@ -980,7 +983,7 @@ test('the agent can finish a discussion after its first round, but cannot reques
     headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token }, body: JSON.stringify(body) });
   try {
     const created = await post('/api/debates', { fieldNotes: { decision: 'Synthetic early verdict', options: ['Trial', 'Wait'] },
-      seats: [{ vendor: 'claude', lens: 'risk' }, { vendor: 'codex', lens: 'cost' }], options: { critiqueRounds: 3 } });
+      seats: [{ transport: 'cli', vendor: 'claude', lens: 'risk' }, { transport: 'cli', vendor: 'codex', lens: 'cost' }], options: { critiqueRounds: 3 } });
     const { slug } = await created.json(), route = `/api/debates/${slug}`;
     assert.equal((await post(`${route}/finish`)).status, 409, 'no completed blind round yet');
     await readEvents(await fetch(`${srv.base}${route}/events`), (e) => e.type === 'gate');
@@ -1006,7 +1009,7 @@ test('the agent can finish a discussion after its first round, but cannot reques
     assert.ok(rows.some((r) => r.type === 'human' && r.source === 'agent' && r.text === 'Use the collected replies.'));
     assert.ok(!events.some((e) => e.type === 'round-start' && e.round >= 2));
     const empty = await post('/api/debates', { fieldNotes: { decision: 'Synthetic empty abort', options: ['Trial', 'Wait'] },
-      seats: [{ vendor: 'claude', lens: 'risk' }, { vendor: 'codex', lens: 'cost' }], options: { critiqueRounds: 0 } });
+      seats: [{ transport: 'cli', vendor: 'claude', lens: 'risk' }, { transport: 'cli', vendor: 'codex', lens: 'cost' }], options: { critiqueRounds: 0 } });
     const emptyId = (await empty.json()).slug, emptyRoute = `/api/debates/${emptyId}`;
     assert.equal((await post(`${emptyRoute}/stop`)).status, 200);
     await readEvents(await fetch(`${srv.base}${emptyRoute}/events`), (e) => e.type === 'done');
@@ -1023,7 +1026,7 @@ test('the agent can finish a discussion after its first round, but cannot reques
 test('a retired model is refused at debate start, with what to use instead', { timeout: 60_000 }, async () => {
   const srv = await startFakeServer(mkdtempSync(path.join(os.tmpdir(), 'rt-debates-')));
   try {
-    const body = { fieldNotes: { decision: 'Retired?', options: ['A', 'B'] }, seats: [{ vendor: 'claude', lens: 'one' }, { vendor: 'codex', lens: 'two', model: 'gpt-5.5' }], chairman: { vendor: 'claude' } };
+    const body = { fieldNotes: { decision: 'Retired?', options: ['A', 'B'] }, seats: [{ transport: 'cli', vendor: 'claude', lens: 'one' }, { transport: 'cli', vendor: 'codex', lens: 'two', model: 'gpt-5.5' }], chairman: { transport: 'cli', vendor: 'claude' } };
     const r = await fetch(`${srv.base}/api/debates`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token }, body: JSON.stringify(body) });
     assert.equal(r.status, 400);
     assert.match((await r.json()).error, /Codex retired gpt-5\.5 \(2026-10-14\); use gpt-6\.2-sol/);
@@ -1061,8 +1064,8 @@ test('live preview and start refuse every Antigravity role without consent, befo
     for (const role of ['seat', 'chairman', 'searcher']) {
       const body = {
         fieldNotes: { decision: 'Synthetic consent boundary', options: ['Trial', 'Wait'] },
-        seats: [{ vendor: 'claude', lens: 'risk' }, { vendor: 'codex', lens: 'cost' }],
-        chairman: { vendor: 'codex' }, options: { critiqueRounds: 0, allowLimitedIsolation: true },
+        seats: [{ transport: 'cli', vendor: 'claude', lens: 'risk' }, { transport: 'cli', vendor: 'codex', lens: 'cost' }],
+        chairman: { transport: 'cli', vendor: 'codex' }, options: { critiqueRounds: 0, allowLimitedIsolation: true },
       };
       if (role === 'seat') body.seats[0].vendor = 'agy';
       if (role === 'chairman') body.chairman.vendor = 'agy';
@@ -1136,5 +1139,48 @@ test('only the board records the Antigravity terms acknowledgment; until then no
     assert.equal((await answer(board, { acknowledged: false })).status, 200);
     assert.equal((await seats()).agy.acknowledgedAt, null);
     assert.equal((await lamp()).kind, 'terms', 'withdrawn: held again');
+  } finally { srv.child.kill(); }
+});
+
+test('a live review routes named providers and its chairman through saved AgentLink profiles', { timeout: 45_000 }, async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rt-profile-defaults-'));
+  const emptyPath = path.join(root, 'empty');
+  mkdirSync(emptyPath);
+  const wire = path.join(root, 'wire.jsonl');
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^path$/i.test(k)));
+  const srv = await startServer(root, ['--no-open'], { ...env, PATH: emptyPath,
+    ROUNDTABLE_AGENTLINK_CLI: path.resolve('test/fixtures/fake-acp.mjs'), ACP_FIXTURE_LOG: wire });
+  const post = (route, body) => fetch(srv.base + route, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token }, body: JSON.stringify(body) });
+  try {
+    const body = { fieldNotes: { decision: 'Run the trial?', options: ['Trial', 'Wait'] },
+      seats: [{ vendor: 'codex', lens: 'risk' }, { vendor: 'claude', lens: 'cost' }], chairman: { vendor: 'agy' },
+      options: { critiqueRounds: 0, unattended: true } };
+    const listing = await (await post('/api/profiles', {})).json();
+    assert.deepEqual(listing.profiles.map((p) => p.name), ['work', 'claude', 'agy']);
+    assert.equal((await post('/api/preview', body)).status, 400, 'profile permissions need consent');
+    body.options.allowLimitedIsolation = true;
+    assert.equal((await post('/api/preview', body)).status, 200);
+    assert.equal(existsSync(wire), false, 'a preview without model pins opens no profile');
+    const start = await post('/api/debates', body);
+    const { slug } = await start.json();
+    assert.ok(slug);
+    const events = await readEvents(await fetch(`${srv.base}/api/debates/${slug}/events`), (e) => e.type === 'done');
+    const state = await (await fetch(`${srv.base}/api/debates/${slug}/state`)).json();
+    assert.equal(state.verdict.status, 'ready');
+    assert.deepEqual(events.find((e) => e.type === 'started').seats.map((s) => [s.vendor, s.account]), [['acp', 'work'], ['acp', 'claude']]);
+    const calls = readFileSync(wire, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.deepEqual(calls.filter((e) => e.start).map((e) => e.account).sort(), ['agy', 'claude', 'work']);
+    assert.equal(calls.filter((e) => e.rpc?.method === 'session/set_config_option').length, 0, 'blank settings follow the profile');
+    for (const [route, pin, reason] of [
+      ['/api/preview', { model: 'retired' }, /no longer offers model/],
+      ['/api/debates', { model: 'fake-choice', effort: 'obsolete' }, /does not offer effort/],
+    ]) {
+      body.chairman = { vendor: 'agy', ...pin };
+      const refused = await post(route, body);
+      assert.equal(refused.status, 400);
+      assert.match((await refused.json()).error, reason);
+    }
+    const after = readFileSync(wire, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(after.filter((e) => e.rpc?.method === 'session/prompt').length, 3, 'stale pins fail without a prompt');
   } finally { srv.child.kill(); }
 });

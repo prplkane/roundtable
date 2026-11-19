@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { makeAcpAdapter, promptUsage, agentLinkBinary, discoverProfile } from '../src/adapters/acp.js';
+import { makeAcpAdapter, promptUsage, agentLinkBinary, discoverProfile, listProfiles } from '../src/adapters/acp.js';
 import { liveChildren, killAll, cleanEnv } from '../src/adapters/spawn.js';
 import { normaliseSeats, normaliseChairman, seatKind } from '../src/seats.js';
 import { ADAPTERS } from '../src/adapters/config.js';
@@ -35,6 +35,12 @@ function setup(t, mode = 'review') {
   return { root, launch, run: makeAcpAdapter(launch), opts: { cwd: root, account: 'synthetic', allowLimitedIsolation: true, timeoutMs: 10000 },
     events: () => readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse) };
 }
+
+test('listing profiles returns only usable public identities without opening an ACP session', async (t) => {
+  const c = setup(t);
+  assert.deepEqual(await listProfiles(c.launch), [{ name: 'work', provider: 'codex' }, { name: 'claude', provider: 'claude' }, { name: 'agy', provider: 'antigravity' }]);
+  assert.throws(c.events, { code: 'ENOENT' });
+});
 
 test('ACP streams an answer, sends only standard methods and uses a fresh isolated session', async (t) => {
   const c = setup(t);

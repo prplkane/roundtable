@@ -9,7 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { VERSION } from './version.js';
 import { localClient } from './local-http.js';
 
-export const LOCAL_API_VERSION = 1;
+export const LOCAL_API_VERSION = 2;
 const SERVER = fileURLToPath(new URL('./server.js', import.meta.url));
 const transient = (message) => Object.assign(new Error(message), { transient: true });
 async function canonical(dir) {

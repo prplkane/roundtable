@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Default Codex, Claude and Antigravity seats and chairmen to saved AgentLink profiles
+  in the browser, CLI and MCP. Leave model and effort empty to follow the profile,
+  or refresh its advertised choices. Direct CLI seats remain available explicitly.
+
 - Read AgentLink model choices and per-model reasoning levels from the selected profile
   in the board or CLI. Direct Codex reads its installed catalogue, with GPT-6.2 Sol and
   Astra in the fallback. Direct Claude offers explicit Fable 5.2 and Haiku 5.5 IDs.

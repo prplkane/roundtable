@@ -7,13 +7,13 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { adapters, ADAPTERS, quotaReaders, poolsByAccount } from './adapters/index.js';
-import { agentLinkBinary, discoverProfile } from './adapters/acp.js';
+import { agentLinkBinary, discoverProfile, listProfiles } from './adapters/acp.js';
 import { profileHome, killAll, liveChildren, resolveBinary, runProcess, cleanEnv } from './adapters/spawn.js';
 import { checkPool, STATUS, endpointLamp, createPreflightCache } from './preflight.js';
 import { retired, quotaGroup } from './adapters/models.js';
 import { vendorCatalogue } from './adapters/catalogue.js';
 import { createDebate, DEFAULTS } from './engine.js';
-import { normaliseSeats, normaliseChairman, MOODS, COLOURS, poolKey, poolVendor, poolAccount, lightestModel } from './seats.js';
+import { normaliseSeats, normaliseChairman, MOODS, COLOURS, poolKey, poolVendor, poolAccount, lightestModel, PROFILE_PROVIDERS, routeReviewProfiles } from './seats.js';
 import { slugFor, openDebateDir, rebuildDebate } from './store.js';
 import { exportDebate, validateTarget, decisionRecord } from './export.js';
 import { rollup, hasUsableRound } from './engine.js';
@@ -74,19 +74,43 @@ const termsRecord = createTermsRecord(TERMS_FILE, { adapters: ADAPTERS, onError:
 } });
 const termsHeld = (vendor, acknowledged = false) => !acknowledged && !termsRecord.acknowledged(vendor);
 
-// Model ids and effort levels per vendor. `agy models` is a network call, so it is read once in
-// the background at boot, or once Antigravity's terms notice is acknowledged; the setup screen
-// gets the static hints until it lands.
-let catalogue = null;
+// Direct catalogues are loaded only for a selected direct connection or searcher.
 const emptyModels = async () => [];
 const staticCatalogue = await vendorCatalogue({ agyModels: emptyModels, codexModels: emptyModels });
-const readCatalogue = async () => {
-  catalogue = FAKE ? staticCatalogue : await vendorCatalogue(termsHeld('agy') ? { agyModels: emptyModels } : {});
-  return catalogue;
-};
-let catalogueReady = readCatalogue();
-const effortsByVendor = () => Object.fromEntries(Object.entries(catalogue || staticCatalogue).map(([v, c]) => [v, c.efforts]));
-const modelsByVendor = () => Object.fromEntries(Object.entries(catalogue || staticCatalogue).map(([v, c]) => [v, c.models || []]));
+const catalogue = { ...staticCatalogue }, directReads = new Map();
+async function directCatalogue(vendor) {
+  if (FAKE || !['agy', 'codex'].includes(vendor) || termsHeld(vendor)) return catalogue[vendor];
+  if (!directReads.has(vendor)) {
+    const read = vendorCatalogue(vendor === 'codex' ? { agyModels: emptyModels } : { codexModels: emptyModels })
+      .then((c) => { if (directReads.get(vendor) === read && !termsHeld(vendor)) catalogue[vendor] = c[vendor]; return catalogue[vendor]; })
+      .finally(() => { if (directReads.get(vendor) === read && !catalogue[vendor]?.models?.length) directReads.delete(vendor); });
+    directReads.set(vendor, read);
+  }
+  return directReads.get(vendor);
+}
+const effortsByVendor = () => Object.fromEntries(Object.entries(catalogue).map(([v, c]) => [v, c.efforts]));
+const modelsByVendor = () => Object.fromEntries(Object.entries(catalogue).map(([v, c]) => [v, c.models || []]));
+
+let listing;
+function profileInventory() {
+  if (FAKE) return Promise.resolve({ profiles: Object.entries(PROFILE_PROVIDERS).map(([name, provider]) => ({ name, provider })) });
+  listing ??= listProfiles().then((profiles) => ({ profiles })).catch((e) => ({
+    profiles: [], error: e.code === 'ENOENT' ? 'Install AgentLink to use saved profiles.' : 'Could not read AgentLink profiles. Run agentlink list.',
+  })).finally(() => { listing = null; });
+  return listing;
+}
+
+async function reviewConnections(raw) {
+  const cards = [...(Array.isArray(raw?.seats) ? raw.seats : []), raw?.chairman];
+  const named = cards.some((s) => s && Object.hasOwn(PROFILE_PROVIDERS, s.vendor) && s.transport !== 'cli');
+  const inventory = named ? await profileInventory() : { profiles: [] };
+  if (inventory.error) throw new Error(inventory.error);
+  const routed = routeReviewProfiles(raw, inventory.profiles);
+  const direct = cards.filter((s) => s?.transport === 'cli').map((s) => s.vendor);
+  if (raw?.options?.research) direct.push(raw.options.research.vendor || 'codex');
+  await Promise.all([...new Set(direct)].map(directCatalogue));
+  return routed;
+}
 
 // The quota picture. Baselines: tokens per call per vendor from every transcript on disk.
 // Calibration: how much of each vendor window one round took, measured between the quota
@@ -298,7 +322,7 @@ const preflightCache = createPreflightCache({ check: (key) => {
 async function loginStatus(vendor, account) {
   if (FAKE) return true;
   const s = STATUS[vendor];
-  if (!s) return (catalogue || await catalogueReady)?.[vendor]?.models?.length ? true : null; // agy: its model list answered
+  if (!s) return (await directCatalogue(vendor))?.models?.length ? true : null; // agy: its model list answered
   const home = account && ADAPTERS[vendor].home ? { env: ADAPTERS[vendor].home.env, dir: profileHome(vendor, account) } : null;
   try {
     const r = await runProcess(resolveBinary(ADAPTERS[vendor].binary, ADAPTERS[vendor].npmBin), s.args, { env: cleanEnv(home), timeoutMs: 20_000 });
@@ -310,6 +334,7 @@ async function loginStatus(vendor, account) {
 // variable of this process, so the launch token is required). No request leaves this server
 // for an endpoint pool (preflight.js endpointLamp).
 async function preflight(keys, { refresh = false, fresh = false, endpoints = {} } = {}) {
+  const inventory = refresh && !FAKE && keys.some((key) => poolVendor(key) === 'acp') ? await profileInventory() : null;
   return Promise.all(keys.map(async (key) => {
     const vendor = poolVendor(key), account = poolAccount(key);
     if (!Object.hasOwn(ADAPTERS, vendor)) return { key, state: 'danger', kind: 'missing', note: `unknown vendor ${vendor}` };
@@ -318,8 +343,12 @@ async function preflight(keys, { refresh = false, fresh = false, endpoints = {} 
       if (FAKE) return { key, vendor, account, installed: null, loggedIn: null, quota: null, state: 'ok', kind: 'demo', note: 'Scripted demo; no AgentLink or vendor process is used' };
       try {
         agentLinkBinary();
+        if (inventory && account && !inventory.error && !inventory.profiles.some((p) => p.name === account)) {
+          const setup = Object.hasOwn(PROFILE_PROVIDERS, account) ? ` Run agentlink add ${account} --provider ${PROFILE_PROVIDERS[account]}.` : ' Choose a saved profile.';
+          return { key, vendor, account, installed: true, loggedIn: null, quota: null, state: 'danger', kind: 'missing', note: `AgentLink profile "${account}" is missing.${setup}` };
+        }
         return { key, vendor, account, installed: true, loggedIn: null, quota: null, state: 'warn', kind: 'unknown',
-          note: account ? 'AgentLink found; profile, login and ACP support are checked on the first call' : 'Choose a saved AgentLink profile' };
+          note: !account ? 'Choose a saved AgentLink profile' : inventory?.error || (inventory ? 'Saved AgentLink profile. Sign-in and quota are unverified.' : 'Refresh status to check this AgentLink profile.') };
       } catch (e) { return { key, vendor, account, installed: false, loggedIn: null, quota: null, state: 'danger', kind: 'missing', note: e.message }; }
     }
     if (ADAPTERS[vendor].kind === 'api') {
@@ -478,7 +507,7 @@ function scheduleGate(d, duration, extended = false) {
 const cookie = (req, name) => (req.headers.cookie || '').split(/;\s*/).find((c) => c.startsWith(`${name}=`))?.slice(name.length + 1);
 let pickingFolder = false;
 const fromBoard = (req) => cookie(req, 'rt_board') === BOARD_COOKIE && ORIGINS.has(req.headers.origin || '') && req.headers['sec-fetch-site'] === 'same-origin';
-function prepareDebate(raw, { board = false } = {}) {
+async function prepareDebate(raw, { board = false } = {}) {
   const body = validateDebateRequest(raw, { adapters: ADAPTERS });
   const fieldNotes = body.fieldNotes;
   if (fieldNotes.exportTo) fieldNotes.exportTo = validateTarget(fieldNotes.exportTo, { forbid: [DEBATES_DIR] }); // checked up front, not when the verdict lands
@@ -500,6 +529,24 @@ function prepareDebate(raw, { board = false } = {}) {
   // the board always names the searcher's settings, even "default"; an agent may leave them out
   const named = ['model', 'effort', 'account'].some((k) => raw?.options?.research && Object.hasOwn(raw.options.research, k));
   if (options.research) options.research = searcherSettings(options.research, named);
+  if (!FAKE) {
+    // Validate each distinct pinned profile/model once, before any review prompt can run.
+    // An unpinned review goes straight to the profile defaults.
+    const checks = new Map();
+    for (const s of [...seats, chairman]) {
+      if (s?.vendor !== 'acp' || (!s.model && !s.effort)) continue;
+      const key = JSON.stringify([s.account, s.model || '']);
+      if (!checks.has(key)) checks.set(key, { account: s.account, model: s.model || '', efforts: new Set() });
+      if (s.effort) checks.get(key).efforts.add(s.effort);
+    }
+    await Promise.all([...checks.values()].map(async ({ account, model, efforts }) => {
+      const cat = await discoverProfile(account, model);
+      if (model && !cat.models.some((m) => m.id === model)) throw new Error(`AgentLink profile ${account} no longer offers model ${model}. Refresh profile models or choose the profile default.`);
+      for (const effort of efforts) {
+        if (!cat.efforts.includes(effort)) throw new Error(`AgentLink profile ${account} does not offer effort ${effort} for ${model || 'its default model'}. Refresh profile models.`);
+      }
+    }));
+  }
   return { fieldNotes, seats, chairman, options };
 }
 
@@ -515,8 +562,7 @@ function searcherSettings(research, named) {
   return { ...rest, ...(s.model ? { model: s.model } : {}), ...(s.effort ? { effort: s.effort } : {}), ...(s.account ? { account: s.account } : {}) };
 }
 
-function startDebate(raw, opts) {
-  const { fieldNotes, seats, chairman, options } = prepareDebate(raw, opts);
+function startDebate({ fieldNotes, seats, chairman, options }) {
   const slug = slugFor(fieldNotes.decision, DEBATES_DIR);
   const store = openDebateDir(DEBATES_DIR, slug);
   const d = { slug, gen: Date.now(), events: [], clients: new Set(), pending: null, timer: null, store, qAtRound: {}, settled: new Set(), interrupted: false, finished: false };
@@ -734,9 +780,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && p.startsWith('/src/') && p.endsWith('.js')) return serveFile(res, path.join(ROOT, path.normalize(p)));
 
     if (req.method === 'GET' && p === '/api/seats') {
-      const cat = catalogue || (url.searchParams.get('cached') === '1' ? staticCatalogue : await catalogueReady);
+      const cat = catalogue;
       return json(res, 200, {
-        runtime: { mode: FAKE ? 'demo' : 'live', dataDir: DEBATES_DIR, cataloguePending: !catalogue, ...(legacyDataDirs.length ? { legacyDataDirs } : {}), diagnostics: diagnostics.status() },
+        runtime: { mode: FAKE ? 'demo' : 'live', dataDir: DEBATES_DIR, cataloguePending: false, ...(legacyDataDirs.length ? { legacyDataDirs } : {}), diagnostics: diagnostics.status() },
         vendors: Object.entries(ADAPTERS).map(([vendor, a]) => ({
           vendor, kind: a.kind, label: a.label, colour: a.colour, usageUrl: a.usageUrl || null, quota: quota[vendor] || null, profiles: poolsByAccount(a), limitedIsolation: a.limitedIsolation === true, search: !!a.research,
           terms: termsRecord.status(vendor), pool: a.pool, catalogue: cat[vendor],
@@ -770,7 +816,9 @@ const server = http.createServer(async (req, res) => {
       if (typeof body?.acknowledged !== 'boolean') throw new Error('acknowledged must be true or false.');
       const terms = termsRecord.set(tm[1], body.acknowledged);
       console.log(`[terms] ${ADAPTERS[tm[1]].label} terms notice ${body.acknowledged ? 'acknowledged on the board' : 'acknowledgment withdrawn'}`);
-      if (body.acknowledged) { catalogueReady = readCatalogue(); await catalogueReady; refreshQuota(tm[1]); }
+      directReads.delete(tm[1]);
+      catalogue[tm[1]] = staticCatalogue[tm[1]];
+      if (body.acknowledged) { await directCatalogue(tm[1]); refreshQuota(tm[1]); }
       return json(res, 200, { terms, catalogue: catalogue?.[tm[1]] || null });
     }
     if (req.method === 'GET' && p === '/api/debates') return json(res, 200, { debates: await listDebates(), usage: usageStore.summary(FAKE) });
@@ -790,6 +838,15 @@ const server = http.createServer(async (req, res) => {
       try { const chosen = await pickFolder(); return json(res, 200, chosen ? { path: chosen } : { cancelled: true }); }
       finally { pickingFolder = false; }
     }
+    if (req.method === 'POST' && p === '/api/profiles') {
+      await readBody(req);
+      return json(res, 200, await profileInventory());
+    }
+    if (req.method === 'POST' && p === '/api/direct-models') {
+      const { vendor } = await readBody(req);
+      if (!Object.hasOwn(PROFILE_PROVIDERS, vendor)) throw new Error('Choose a direct CLI provider.');
+      return json(res, 200, await directCatalogue(vendor));
+    }
     if (req.method === 'POST' && p === '/api/profile-models') {
       const body = await readBody(req);
       if (FAKE) throw new Error('Profile discovery is available in live mode.');
@@ -797,12 +854,11 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, await discoverProfile(body.account, body.model));
     }
     if (req.method === 'POST' && p === '/api/preview') {
-      const body = await readBody(req);
-      await catalogueReady;
-      const plan = prepareDebate(body, { board: fromBoard(req) });
+      const body = await reviewConnections(await readBody(req));
+      const plan = await prepareDebate(body, { board: fromBoard(req) });
       return json(res, 200, { valid: true, mode: FAKE ? 'demo' : 'live',
         plannedCalls: plan.seats.length * (plan.options.critiqueRounds + 1) + 1 + (plan.options.research ? 1 : 0),
-        projection: project({ seats: plan.seats, chairman: plan.chairman || { vendor: plan.seats[0].vendor }, critiqueRounds: plan.options.critiqueRounds, memory: plan.options.memory, research: plan.options.research, baselines }),
+        projection: project({ seats: plan.seats, chairman: plan.chairman || (plan.seats[0].vendor === 'acp' ? plan.seats[0] : { vendor: plan.seats[0].vendor }), critiqueRounds: plan.options.critiqueRounds, memory: plan.options.memory, research: plan.options.research, baselines }),
         note: 'Estimate before retries. Checking does not start a review or call a model.' });
     }
     if (p === '/api/preflight' && (req.method === 'GET' || req.method === 'POST')) {
@@ -817,9 +873,8 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { pools: await preflight(keys, { refresh, fresh: body.fresh === true, endpoints }) });
     }
     if (req.method === 'POST' && p === '/api/debates') {
-      const body = await readBody(req);
-      await catalogueReady;
-      return json(res, 200, { slug: startDebate(body, { board: fromBoard(req) }) });
+      const body = await reviewConnections(await readBody(req));
+      return json(res, 200, { slug: startDebate(await prepareDebate(body, { board: fromBoard(req) })) });
     }
     const m = p.match(/^\/api\/debates\/([^/]+)\/(events|state|continue|finish|stop|hold|resume|export|synthesize|accept)$/);
     if (m) {
@@ -871,7 +926,7 @@ const server = http.createServer(async (req, res) => {
         if (relayed) body.source = 'relayed';
       }
       if (m[2] === 'resume') { resumeDebate(d, body); return json(res, 200, { ok: true }); }
-      if (m[2] === 'synthesize') { synthesizeDebate(d, body); return json(res, 200, { ok: true }); }
+      if (m[2] === 'synthesize') { synthesizeDebate(d, await reviewConnections(body)); return json(res, 200, { ok: true }); }
       if (m[2] === 'accept') return json(res, 200, acceptDecision(d, body));
       if (m[2] === 'export') {
         if (!d.finished) return requestError(res, 400, 'Export after the verdict; the record needs the whole debate.', 'export');
@@ -924,8 +979,7 @@ server.listen(PORT, '127.0.0.1', () => {
   process.stdout.write(terminalBanner());
   console.log(`roundtable${FAKE ? ' (fake seats)' : ''}: ${url}  token ${TOKEN}`);
   console.log(`mode: ${FAKE ? 'demo (scripted replies and usage)' : 'live'}; data: ${DEBATES_DIR}`);
-  const found = Object.entries(ADAPTERS).filter(([v, a]) => a.kind === 'cli' && installed(v)).map(([, a]) => paintVendor(a));
-  if (!FAKE) console.log(found.length ? `providers: ${found.join(', ')} (CLIs on PATH; an API endpoint is seated on the board)` : 'providers: no Claude, Codex or Antigravity CLI on PATH; seat an API endpoint on the board, or install one and restart. roundtable doctor has details');
+  if (!FAKE) console.log('providers: AgentLink profiles for seats and chairman. The board lists saved profiles and offers direct connections.');
   console.log('diagnostics: _diagnostics in the data folder; use Save error log on the board. Nothing is uploaded.');
   console.log(`${opened ? 'the board is open in your browser' : `open ${url} in your browser`}; Ctrl+C here stops the server and every CLI it started`);
 });
@@ -953,4 +1007,4 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('uncaughtException', (e) => { diagnostics.write({ code: 'server-crash', action: 'unknown' }, e); console.error('[server] uncaught:', e); shutdown('uncaught error', 1); });
 process.on('unhandledRejection', (e) => { diagnostics.write({ code: 'server-crash', action: 'unknown' }, e); console.error('[server] unhandled rejection:', e); });
-for (const vendor of Object.keys(readers)) refreshQuota(vendor); // one read each at start: claude and agy -p /usage, the codex app-server; agy only once its terms notice is acknowledged
+if (FAKE) for (const vendor of Object.keys(readers)) refreshQuota(vendor);

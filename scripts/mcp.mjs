@@ -17,8 +17,8 @@ const review = { type: 'object', required: ['fieldNotes', 'seats'], additionalPr
     constraints: text(LIMITS.field), known: text(LIMITS.field), assumed: text(LIMITS.field), reversibility: text(LIMITS.field), deadline: text(LIMITS.field),
   }, additionalProperties: false },
   seats: { type: 'array', minItems: LIMITS.seats[0], maxItems: LIMITS.seats[1], items: { type: 'object', required: ['vendor', 'lens'],
-    properties: { vendor: text(LIMITS.seatField), lens: text(LIMITS.seatField), model: text(LIMITS.seatField), effort: text(LIMITS.seatField) }, additionalProperties: true } },
-  chairman: { type: 'object', properties: { vendor: text(LIMITS.seatField), model: text(LIMITS.seatField), effort: text(LIMITS.seatField) }, additionalProperties: true },
+    properties: { vendor: text(LIMITS.seatField, 'codex, claude and agy use AgentLink by default. acp selects an exact profile.'), account: text(64), transport: { type: 'string', enum: ['agentlink', 'cli'] }, lens: text(LIMITS.seatField), model: text(LIMITS.seatField), effort: text(LIMITS.seatField) }, additionalProperties: true } },
+  chairman: { type: 'object', properties: { vendor: text(LIMITS.seatField), account: text(64), transport: { type: 'string', enum: ['agentlink', 'cli'] }, model: text(LIMITS.seatField), effort: text(LIMITS.seatField) }, additionalProperties: true },
   options: { type: 'object', properties: {
     critiqueRounds: { ...round, description: 'Default 1. Use 0 for a quick comparison; 2 for deeper examination within agreed limits. Consensus can stop early.' },
     unattended: { type: 'boolean', description: 'True only when nobody will answer. Attended reviews auto-continue after the answer window.' },

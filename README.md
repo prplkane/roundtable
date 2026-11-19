@@ -28,16 +28,21 @@ the seats' questions, then read the recommendation. You can export it with your 
 
 ![Browser demo with two questions awaiting answers and three seats split between shipping now and waiting a sprint](docs/images/board-questions.png)
 
-For a live review, install Roundtable and sign in to the provider CLIs you plan to use,
-or configure an OpenAI-compatible endpoint. Check the setup and open the board:
+For live reviews, sign in to the provider CLIs you use and create their AgentLink
+profiles once. The browser and the Codex workflow use the same profiles.
 
 ```sh
-npm install -g @prplkane/roundtable
-roundtable doctor
+npm install -g @prplkane/roundtable @prplkane/agentlink@0.3.0-beta.2
+agentlink add codex --provider codex
+agentlink add claude --provider claude
+agentlink add agy --provider antigravity
 roundtable
 ```
 
-The [live board](http://localhost:4747/) shows login warnings and an estimate before you start.
+On the [live board](http://localhost:4747/), choose a profile for each seat and the
+chairman. Leave Model and Effort blank to follow the profile defaults. Choose **Load
+profile models** to see the available choices and **Refresh profile models** after a
+provider update. Direct CLI seats and OpenAI-compatible endpoints are also available.
 A searcher can gather cited sources for every seat before the first round. For provider setup
 and a first live run, see the [test-drive guide](docs/workflow.md#a-first-live-test-drive).
 
@@ -67,7 +72,7 @@ Restart Codex or reload its MCP connections. In any project, try:
 
 Codex checks the request and relays questions and the final recommendation. ACP seats use
 fresh sessions and the selected profile's permissions and billing. Confirm that you accept
-limited isolation for these profiles before starting. [AgentLink setup and limits](docs/workflow.md#7c-agentlink-acp-profiles-optional).
+limited isolation for these profiles before starting. [AgentLink setup and limits](docs/workflow.md#7c-agentlink-acp-profiles).
 
 ![Board opened from the Codex review showing both AgentLink profiles, the recommendation to run a trial and the cost seat's dissent](docs/images/codex-agentlink-review.png)
 

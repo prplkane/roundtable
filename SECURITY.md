@@ -1,8 +1,9 @@
 # Security
 
-Roundtable runs a loopback server on your machine. Live debates use the vendor CLIs,
-AgentLink ACP profiles or API endpoints you explicitly configure; demo mode uses
-scripted replies.
+Roundtable runs a loopback server on your machine. Codex, Claude and Antigravity seats use the selected AgentLink profiles by default.
+The authenticated profile list returns saved names and provider identifiers. Listing profiles
+does not launch a bridge. Direct CLI connections and API endpoints can be selected explicitly.
+Demo mode uses scripted replies.
 
 ## Data and execution
 
