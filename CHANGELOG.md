@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0
 
 - Read model and reasoning-level display names and saved defaults from AgentLink beta.3.
   Profile discovery can list replacements for a retired central selection. Review sessions

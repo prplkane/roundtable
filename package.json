@@ -1,6 +1,6 @@
 {
   "name": "@prplkane/roundtable",
-  "version": "0.6.7",
+  "version": "0.7.0",
   "description": "Run decision reviews with multiple AI agents and export the outcome as Markdown.",
   "keywords": [
     "claude",
