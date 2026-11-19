@@ -154,7 +154,7 @@ profile, not once per project. Roundtable has no separate account or login.
 
 Setup writes the installed Node and MCP script paths into the assistant's user configuration
 and copies the workflow skill. On reload, the assistant launches that script and discovers
-the 11 tools over stdio. The first tool that needs the board starts it locally in the background
+the tools over stdio. The first tool that needs the board starts it locally in the background
 on port 4747. Roundtable invokes the provider CLIs with their existing logins only when the
 requested action needs them. There is no Roundtable cloud connection or API key to enter.
 Keep the provider CLI executables on the assistant's `PATH`; after changing a Node version or
@@ -433,7 +433,7 @@ checked yet).
 | Vendor | Claude, Codex or Antigravity, or **API endpoint** (section 7b). Pick the same vendor more than once if you like. Next to it, a tag says what kind of seat it is: `CLI · subscription`, `API · local` or `API · pay-per-token`. |
 | Lens | The angle this seat argues from, for example "risk", "cost", "the clinician". Must be unique: it is the only name the other seats ever see. |
 | Mood | How it argues. `grill` (the default) attacks assumptions and demands evidence. `steelman` states each option at its best first. `builder` judges by what it takes to ship. `contrarian` takes the least popular side. `custom` takes your own sentence. |
-| Model | Under the vendor name on the card, with stronger model families first. Names carry only **default** and **lightest** notes; the CLI decides model access. This is a broad capability order, not a benchmark comparison across vendors. Antigravity lists each model once and its effort pips choose the variant. **Custom model ID…** opens a text field and keeps your selection while you edit; enter an ID or choose a listed model before starting. Terra requires Codex CLI 0.159 or later. A retired model is refused with what to use instead. |
+| Model | Under the vendor name on the card, with stronger model families first. Names carry only **default** and **lightest** notes; the CLI decides model access. This is a broad capability order, not a benchmark comparison across vendors. Antigravity lists each model once. Its effort buttons select an advertised variant, and preview checks the ID against the available list. Direct Codex reads visible models and reasoning levels from the installed CLI at startup. Direct Claude uses maintained suggestions and accepts explicit model IDs. **Custom model ID…** opens a text field and keeps your selection while you edit; enter an ID or choose a listed model before starting. Terra requires Codex CLI 0.159 or later. A retired model is refused with what to use instead. |
 | Effort | The thinking level, as pips: click one to set it, click the last filled one again for the CLI's default. Higher thinks longer and draws more. |
 | Login profile | Behind "Login profile" on the card. Leave empty to use your normal login; fill in only to seat a second account of the same CLI (step 7). |
 
@@ -925,6 +925,13 @@ The initial integration deliberately has these limits:
   errors identify that step; Roundtable does not open a login terminal automatically.
   The readiness lamp checks the launcher only. Use `agentlink check PROFILE` to
   check initialization; a successful check does not prove task compatibility.
+- Choose **Load profile models** on a seat or the chairman to read a trusted profile’s
+  current ACP model choices. Selecting a model reads its reasoning levels. **Refresh profile
+  models** checks again after an adapter or vendor update. These actions open a temporary
+  session without sending a prompt. Leaving the model and effort blank follows the profile
+  defaults on every new turn. For the CLI, use `roundtable agent models --input profile.json`
+  with `{"account":"codex","allowLimitedIsolation":true}` and an optional `model`.
+  The `roundtable_models` MCP tool accepts the same fields.
 - **Updates are central.** An explicit `agentlink bridge update NAME` changes new
   connections, including the next Roundtable turn. In-flight connections retain
   their AgentLink lease. There is no automatic update during connection startup.

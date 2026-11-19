@@ -1026,7 +1026,7 @@ test('a retired model is refused at debate start, with what to use instead', { t
     const body = { fieldNotes: { decision: 'Retired?', options: ['A', 'B'] }, seats: [{ vendor: 'claude', lens: 'one' }, { vendor: 'codex', lens: 'two', model: 'gpt-5.5' }], chairman: { vendor: 'claude' } };
     const r = await fetch(`${srv.base}/api/debates`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token }, body: JSON.stringify(body) });
     assert.equal(r.status, 400);
-    assert.match((await r.json()).error, /Codex retired gpt-5\.5 \(2026-10-14\); use gpt-6\.1-sol/);
+    assert.match((await r.json()).error, /Codex retired gpt-5\.5 \(2026-10-14\); use gpt-6\.2-sol/);
   } finally {
     srv.child.kill();
   }
@@ -1076,6 +1076,13 @@ test('live preview and start refuse every Antigravity role without consent, befo
       const preview = await post('/api/preview', body);
       assert.equal(preview.status, 200, `${role}: explicit consent permits validation`);
       assert.equal((await preview.json()).valid, true);
+      const card = role === 'seat' ? body.seats[0] : role === 'chairman' ? body.chairman : body.options.research;
+      card.model = 'gemini-4-neon-xhigh-medium';
+      for (const route of ['/api/preview', '/api/debates']) {
+        const invalid = await post(route, body);
+        assert.equal(invalid.status, 400);
+        assert.match((await invalid.json()).error, /model.*neon-xhigh-medium.*unavailable/);
+      }
     }
     assert.deepEqual((await fetch(`${base}/api/debates`).then((r) => r.json())).debates, []);
   } finally { child.kill(); }

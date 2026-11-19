@@ -1,3 +1,4 @@
+import { effortSuffix } from './models.js';
 // One row per vendor. Everything the adapters need to know about a vendor lives here.
 //
 //  kind        'cli': the vendor's own CLI on the user's subscription (the normal seat);
@@ -187,9 +188,9 @@ export const ADAPTERS = {
     model: (m) => ['--model', m],
     effort: (e) => ['--effort', e],
     effortLevels: ['low', 'medium', 'high'], // `claude --help`: "--effort <level>"
-    // Request no extended-thinking budget for hidden-mood seats, which select Haiku 4.5.
+    // Request no extended-thinking budget for hidden-mood seats, which select Haiku.
     minimalEnv: { MAX_THINKING_TOKENS: '0' },
-    modelHints: ['opus', 'sonnet', 'claude-haiku-4-5'],  // use the explicit Haiku model id
+    modelHints: [], // direct CLI fallback in models.js
     pool: 'Anthropic subscription',
     promptVia: 'stdin',
     output: 'jsonl',
@@ -275,7 +276,7 @@ export const ADAPTERS = {
     // CLI effort vocabulary; availability depends on the selected model and installed CLI.
     // ~/.codex/config.toml is not a source: --ignore-user-config keeps it from the seat.
     effortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-    modelHints: [], // curated capability and plan hints in models.js; no catalogue refresh at startup
+    modelHints: [], // catalogue.js reads the CLI listing and falls back to models.js
     pool: 'ChatGPT subscription',
     promptVia: 'stdin',
     output: 'jsonl',
@@ -350,11 +351,9 @@ export const ADAPTERS = {
     resume: (id, base) => [...base, '--conversation', id],
     model: (m) => ['--model', m],
     effort: (e) => ['--effort', e],
-    // `agy --help` (1.4.12) lists low|medium|high|xhigh|max, but a model takes only its own levels
-    // and every model `agy models` lists refuses xhigh and max before any turn ("gemini-4-argon
-    // has no "xhigh" effort (available: low, medium, high)"). A family's levels come from its ids.
-    effortLevels: ['low', 'medium', 'high'],
-    effortInModel: /-(low|medium|high)$/,    // `agy models` ids end in the level: gemini-4-argon-high
+    // Listed variants carry their own level. Discovery adds any new advertised levels.
+    effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    effortInModel: effortSuffix,
     modelHints: [], // filled from `agy models` (catalogue.js)
     // `/usage`: limits per model group (Gemini; Claude and GPT; Gemini 4 Argon on some plans),
     // each with a weekly and usually a 5-hour window; AI credits, when enabled, take over after.
@@ -424,7 +423,7 @@ export const ADAPTERS = {
   },
   acp: {
     kind: 'acp', label: 'AgentLink (ACP)', binary: 'agentlink',
-    npmBin: ['@local/agentlink', 'src/cli.mjs'],
+    npmBin: ['@prplkane/agentlink', 'src/cli.mjs'],
     args: [], resume: null, model: null, effort: null, home: null,
     effortLevels: [], modelHints: [], paths: { cost: null, quota: null },
     quota: null, usageUrl: null, colour: 'dusk', limitedIsolation: true,

@@ -3,6 +3,8 @@
 import { spawn } from 'node:child_process';
 import { mkdirSync, existsSync } from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { cleanEnv, resolveBinary, registerCall, killTree } from './spawn.js';
 import { agentLinkProfile } from '../seats.js';
 import { VERSION } from '../version.js';
@@ -147,63 +149,89 @@ function connect(bin, profile, { cwd, env, signal, onUpdate }) {
 const configOption = (session, category, ids) => Array.isArray(session.configOptions)
   && session.configOptions.find((o) => o?.type === 'select' && (o.category === category || (!o.category && ids.includes(o.id))));
 const optionValues = (option) => Array.isArray(option?.options) ? option.options.flatMap((o) => Array.isArray(o?.options) ? o.options : [o]).filter(record) : [];
+const MODEL = { category: 'model', ids: ['model'], what: 'model' };
+const EFFORT = { category: 'thought_level', ids: ['thought_level', 'effort', 'reasoning_effort', 'reasoning'], what: 'reasoning level' };
+const advertised = (session, option) => optionValues(configOption(session, option.category, option.ids));
 async function selectOption(connection, session, value, { category, ids, what }) {
   const option = configOption(session, category, ids);
   if (!option || !optionValues(option).some((o) => o.value === value)) throw fault(`The ACP agent did not advertise this ${what}. Use its default or an advertised ${what} ID.`, 'ACP_UNSUPPORTED');
-  await connection.request('session/set_config_option', { sessionId: session.sessionId, configId: option.id, value });
+  const result = await connection.request('session/set_config_option', { sessionId: session.sessionId, configId: option.id, value });
+  if (Array.isArray(result.configOptions)) session.configOptions = result.configOptions;
 }
 
-export function makeAcpAdapter({ bin, env: suppliedEnv } = {}) {
-  return async (prompt, previousSession = null, opts = {}) => {
-    const profile = agentLinkProfile(opts.account);
-    if (!opts.allowLimitedIsolation) throw fault('ACP profiles control their own permissions and customization. Accept limited isolation before using this profile.', 'ISOLATION_REQUIRED', 'policy');
-    if (previousSession || opts.keepSession) throw fault('ACP seats currently require stateless memory; no previous session was loaded.', 'ACP_STATELESS_REQUIRED');
-    if (opts.research) throw fault('ACP seats do not support Roundtable web research.', 'ACP_UNSUPPORTED');
-    const cwd = opts.cwd;
-    if (!cwd || !path.isAbsolute(cwd)) throw fault('ACP seats need an absolute, isolated working directory.');
-    mkdirSync(cwd, { recursive: true });
-    const env = cleanEnv(null, { source: suppliedEnv || process.env });
-    const launch = bin || agentLinkBinary(env);
-    const call = registerCall(opts.tag);
-    const timeout = new AbortController();
-    const timer = setTimeout(() => timeout.abort(fault('ACP call timed out.', 'TIMEOUT', 'timeout')), opts.timeoutMs ?? 300_000);
-    const signal = AbortSignal.any([call.signal, timeout.signal, ...(opts.signal ? [opts.signal] : [])]);
-    const started = Date.now();
-    let text = '', cost = null, activePrompt = false;
-    let connection;
-    try {
-      if (signal.aborted) throw signal.reason;
-      connection = connect(launch, profile, { cwd, env, signal, onUpdate: (update) => {
-        if (!activePrompt) return;
-        if (update.sessionUpdate === 'agent_message_chunk') {
-          if (update.content?.type !== 'text' || typeof update.content.text !== 'string') throw fault('ACP review replies must contain text.');
-          text += update.content.text;
-        } else if (update.sessionUpdate === 'usage_update' && update.cost?.currency === 'USD' && Number.isFinite(update.cost.amount) && update.cost.amount >= 0) cost = update.cost.amount;
-      } });
-      const init = await connection.request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'roundtable', version: VERSION } });
-      if (init.protocolVersion !== 1) throw fault('This Roundtable client requires ACP v1; the agent negotiated an incompatible protocol.', 'ACP_UNSUPPORTED');
-      const session = await connection.request('session/new', { cwd, mcpServers: [] });
-      if (typeof session.sessionId !== 'string' || !session.sessionId) throw fault('ACP agent did not return a session ID.');
-      connection.setSession(session.sessionId);
-      if (opts.model) await selectOption(connection, session, opts.model, { category: 'model', ids: ['model'], what: 'model' });
-      // the seat's effort is the agent's own reasoning level (ACP category thought_level)
-      if (opts.effort) await selectOption(connection, session, opts.effort, { category: 'thought_level', ids: ['thought_level', 'effort', 'reasoning_effort', 'reasoning'], what: 'reasoning level' });
-      activePrompt = true;
-      const result = await connection.request('session/prompt', { sessionId: session.sessionId, prompt: [{ type: 'text', text: prompt }] });
-      connection.check();
-      if (result.stopReason !== 'end_turn') throw fault(`ACP turn did not complete (${String(result.stopReason || 'missing stop reason')}).`, result.stopReason === 'cancelled' ? 'KILLED' : 'CLI_FAILURE', result.stopReason === 'cancelled' ? 'killed' : 'other');
-      if (!text.trim()) throw fault('ACP agent completed without a text answer.');
+async function withProfile(prompt, previousSession, opts, { bin, env: suppliedEnv }, inspect) {
+  const profile = agentLinkProfile(opts.account);
+  if (!opts.allowLimitedIsolation) throw fault('ACP profiles control their own permissions and customization. Accept limited isolation before using this profile.', 'ISOLATION_REQUIRED', 'policy');
+  if (previousSession || opts.keepSession) throw fault('ACP seats currently require stateless memory; no previous session was loaded.', 'ACP_STATELESS_REQUIRED');
+  if (opts.research) throw fault('ACP seats do not support Roundtable web research.', 'ACP_UNSUPPORTED');
+  const cwd = opts.cwd;
+  if (!cwd || !path.isAbsolute(cwd)) throw fault('ACP seats need an absolute, isolated working directory.');
+  mkdirSync(cwd, { recursive: true });
+  const env = cleanEnv(null, { source: suppliedEnv || process.env });
+  const launch = bin || agentLinkBinary(env);
+  const call = registerCall(opts.tag);
+  const timeout = new AbortController();
+  const timer = setTimeout(() => timeout.abort(fault('ACP call timed out.', 'TIMEOUT', 'timeout')), opts.timeoutMs ?? 300_000);
+  const signal = AbortSignal.any([call.signal, timeout.signal, ...(opts.signal ? [opts.signal] : [])]);
+  const started = Date.now();
+  let text = '', cost = null, activePrompt = false;
+  let connection;
+  try {
+    if (signal.aborted) throw signal.reason;
+    connection = connect(launch, profile, { cwd, env, signal, onUpdate: (update) => {
+      if (!activePrompt) return;
+      if (update.sessionUpdate === 'agent_message_chunk') {
+        if (update.content?.type !== 'text' || typeof update.content.text !== 'string') throw fault('ACP review replies must contain text.');
+        text += update.content.text;
+      } else if (update.sessionUpdate === 'usage_update' && update.cost?.currency === 'USD' && Number.isFinite(update.cost.amount) && update.cost.amount >= 0) cost = update.cost.amount;
+    } });
+    const init = await connection.request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'roundtable', version: VERSION } });
+    if (init.protocolVersion !== 1) throw fault('This Roundtable client requires ACP v1; the agent negotiated an incompatible protocol.', 'ACP_UNSUPPORTED');
+    const session = await connection.request('session/new', { cwd, mcpServers: [] });
+    if (typeof session.sessionId !== 'string' || !session.sessionId) throw fault('ACP agent did not return a session ID.');
+    connection.setSession(session.sessionId);
+    const hasModel = advertised(session, MODEL).some((o) => o.value === opts.model);
+    if (opts.model && (!inspect || hasModel)) await selectOption(connection, session, opts.model, MODEL);
+    if (inspect) {
+      const models = advertised(session, MODEL).filter((o) => typeof o.value === 'string' && o.value.length <= 200)
+        .map((o) => ({ id: o.value, label: typeof o.name === 'string' ? o.name : o.value }));
+      const efforts = advertised(session, EFFORT).map((o) => o.value).filter((v) => typeof v === 'string' && /^[a-z0-9][a-z0-9_.-]{0,31}$/i.test(v));
       await connection.close();
       connection.check();
-      const ms = Date.now() - started;
-      return { text, usage: promptUsage(result.usage, cost, ms), cost, ms, sessionId: session.sessionId, usedTools: false };
-    } catch (e) {
-      throw Object.assign(e, { usage: null, cost, ms: Date.now() - started });
-    } finally {
-      clearTimeout(timer);
-      try { await connection?.close(); } finally { call.release(); }
+      return { models, efforts, effortModel: hasModel ? opts.model : '' };
     }
-  };
+    if (opts.effort) await selectOption(connection, session, opts.effort, EFFORT);
+    activePrompt = true;
+    const result = await connection.request('session/prompt', { sessionId: session.sessionId, prompt: [{ type: 'text', text: prompt }] });
+    connection.check();
+    if (result.stopReason !== 'end_turn') throw fault(`ACP turn did not complete (${String(result.stopReason || 'missing stop reason')}).`, result.stopReason === 'cancelled' ? 'KILLED' : 'CLI_FAILURE', result.stopReason === 'cancelled' ? 'killed' : 'other');
+    if (!text.trim()) throw fault('ACP agent completed without a text answer.');
+    await connection.close();
+    connection.check();
+    const ms = Date.now() - started;
+    return { text, usage: promptUsage(result.usage, cost, ms), cost, ms, sessionId: session.sessionId, usedTools: false };
+  } catch (e) {
+    throw Object.assign(e, { usage: null, cost, ms: Date.now() - started });
+  } finally {
+    clearTimeout(timer);
+    try { await connection?.close(); } finally { call.release(); }
+  }
+}
+
+export function makeAcpAdapter(launch = {}) {
+  return (prompt, previousSession = null, opts = {}) => withProfile(prompt, previousSession, opts, launch, false);
+}
+
+// Explicit local setup action. The profile receives an empty workspace and no prompt.
+export async function discoverProfile(account, model = '', launch = {}) {
+  agentLinkProfile(account);
+  if (typeof model !== 'string' || model.length > 200) throw new Error('Model ID must be at most 200 characters.');
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'roundtable-profile-'));
+  try {
+    return await withProfile(null, null, { account, model, cwd, timeoutMs: 20_000, allowLimitedIsolation: true }, launch, true);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
 }
 
 export const run = makeAcpAdapter();

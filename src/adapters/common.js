@@ -102,7 +102,7 @@ export function buildArgs(cfg, { prompt, sessionId = null, model = null, effort 
   if (model && cfg.model) extra.push(...cfg.model(model));
   if (instructionsFile) extra.push('-c', `model_instructions_file=${JSON.stringify(instructionsFile)}`);
   // Skip the effort flag when the model id already names the level (agy), so nothing is said twice.
-  if (effort && cfg.effort && !(model && cfg.effortInModel && cfg.effortInModel.test(model))) extra.push(...cfg.effort(effort));
+  if (effort && cfg.effort && !(model && cfg.effortInModel && (cfg.effortInModel.test(model) || model.endsWith(`-${effort}`)))) extra.push(...cfg.effort(effort));
   if (extra.length) {
     const at = args[args.length - 1] === '-' ? args.length - 1 : args.length;
     args.splice(at, 0, ...extra);

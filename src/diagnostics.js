@@ -23,6 +23,7 @@ const integer = (n, max) => Number.isInteger(n) && n >= 0 && n <= max;
 export const diagnosticId = () => `RT-${randomBytes(8).toString('hex')}`;
 
 export function diagnosticAction(pathname) {
+  if (pathname === '/api/profile-models') return 'catalogue';
   if (pathname === '/api/seats') return 'setup';
   if (pathname === '/api/health') return 'health';
   if (pathname === '/api/shutdown') return 'shutdown';

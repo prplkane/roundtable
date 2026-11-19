@@ -18,6 +18,9 @@ scripted replies.
   profile with those tools disabled and explicitly accept limited isolation. This
   does not acknowledge a vendor's terms or guarantee its sandbox. Inherited API keys
   are filtered as for direct CLIs, but AgentLink profile settings can add them back.
+  Loading profile models explicitly opens the selected profile in a new temporary
+  directory with the same client-tool restrictions. Discovery reads session options
+  and can select a model to read its effort levels. It sends no review prompt.
   ACP output, including stderr, is bounded to 8 MiB per call. Roundtable sends
   `session/cancel` on interruption and closes the connection, with process-tree
   termination after a bounded grace period. Already-orphaned Windows descendants

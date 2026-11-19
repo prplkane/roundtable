@@ -9,16 +9,15 @@
 
 export const MODELS = {
   claude: [
-    { id: 'fable', label: 'Fable 5.1' },
+    { id: 'claude-fable-5-2', label: 'Fable 5.2' },
     { id: 'opus', label: 'Opus 5.5', note: 'default' },
     { id: 'sonnet', label: 'Sonnet 5.5' },
     // Pin the intended Haiku version instead of relying on the CLI alias.
-    { id: 'claude-haiku-4-5', label: 'Haiku 4.5', note: 'lightest' },
+    { id: 'claude-haiku-5-5', label: 'Haiku 5.5', note: 'lightest' },
   ],
   codex: [
-    { id: 'gpt-6-astra', label: 'GPT-6 Astra' },
-    { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol' },
-    { id: 'gpt-6-sol', label: 'GPT-6 Sol' },
+    { id: 'gpt-6.2-astra', label: 'GPT-6.2 Astra' },
+    { id: 'gpt-6.2-sol', label: 'GPT-6.2 Sol' },
     { id: 'gpt-6.1-terra', label: 'GPT-6.1 Terra' },
     // efforts: only where a model takes fewer levels than its vendor offers (`codex debug models`
     // supported_reasoning_levels: the Luna models stop at max)
@@ -41,16 +40,16 @@ export function modelsByCapability(models = []) {
 
 // The effort levels a model takes: its vendor's levels, narrowed where the table names fewer.
 // A model the table does not know (a typed id, the CLI default) keeps the vendor's levels.
-export function modelEfforts(vendor, model, levels = []) {
-  const known = (MODELS[vendor] || []).find((m) => m.id === String(model || '').trim());
-  return known?.efforts ? levels.filter((l) => known.efforts.includes(l)) : levels;
+export function modelEfforts(vendor, model, levels = [], models = MODELS[vendor] || []) {
+  const known = models.find((m) => m.id === String(model || '').trim());
+  return known?.efforts || levels;
 }
 
 // Retired for ChatGPT sign-in: a call with one of these fails. id -> [date, replacement].
 export const RETIRED = {
   codex: {
-    'gpt-5.5': ['2026-10-14', 'gpt-6.1-sol'], 'gpt-5.4': ['2026-08-31', 'gpt-6-sol'], 'gpt-5.4-mini': ['2026-08-31', 'gpt-6-luna'],
-    'gpt-5.3-codex-spark': ['2026-09-14', 'gpt-6.1-sol'], 'gpt-5.3-codex': ['deprecated', 'gpt-6.1-sol'], 'gpt-5.2': ['deprecated', 'gpt-6.1-sol'],
+    'gpt-5.5': ['2026-10-14', 'gpt-6.2-sol'], 'gpt-5.4': ['2026-08-31', 'gpt-6.2-sol'], 'gpt-5.4-mini': ['2026-08-31', 'gpt-6-luna'],
+    'gpt-5.3-codex-spark': ['2026-09-14', 'gpt-6.2-sol'], 'gpt-5.3-codex': ['deprecated', 'gpt-6.2-sol'], 'gpt-5.2': ['deprecated', 'gpt-6.2-sol'],
   },
 };
 
@@ -60,17 +59,31 @@ export function retired(vendor, id) {
 }
 
 // agy ids carry the effort level ("gemini-4-argon-high"): one entry per model, the levels it has.
+const levelOrder = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+export const effortSuffix = /-(low|medium|high|xhigh|max|ultra)$/;
 export function agyFamilies(models = []) {
-  const fam = new Map();
-  for (const m of models) {
-    const hit = /^(.*)-(low|medium|high)$/.exec(m.id);
-    const id = hit ? hit[1] : m.id;
-    const label = String(m.label || id).replace(/\s*\((low|medium|high)\)\s*$/i, '');
-    if (!fam.has(id)) fam.set(id, { id, label, levels: [] });
-    if (hit) fam.get(id).levels.push(hit[2]);
+  const families = new Map();
+  for (const { id, label = id } of models) {
+    // A future level can identify itself in the vendor label, e.g. "Neon (Deep)" / neon-deep.
+    const named = /\s*\(([a-z0-9_-]+)\)\s*$/i.exec(label);
+    const suffix = named?.[1].toLowerCase();
+    const level = suffix && id.endsWith(`-${suffix}`) ? suffix : effortSuffix.exec(id)?.[1];
+    const base = level ? id.slice(0, -level.length - 1) : id;
+    if (!families.has(base)) families.set(base, { id: base, label: level && named ? label.slice(0, named.index) : label, levels: [] });
+    const levels = families.get(base).levels;
+    if (level && !levels.includes(level)) levels.push(level);
   }
-  const order = ['low', 'medium', 'high'];
-  return [...fam.values()].map((f) => ({ ...f, levels: f.levels.sort((a, b) => order.indexOf(a) - order.indexOf(b)) }));
+  const rank = (level) => levelOrder.includes(level) ? levelOrder.indexOf(level) : levelOrder.length;
+  for (const family of families.values()) family.levels.sort((a, b) => rank(a) - rank(b));
+  return [...families.values()];
+}
+export function agyFamily(families, model) {
+  return families.find((f) => f.id === model) || families.find((f) => f.levels.some((level) => model === `${f.id}-${level}`));
+}
+export function agySelection(family, picked, effort) {
+  const levels = family?.levels || [];
+  const level = levels.includes(effort) ? effort : levels.includes('medium') ? 'medium' : levels[0];
+  return { model: level ? `${family.id}-${level}` : picked, effort: level || '' };
 }
 
 // agy's quota comes in groups, each with its own windows (quota.js agyQuota). Which group a model

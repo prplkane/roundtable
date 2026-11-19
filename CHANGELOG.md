@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Read AgentLink model choices and per-model reasoning levels from the selected profile
+  in the board or CLI. Direct Codex reads its installed catalogue, with GPT-6.2 Sol and
+  Astra in the fallback. Direct Claude offers explicit Fable 5.2 and Haiku 5.5 IDs.
+- Group Antigravity Neon XHigh with the other Neon levels and reject unavailable
+  variant IDs during preview and review setup.
+
 - Distinguish estimated review usage from provider quota on the setup board. Group
   sign-in warnings for roles sharing an account and offer a status refresh beside
   the warning. Inconclusive CLI status output leaves sign-in unconfirmed.

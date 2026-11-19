@@ -30,8 +30,8 @@ try {
       }
       try { return JSON.parse(text.replace(/^\uFEFF/, '')); } catch { throw new Error('Input must contain valid JSON.'); }
     }
-    const body = ['check', 'start', 'answer', 'hold', 'finish', 'stop', 'resume', 'verdict'].includes(command)
-      ? await input(['check', 'start', 'answer', 'hold'].includes(command)) : undefined;
+    const body = ['models', 'check', 'start', 'answer', 'hold', 'finish', 'stop', 'resume', 'verdict'].includes(command)
+      ? await input(['models', 'check', 'start', 'answer', 'hold'].includes(command)) : undefined;
     console.log(JSON.stringify(await runAgent(command, flags, body)));
   }
 } catch (error) {
