@@ -53,9 +53,9 @@ export async function runAgent(command, flags = {}, input, signal) {
       models: (v.catalogue?.models || []).map((m) => typeof m === 'string' ? m : m.id), efforts: v.catalogue?.efforts || [],
       ...(v.terms ? { terms: { notice: v.terms.notice, url: v.terms.url, acknowledgedOnBoard: v.terms.acknowledgedAt != null } } : {}) })),
       readiness: readiness.pools, defaults: setup.defaults, next: 'Check a JSON review with agent check --input file. No model call has been made.' };
-  } else if (command === 'models') result = await request('/api/profile-models', input || {});
-  else if (command === 'check') result = await request('/api/preview', input);
-  else if (command === 'start') { const started = await request('/api/debates', input); result = { id: started.slug, board: board(started.slug), next: `agent wait --port ${port} --id ${started.slug}` }; }
+  } else if (command === 'models') result = await request('/api/profile-models', input || {}, 25_000);
+  else if (command === 'check') result = await request('/api/preview', input, 40_000);
+  else if (command === 'start') { const started = await request('/api/debates', input, 40_000); result = { id: started.slug, board: board(started.slug), next: `agent wait --port ${port} --id ${started.slug}` }; }
   else {
     if (!route) throw new Error('This command needs --id from agent start or the board URL.');
     if (command === 'status') result = { ...(await request(`${route}/state`)), board: board(flags.id) };

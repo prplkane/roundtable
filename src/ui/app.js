@@ -168,7 +168,7 @@ const led = (state) => `<span class="led led-${esc(state || 'idle')}" title="${e
 
 // ---------- setup screen ----------
 async function setup() {
-  const { vendors, moods, colours, defaults, baselines, calibration, pools, runtime } = await requestJson('/api/seats');
+  const { vendors, moods, colours, defaults, baselines, calibration, pools, runtime } = await requestJson('/api/seats', undefined, 40_000);
   const demo = runtime?.mode === 'demo';
   $('run-mode').textContent = demo ? 'Demo' : 'Live';
   $('run-mode').className = `run-mode ${demo ? 'demo' : 'live'}`;
@@ -1120,7 +1120,7 @@ async function start() {
   const revision = viewRevision;
   S.startPending = true; updateLamps();
   try {
-    const out = await requestJson('/api/debates', body);
+    const out = await requestJson('/api/debates', body, 40_000);
     if (revision === viewRevision) { openingSlug = out.slug; location.hash = out.slug; } // route() opens the board
   } catch (e) {
     showSetupError(e);

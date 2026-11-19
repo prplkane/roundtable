@@ -3,7 +3,7 @@ export function localClient(port, signal) {
   const base = `http://127.0.0.1:${port}`;
   let token = process.env.ROUNDTABLE_TOKEN || '';
   const deadline = (ms) => signal ? AbortSignal.any([signal, AbortSignal.timeout(ms)]) : AbortSignal.timeout(ms);
-  async function request(route, body) {
+  async function request(route, body, timeoutMs = 15_000) {
     signal?.throwIfAborted();
     if (body !== undefined && !token) {
       const page = await fetch(base, { redirect: 'error', signal: deadline(8000) });
@@ -11,7 +11,7 @@ export function localClient(port, signal) {
       token = /<meta name="roundtable-token" content="([a-f0-9]{32})">/.exec(await page.text())?.[1] || '';
       if (!token) throw new Error('This port did not serve a Roundtable launch token.');
     }
-    const response = await fetch(`${base}${route}`, { method: body === undefined ? 'GET' : 'POST', redirect: 'error', signal: deadline(15000),
+    const response = await fetch(`${base}${route}`, { method: body === undefined ? 'GET' : 'POST', redirect: 'error', signal: deadline(timeoutMs),
       ...(body === undefined ? {} : { headers: { 'content-type': 'application/json', 'x-roundtable-token': token }, body: JSON.stringify(body) }) });
     let result;
     try {
