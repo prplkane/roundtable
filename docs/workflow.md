@@ -230,8 +230,8 @@ claude
 
 Inside the program, type `/login`, finish the sign-in in the browser, then exit with `/exit`.
 
-Roundtable reads Claude's remaining quota with `claude -p /usage`, which the CLI answers itself,
-with no model call and no conversation. It reads when the server starts, on **Refresh status**,
+For a direct Claude seat, Roundtable reads the remaining quota with `claude -p /usage`, which the CLI answers itself,
+with no model call and no conversation. It reads on **Refresh status**,
 after each Claude reply and when a debate ends, from an empty folder with a seat's lockdown
 (no tools, no MCP servers, safe mode) but with slash commands on, which `/usage` needs. Only the session, weekly and per-model weekly limit lines are kept; the activity summary
 the same answer prints (requests, sessions, skills, MCP servers) is discarded and never saved.
@@ -279,7 +279,7 @@ So nothing is sent to `agy` until you acknowledge this:
 - **An agent request** must send `options.acknowledgeTermsRisk: true` whenever a seat, the
   chairman or the searcher is on Antigravity, and only once the person has agreed. An
   acknowledgment on the board does not answer for an agent; the agent cannot record one
-  either. `roundtable agent status` shows the notice and its link under `providers[].terms`.
+  either. `roundtable agent status` shows the notice and its link under `directProviders[].terms`.
   Without the option, a live server refuses the request, and the Antigravity adapter refuses
   any call made without it.
 - **The diagnostic command** sends nothing to `agy` without `--acknowledge-terms-risk`: no
@@ -389,7 +389,7 @@ take, next to **Open the table**.
 
 ### A first live test drive
 
-1. Run `npm run doctor`, then start the live board and check that its header says **Live**.
+1. Configure the AgentLink profiles in section 7c, then open the live board.
    Use **Refresh status** and resolve any login or installation errors first.
 2. Use a small, non-sensitive decision with two clear options. Choose two seats with different
    lenses. For the first run, use a provider you have already verified; both seats may use it.
@@ -430,18 +430,17 @@ checked yet).
 
 | field | what it does |
 |---|---|
-| Vendor | Claude, Codex or Antigravity, or **API endpoint** (section 7b). Pick the same vendor more than once if you like. Next to it, a tag says what kind of seat it is: `CLI · subscription`, `API · local` or `API · pay-per-token`. |
+| Vendor | Choose a saved AgentLink profile for Codex, Claude or Antigravity. Direct CLI connections and API endpoints are available in the second group. |
 | Lens | The angle this seat argues from, for example "risk", "cost", "the clinician". Must be unique: it is the only name the other seats ever see. |
 | Mood | How it argues. `grill` (the default) attacks assumptions and demands evidence. `steelman` states each option at its best first. `builder` judges by what it takes to ship. `contrarian` takes the least popular side. `custom` takes your own sentence. |
-| Model | Under the vendor name on the card, with stronger model families first. Names carry only **default** and **lightest** notes; the CLI decides model access. This is a broad capability order, not a benchmark comparison across vendors. Antigravity lists each model once. Its effort buttons select an advertised variant, and preview checks the ID against the available list. Direct Codex reads visible models and reasoning levels from the installed CLI at startup. Direct Claude uses maintained suggestions and accepts explicit model IDs. **Custom model ID…** opens a text field and keeps your selection while you edit; enter an ID or choose a listed model before starting. Terra requires Codex CLI 0.159 or later. A retired model is refused with what to use instead. |
-| Effort | The thinking level, as pips: click one to set it, click the last filled one again for the CLI's default. Higher thinks longer and draws more. |
-| Login profile | Behind "Login profile" on the card. Leave empty to use your normal login; fill in only to seat a second account of the same CLI (step 7). |
+| Model | Leave blank for the profile default. **Load profile models** reads the available IDs. **Refresh profile models** checks again after a provider update. |
+| Effort | Select a reasoning level offered by the chosen model or leave it on the profile default. |
+| Profile | The saved AgentLink name selects the connection. Each profile can be used for several seats. Direct CLI seats have separate login settings. |
 
-First use starts with **two seats and one critique round**: normally two blind replies, two
-critique replies and one verdict, before any retries. The first status check prefers ready
-default logins; if only one vendor is ready, it fills both seats with different lenses. If no
-vendor is known ready, two editable choices remain and their lamps explain the state. Editing
-a seat stops this automatic first-use selection. Saved seats are preserved.
+A fresh board starts with two perspectives, one critique round and a chairman using
+the first profile. It prefers configured profiles and reuses a sole configured profile.
+Saved direct drafts with a pinned model, login, budget or resumed session retain those
+choices. To move one, select the corresponding provider under **AgentLink profiles**.
 
 Use **+ Add seat** for more. Two or three seats are enough for most questions. Opening a table
 saves its field notes, seats, limits, memory, chairman choices and budgets in this browser for
@@ -470,6 +469,12 @@ analysis. Use the ordinary moods for decision reviews. API clients treat these w
 custom text.
 
 ### How seats stay independent
+
+AgentLink seats use fresh ACP sessions and the selected profile's permissions, as described
+in section 7c. Preview checks pinned model IDs and effort levels in a fresh profile session
+without sending a prompt. Unpinned seats follow the profile default.
+
+The following behaviours apply to direct CLI seats.
 
 - Every CLI seat has its own session and working folder, `debates/<slug>/seats/<id>/`.
   Roundtable does not run the seat in the project you are reviewing. CLI-specific discovery
@@ -844,18 +849,25 @@ What is different from a CLI seat:
 The chairman can be an endpoint too; its card takes the same fields. The decision record
 names the endpoint on each seat's line (`API http://localhost:11434/v1`) and on the chairman's.
 
-## 7c. AgentLink ACP profiles (optional)
+<a id="7c-agentlink-acp-profiles-optional"></a>
 
-[AgentLink](https://github.com/prplkane/agentlink) manages existing agent CLI/ACP
-bridges in one place. Configure profiles there once. In Roundtable, choose
-**AgentLink (ACP)** on each seat and the chairman, and enter its saved profile name.
-The project uses the profile name; it does not install or copy the vendor bridge.
+## 7c. AgentLink ACP profiles
 
-Install the qualified public beta once:
+Codex, Claude and Antigravity seats and chairmen use saved AgentLink profiles by default.
+Install AgentLink and add the providers you want to use. Existing profiles can be reused.
 
 ```sh
-npm install -g @prplkane/agentlink@0.3.0-beta.2
+npm install -g @prplkane/agentlink@0.3.0-beta.3
+agentlink add codex --provider codex
+agentlink add claude --provider claude
+agentlink add agy --provider antigravity
 ```
+
+In review JSON, `vendor` values `codex`, `claude` and `agy` select the matching profile.
+Roundtable prefers its conventional name, then a sole matching provider profile. When
+several accounts match, specify `vendor: "acp"` and the exact `account`. To use a direct
+CLI with its own model catalogue and login settings, set `transport: "cli"` on that
+seat or chairman. The optional web searcher uses the selected vendor's direct CLI.
 
 With AgentLink installed globally, Roundtable launches `agentlink acp PROFILE`.
 On Windows it resolves the npm script through Node, without a shell. For source
@@ -902,7 +914,7 @@ The initial integration deliberately has these limits:
   or terminal capabilities, supplies no MCP servers, denies permission requests,
   and stops a seat on reported tool calls. ACP is not a sandbox and cannot disable
   tools or customizations inside the agent. Use a trusted profile configured with
-  its own tools disabled. The board shows this limit; JSON clients must explicitly
+  its own tools disabled. Opening a live table accepts the profile permissions and billing shown on the board; JSON clients must explicitly
   accept it with `allowLimitedIsolation`. Check the selected vendor's applicable
   terms separately. The direct adapters' vendor-specific restrictions do not apply
   to an arbitrary ACP profile. Profile environment settings can select API billing.
@@ -923,13 +935,19 @@ The initial integration deliberately has these limits:
   caps that one profile, and both may be set together.
 - **Login stays with the agent.** Sign in through the vendor's own flow. Authentication
   errors identify that step; Roundtable does not open a login terminal automatically.
-  The readiness lamp checks the launcher only. Use `agentlink check PROFILE` to
+  Refresh status checks whether the named profile is saved. Use `agentlink check PROFILE` to
   check initialization; a successful check does not prove task compatibility.
 - Choose **Load profile models** on a seat or the chairman to read a trusted profile’s
-  current ACP model choices. Selecting a model reads its reasoning levels. **Refresh profile
+  current model and effort names from `agentlink models PROFILE`. The picker shows the
+  advertised display names and keeps their IDs for requests. Selecting a model reads its reasoning levels. **Refresh profile
   models** checks again after an adapter or vendor update. These actions open a temporary
   session without sending a prompt. Leaving the model and effort blank follows the profile
-  defaults on every new turn. For the CLI, use `roundtable agent models --input profile.json`
+  defaults on every new turn. Set shared choices with
+  `agentlink defaults PROFILE --model MODEL_ID --effort EFFORT_ID`. An omitted flag
+  keeps its saved setting. Use `--clear-model --clear-effort` to follow vendor defaults.
+  If a saved ID disappears, discovery still lists replacements. Update the profile in
+  AgentLink for all its clients. A seat override applies only to that session.
+  AgentLink beta.2 uses the older ACP discovery path. For the CLI, use `roundtable agent models --input profile.json`
   with `{"account":"codex","allowLimitedIsolation":true}` and an optional `model`.
   The `roundtable_models` MCP tool accepts the same fields.
 - **Updates are central.** An explicit `agentlink bridge update NAME` changes new
@@ -1157,7 +1175,7 @@ The client reads the launch token from the loopback page and holds it in memory,
 `ROUNDTABLE_TOKEN` when supplied. It never prints or stores the token. `--input -` accepts JSON
 on stdin. Keep real request and answer files outside a public repository.
 
-`review.json` uses the same shape as the board. Select providers reported ready by `status`:
+`review.json` uses the same shape as the board. Choose configured profiles from `status`. The example assumes the person has accepted their limited isolation.
 
 ```json
 {
@@ -1167,11 +1185,11 @@ on stdin. Keep real request and answer files outside a public repository.
     "constraints": "One developer, three months."
   },
   "seats": [
-    { "vendor": "claude", "lens": "risk", "mood": { "preset": "grill" }, "model": "sonnet", "effort": "low" },
-    { "vendor": "claude", "lens": "cost", "mood": { "preset": "builder" }, "model": "sonnet", "effort": "low" }
+    { "vendor": "claude", "lens": "risk", "mood": { "preset": "grill" } },
+    { "vendor": "claude", "lens": "cost", "mood": { "preset": "builder" } }
   ],
-  "chairman": { "vendor": "claude", "model": "sonnet", "effort": "medium" },
-  "options": { "critiqueRounds": 1, "memory": "stateless", "budget": { "claude": { "tokens": 120000 } } }
+  "chairman": { "vendor": "claude" },
+  "options": { "critiqueRounds": 1, "memory": "stateless", "allowLimitedIsolation": true, "budget": { "claude": { "tokens": 120000 } } }
 }
 ```
 
@@ -1197,10 +1215,8 @@ costs far more than one more sentence of context. `agent --help` repeats this re
 - **Moods.** Pair one sceptical seat (`grill`) with one practical seat (`builder`). Use
   `steelman` when the user already leans one way, and `contrarian` when the seats would
   otherwise agree too early.
-- **Effort and model.** `effort` low and the lightest model that `status` lists for the seats.
-  Give the chairman one effort step more than the seats (medium when they run low): it judges
-  the arguments rather than counting them, and at low effort it tends to dismiss the hardest
-  objection in a word. Raise one seat, not all, when the decision is hard to reverse.
+- **Effort and model.** Leave both empty to follow the selected profile. Use
+  `roundtable_models` or `roundtable agent models` before pinning an advertised ID or level.
 - **Context.** `constraints`, `known`, `assumed`, `reversibility` and `deadline` go into every
   prompt. Fill them only with facts the user stated. A guess belongs under `assumed`, never
   under `known`, and an empty field is better than an invented one.

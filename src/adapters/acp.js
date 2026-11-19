@@ -5,7 +5,7 @@ import { mkdirSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { cleanEnv, resolveBinary, registerCall, killTree } from './spawn.js';
+import { cleanEnv, resolveBinary, registerCall, killTree, runProcess } from './spawn.js';
 import { agentLinkProfile } from '../seats.js';
 import { VERSION } from '../version.js';
 
@@ -24,6 +24,25 @@ export function agentLinkBinary(env = process.env) {
   }
   try { return resolveBinary('agentlink', ['@prplkane/agentlink', 'src/cli.mjs'], { env }); }
   catch { throw fault('AgentLink is not installed. Run npm install -g @prplkane/agentlink@beta, or set ROUNDTABLE_AGENTLINK_CLI to its absolute src/cli.mjs path.', 'ENOENT', 'missing'); }
+}
+
+// Publish only picker metadata. AgentLink's raw inventory can contain launch arguments and environment settings.
+const optionId = (id) => typeof id === 'string' && id.length > 0 && id.length <= 200 && !/[\u0000-\u001f\u007f]/.test(id);
+function savedDefaults(row) {
+  return Object.fromEntries(['model', 'effort'].filter((key) => optionId(row?.[key])).map((key) => [key, row[key]]));
+}
+export async function listProfiles(launch = {}) {
+  const env = cleanEnv(null, { source: launch.env || process.env });
+  const bin = launch.bin || agentLinkBinary(env);
+  const result = await runProcess(bin, ['list', '--json'], { env, timeoutMs: 5000, maxOutputBytes: 2 * 1024 * 1024 });
+  if (result.code !== 0) throw new Error('Could not list saved AgentLink profiles. Run agentlink list.');
+  const rows = JSON.parse(result.stdout);
+  if (!Array.isArray(rows)) throw new Error('AgentLink returned an unreadable profile list.');
+  return rows.filter((p) => p && !p.error).map((p) => {
+    const defaults = savedDefaults(p.defaults);
+    return { name: agentLinkProfile(p.name), provider: typeof p.provider === 'string' ? p.provider : null,
+      ...(Object.keys(defaults).length ? { defaults } : {}) };
+  });
 }
 
 // Optional ACP end-turn usage is still experimental. Fresh sessions avoid the
@@ -91,6 +110,10 @@ function connect(bin, profile, { cwd, env, signal, onUpdate }) {
     if (!p) throw fault('ACP response has an unknown request ID.');
     pending.delete(message.id);
     if (message.error) {
+      if (p.method === 'session/new' && ['OPTION_UNAVAILABLE', 'OPTION_UNCONFIRMED'].includes(message.error.data?.code)) {
+        p.reject(fault(`AgentLink could not apply a saved default for ${profile}. Inspect choices with agentlink models ${profile} and update them with agentlink defaults ${profile}.`, 'ACP_UNSUPPORTED'));
+        return;
+      }
       const auth = message.error.code === -32000;
       p.reject(fault(auth ? 'ACP authentication is required. Sign in using the agent vendor login flow, then check the AgentLink profile.'
         : `ACP request failed: ${String(message.error.message || 'unknown error').slice(0, 500)}`, 'CLI_FAILURE', auth ? 'auth' : 'other'));
@@ -146,8 +169,11 @@ function connect(bin, profile, { cwd, env, signal, onUpdate }) {
 // A session's select-type config option by ACP category, or by id for an agent that labels
 // none, and the values it offers (flat, or grouped). Roundtable never invents a value: a model or
 // reasoning level is sent only when the agent advertised it for this session.
-const configOption = (session, category, ids) => Array.isArray(session.configOptions)
-  && session.configOptions.find((o) => o?.type === 'select' && (o.category === category || (!o.category && ids.includes(o.id))));
+function configOption(session, category, ids) {
+  const selects = (Array.isArray(session.configOptions) ? session.configOptions : [])
+    .filter((o) => o?.type === 'select' && typeof (o.configId ?? o.id) === 'string');
+  return selects.find((o) => o.category === category) || selects.find((o) => !o.category && ids.includes(o.configId ?? o.id));
+}
 const optionValues = (option) => Array.isArray(option?.options) ? option.options.flatMap((o) => Array.isArray(o?.options) ? o.options : [o]).filter(record) : [];
 const MODEL = { category: 'model', ids: ['model'], what: 'model' };
 const EFFORT = { category: 'thought_level', ids: ['thought_level', 'effort', 'reasoning_effort', 'reasoning'], what: 'reasoning level' };
@@ -155,8 +181,10 @@ const advertised = (session, option) => optionValues(configOption(session, optio
 async function selectOption(connection, session, value, { category, ids, what }) {
   const option = configOption(session, category, ids);
   if (!option || !optionValues(option).some((o) => o.value === value)) throw fault(`The ACP agent did not advertise this ${what}. Use its default or an advertised ${what} ID.`, 'ACP_UNSUPPORTED');
-  const result = await connection.request('session/set_config_option', { sessionId: session.sessionId, configId: option.id, value });
-  if (Array.isArray(result.configOptions)) session.configOptions = result.configOptions;
+  if (option.currentValue === value) return;
+  const result = await connection.request('session/set_config_option', { sessionId: session.sessionId, configId: option.configId ?? option.id, value });
+  session.configOptions = result.configOptions;
+  if (configOption(session, category, ids)?.currentValue !== value) throw fault(`The ACP agent did not confirm the selected ${what}.`, 'ACP_UNSUPPORTED');
 }
 
 async function withProfile(prompt, previousSession, opts, { bin, env: suppliedEnv }, inspect) {
@@ -195,12 +223,16 @@ async function withProfile(prompt, previousSession, opts, { bin, env: suppliedEn
     if (inspect) {
       const models = advertised(session, MODEL).filter((o) => typeof o.value === 'string' && o.value.length <= 200)
         .map((o) => ({ id: o.value, label: typeof o.name === 'string' ? o.name : o.value }));
-      const efforts = advertised(session, EFFORT).map((o) => o.value).filter((v) => typeof v === 'string' && /^[a-z0-9][a-z0-9_.-]{0,31}$/i.test(v));
+      const effortChoices = advertised(session, EFFORT).filter((o) => optionId(o.value))
+        .map((o) => ({ id: o.value, label: typeof o.name === 'string' ? o.name : o.value }));
       await connection.close();
       connection.check();
-      return { models, efforts, effortModel: hasModel ? opts.model : '' };
+      return { models, efforts: effortChoices.map((e) => e.id), effortChoices, effortModel: hasModel ? opts.model : '' };
     }
     if (opts.effort) await selectOption(connection, session, opts.effort, EFFORT);
+    if (opts.model && configOption(session, MODEL.category, MODEL.ids)?.currentValue !== opts.model) {
+      throw fault('The ACP agent changed the selected model while applying the reasoning level.', 'ACP_UNSUPPORTED');
+    }
     activePrompt = true;
     const result = await connection.request('session/prompt', { sessionId: session.sessionId, prompt: [{ type: 'text', text: prompt }] });
     connection.check();
@@ -223,7 +255,7 @@ export function makeAcpAdapter(launch = {}) {
 }
 
 // Explicit local setup action. The profile receives an empty workspace and no prompt.
-export async function discoverProfile(account, model = '', launch = {}) {
+export async function inspectProfileSession(account, model = '', launch = {}) {
   agentLinkProfile(account);
   if (typeof model !== 'string' || model.length > 200) throw new Error('Model ID must be at most 200 characters.');
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'roundtable-profile-'));
@@ -232,6 +264,55 @@ export async function discoverProfile(account, model = '', launch = {}) {
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
+}
+
+// Unlike session/new, beta.3 management inspection ignores saved pins. A retired
+// central default must not prevent the picker from showing its replacements.
+async function modelReport(bin, env, account, model) {
+  const args = ['models', account, '--json'];
+  if (model) args.push('--model', model);
+  const result = await runProcess(bin, args, { env, timeoutMs: 20_000 });
+  if (result.code !== 0) {
+    if (!model && /^INVALID_ARGUMENT: Unknown command\. Run agentlink --help\.\s*$/.test(result.stderr)) return null; // beta.2
+    throw fault(`AgentLink could not inspect profile ${account}. Run agentlink models ${account} to check its connection.`, 'CLI_FAILURE');
+  }
+  let report;
+  try { report = JSON.parse(result.stdout); } catch {}
+  if (report?.name !== account || !['model', 'effort'].every((k) => report[k] === null || Array.isArray(report[k]?.choices))) {
+    throw fault('AgentLink returned an unreadable model report.');
+  }
+  return report;
+}
+
+function namedChoices(selector) {
+  return (selector?.choices || []).filter((o) => optionId(o?.id))
+    .map(({ id, name }) => ({ id, label: typeof name === 'string' && name ? name : id }));
+}
+
+export async function discoverProfile(account, model = '', launch = {}) {
+  account = agentLinkProfile(account);
+  if (model !== '' && !optionId(model)) throw new Error('Choose a model ID of at most 200 characters.');
+  const env = cleanEnv(null, { source: launch.env || process.env });
+  const bin = launch.bin || agentLinkBinary(env);
+  const base = await modelReport(bin, env, account);
+  if (!base) return inspectProfileSession(account, model, launch);
+  const defaults = savedDefaults(base.defaults);
+  const models = namedChoices(base.model);
+  const offers = (id) => models.some((m) => m.id === id);
+  const profileModel = defaults.model || (optionId(base.model?.current) ? base.model.current : '');
+  const effortModel = offers(model) ? model : '';
+  const selected = effortModel || (offers(profileModel) ? profileModel : '');
+  const detail = selected && selected !== base.model?.current ? await modelReport(bin, env, account, selected) : base;
+  const effortChoices = namedChoices(detail.effort);
+  const efforts = effortChoices.map((e) => e.id);
+  const inheritsModel = !effortModel || effortModel === profileModel;
+  const stale = defaults.model && !offers(defaults.model) || inheritsModel && defaults.effort && !efforts.includes(defaults.effort);
+  // The inspector bypasses saved pins. After a seat overrides a centrally configured
+  // model, only its actual session knows whether the provider retained or reset effort.
+  const observedEffort = optionId(detail.effort?.current) ? detail.effort.current : '';
+  const defaultEffort = inheritsModel ? defaults.effort || observedEffort : Object.keys(defaults).length ? '' : observedEffort;
+  return { models, efforts, effortChoices, effortModel, defaults, profileModel, defaultEffort,
+    ...(stale ? { warning: `A saved AgentLink default is unavailable. Choose a replacement with agentlink defaults ${account} before starting a review.` } : {}) };
 }
 
 export const run = makeAcpAdapter();

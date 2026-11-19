@@ -1,8 +1,9 @@
 # Security
 
-Roundtable runs a loopback server on your machine. Live debates use the vendor CLIs,
-AgentLink ACP profiles or API endpoints you explicitly configure; demo mode uses
-scripted replies.
+Roundtable runs a loopback server on your machine. Codex, Claude and Antigravity seats use the selected AgentLink profiles by default.
+The authenticated profile list returns saved names, provider identifiers and model/effort defaults. Listing profiles
+does not launch a bridge. Direct CLI connections and API endpoints can be selected explicitly.
+Demo mode uses scripted replies.
 
 ## Data and execution
 
@@ -18,9 +19,9 @@ scripted replies.
   profile with those tools disabled and explicitly accept limited isolation. This
   does not acknowledge a vendor's terms or guarantee its sandbox. Inherited API keys
   are filtered as for direct CLIs, but AgentLink profile settings can add them back.
-  Loading profile models explicitly opens the selected profile in a new temporary
-  directory with the same client-tool restrictions. Discovery reads session options
-  and can select a model to read its effort levels. It sends no review prompt.
+  Loading models uses AgentLink's read-only `models` command. Its inspector opens a
+  temporary session in an empty directory, refuses client operations and sends no prompt.
+  Roundtable checks explicit review pins using its own ACP v1 session before the review.
   ACP output, including stderr, is bounded to 8 MiB per call. Roundtable sends
   `session/cancel` on interruption and closes the connection, with process-tree
   termination after a bounded grace period. Already-orphaned Windows descendants

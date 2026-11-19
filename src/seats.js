@@ -91,15 +91,6 @@ export function seatSetupIssue(seats) {
 // Seat colours from the signature-design accent family, cycled when a table has more seats.
 export const COLOURS = ['rust', 'olive', 'teal', 'dusk', 'steel'];
 
-// First use starts small. Prefer ready default logins; one ready vendor can fill both seats.
-// With no ready result yet, show two editable CLI choices and their status lamps.
-export function initialSeatVendors(vendors, checks = []) {
-  const cli = vendors.filter((v) => v.kind !== 'api' && v.kind !== 'acp').map((v) => v.vendor);
-  const ready = cli.filter((v) => checks.some((p) => p.key === v && p.state === 'ok'));
-  const choices = ready.length ? ready : cli;
-  return choices.length ? [choices[0], choices[1] || choices[0]] : [];
-}
-
 // A profile name is a directory name under the roundtable data dir, so it is kept plain.
 // (Here rather than in adapters/spawn.js because this module also runs in the browser.)
 export const PROFILE_RE = /^[a-z0-9][a-z0-9_.-]{0,39}$/i;
@@ -130,6 +121,70 @@ export function agentLinkProfile(raw) {
     throw new Error('An ACP seat needs a valid saved AgentLink profile: 1-64 lowercase letters, digits, underscores or hyphens; no reserved device names.');
   }
   return name;
+}
+
+// Provider shortcuts use AgentLink's conventional profile names. Custom profiles are always
+// selectable by their exact name, including multiple accounts for the same provider.
+export const PROFILE_PROVIDERS = { codex: 'codex', claude: 'claude', agy: 'antigravity' };
+export function providerProfile(vendor, profiles) {
+  const matches = profiles.filter((p) => p.provider === PROFILE_PROVIDERS[vendor]);
+  return matches.find((p) => p.name === vendor) || (matches.length === 1 ? matches[0] : null);
+}
+
+// Conventional provider choices come first. A missing profile is offered for setup only
+// if its name is free. A profile named "codex" can legitimately belong to another provider.
+export function profileChoicesFor(profiles) {
+  const choices = [];
+  for (const vendor of Object.keys(PROFILE_PROVIDERS)) {
+    const selected = providerProfile(vendor, profiles);
+    if (selected) choices.push({ name: selected.name, vendor, configured: true });
+    else if (!profiles.some((p) => p.name === vendor || p.provider === PROFILE_PROVIDERS[vendor])) {
+      choices.push({ name: vendor, vendor, configured: false });
+    }
+  }
+  for (const p of profiles) {
+    if (!choices.some((c) => c.name === p.name)) choices.push({ name: p.name, configured: true });
+  }
+  return choices;
+}
+
+export function routeReviewProfiles(raw, profiles) {
+  if (!raw || typeof raw !== 'object') return raw;
+  const routed = new Map();
+  function card(seat) {
+    if (!seat || typeof seat !== 'object') return seat;
+    if (seat.transport != null && !['cli', 'agentlink'].includes(seat.transport)) throw new Error('Seat transport must be cli or agentlink.');
+    if (!Object.hasOwn(PROFILE_PROVIDERS, seat.vendor)) {
+      if (seat.transport != null) throw new Error('Set transport only on a named CLI provider.');
+      return seat;
+    }
+    if (seat.transport === 'cli') return seat;
+    const name = seat.account ? agentLinkProfile(seat.account) : providerProfile(seat.vendor, profiles)?.name;
+    if (!name || !profiles.some((p) => p.name === name && (!p.provider || p.provider === PROFILE_PROVIDERS[seat.vendor]))) {
+      throw new Error(`Choose a saved AgentLink profile for ${seat.vendor}, or create one with agentlink add ${seat.vendor} --provider ${PROFILE_PROVIDERS[seat.vendor]}. For a direct CLI seat set transport to "cli".`);
+    }
+    const names = routed.get(seat.vendor) || new Set();
+    names.add(name); routed.set(seat.vendor, names);
+    return { ...seat, vendor: 'acp', account: name };
+  }
+  const seats = Array.isArray(raw.seats) ? raw.seats.map(card) : raw.seats;
+  const chairman = card(raw.chairman);
+  const options = raw.options;
+  if (!options?.budget || typeof options.budget !== 'object' || Array.isArray(options.budget)) return { ...raw, seats, chairman };
+  const budget = { ...options.budget };
+  for (const [vendor, names] of routed) {
+    if (!Object.hasOwn(budget, vendor)) continue;
+    const direct = [...(Array.isArray(seats) ? seats : []), chairman].some((s) => s?.vendor === vendor)
+      || (options.research && (options.research.vendor || 'codex') === vendor);
+    if (direct && [...names].every((name) => Object.hasOwn(budget, 'acp@' + name))) continue;
+    if (direct || names.size !== 1) {
+      throw new Error(`Budget for ${vendor} covers different connections. Set separate caps using acp@PROFILE for each AgentLink profile.`);
+    }
+    const key = 'acp@' + [...names][0];
+    if (Object.hasOwn(budget, key)) throw new Error(`Duplicate budget for ${key}.`);
+    budget[key] = budget[vendor]; delete budget[vendor];
+  }
+  return { ...raw, seats, chairman, options: { ...options, budget } };
 }
 
 // The one line a seat sees about how to approach the question. Custom text wins when given.
@@ -236,12 +291,12 @@ function seatAccount(raw, row) {
 // catalogue's model list per vendor, for the lightest model a hidden mood runs on.
 // An ACP agent advertises its reasoning levels when a session opens, so the adapter checks a
 // seat's effort against that list; here it is only a bounded identifier.
-const ACP_EFFORT_RE = /^[a-z0-9][a-z0-9_.-]{0,31}$/i;
+
 function checkEffort(raw, vendor, allowed, label) {
   const effort = raw.effort ? String(raw.effort).trim() : null;
   if (!effort) return null;
   if (vendor.kind === 'acp') {
-    if (!ACP_EFFORT_RE.test(effort)) throw new Error(`${label}: an ACP effort is an identifier the agent advertises (letters, digits, dots, dashes or underscores, up to 32).`);
+    if (effort.length > 200 || /[\u0000-\u001f\u007f]/.test(effort)) throw new Error(`${label}: an ACP effort must be an advertised ID of at most 200 characters without control characters.`);
     return effort;
   }
   if (!allowed.includes(effort)) throw new Error(`${label} does not accept effort "${effort}"${allowed.length ? ` (allowed: ${allowed.join(', ')})` : ''}.`);

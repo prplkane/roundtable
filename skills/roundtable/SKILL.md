@@ -26,6 +26,9 @@ one-time `roundtable setup --client codex` (or `claude` / `agy`) step.
    comparison can use zero critique rounds; say that the seats will not respond to each other.
    A deep review or several consequential trade-offs can justify two critique rounds within
    the user's limits. Consensus may end early. Missing facts stay unknown or labelled assumptions.
+   Use saved AgentLink profiles for Codex, Claude and Antigravity seats and the chairman.
+   Leave model and effort empty for profile defaults. Use `roundtable_models` when the
+   person wants a specific model or reasoning level. Show its display name and send its advertised ID. Use `acp@PROFILE` for a profile cap.
    Follow the guide's provider consent requirements; connecting an assistant does not grant
    permission to use that assistant as a review provider.
 3. Validate with `roundtable_check`, inspect its errors and projected calls, then start only

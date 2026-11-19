@@ -1,6 +1,6 @@
 import { rollup, hasUsableRound, positions } from '/src/engine.js';
 import { optionLabel } from '/src/contract.js';
-import { poolKey, poolVendor, poolAccount, hostKey, seatKind, initialSeatVendors, nextSeatLens, fillMissingSeatLenses, seatSetupIssue, hiddenMood, lightestModel, keyEnvName, HIDDEN_MOODS } from '/src/seats.js';
+import { poolKey, poolVendor, poolAccount, hostKey, seatKind, PROFILE_PROVIDERS, providerProfile, profileChoicesFor, nextSeatLens, fillMissingSeatLenses, seatSetupIssue, hiddenMood, lightestModel, keyEnvName, HIDDEN_MOODS } from '/src/seats.js';
 import { avatar } from '/ui/avatars.js';
 import { agyFamily, agySelection, modelsByCapability, retired, quotaWindows, quotaGroup, modelEfforts } from '/src/adapters/models.js';
 import { project, projectedWindows, unknownUsageMessage } from '/src/estimate.js';
@@ -112,7 +112,57 @@ $('save-diagnostics').addEventListener('click', async () => {
   } catch (e) { $('diagnostics-status').textContent = `Could not save the error log. ${e.message}`; }
   finally { button.disabled = false; $('diagnostics-status').hidden = false; }
 });
-const initialDraft = (vendors) => vendors.map((vendor, i) => ({ vendor, lens: ['risk and failure modes', 'cost and effort'][i], mood: 'grill', moodText: '', model: '', effort: '' }));
+let profileInventory = { profiles: [] };
+const directVendor = (v) => Object.hasOwn(PROFILE_PROVIDERS, v);
+const rawVendor = (value) => value.startsWith('acp@') ? 'acp' : value;
+const chairVendor = () => rawVendor($('chairman').value);
+function providerChoices() {
+  return profileChoicesFor(profileInventory.profiles).map((p) => ({
+    ...p, label: p.vendor ? VENDOR_LABEL[p.vendor] : p.name, conventional: p.vendor,
+  }));
+}
+function providerOptions(vendor, account) {
+  const choices = providerChoices();
+  const current = vendor === 'acp' && choices.some((p) => p.name === account) ? 'acp@' + account : vendor;
+  const option = (value, label) => `<option value="${esc(value)}" ${value === current ? 'selected' : ''}>${esc(label)}</option>`;
+  const profiles = choices.map((p) => option('acp@' + p.name, p.label + (p.conventional && p.name !== p.conventional ? ' · ' + p.name : '') + (p.configured ? '' : ' (setup needed)'))).join('');
+  return `<optgroup label="AgentLink profiles">${profiles}${option('acp', 'Other saved profile…')}</optgroup><optgroup label="Direct connections">${Object.keys(VENDOR_META).filter((v) => v !== 'acp').map((v) => option(v, VENDOR_LABEL[v] + (directVendor(v) ? ' · direct CLI' : ''))).join('')}</optgroup>`;
+}
+async function refreshConnections() {
+  try {
+    const inventory = await requestJson('/api/profiles', {});
+    const vendor = chairVendor(), account = chairAccount();
+    for (const [name, state] of profileChoices) {
+      const saved = inventory.profiles.find((p) => p.name === name);
+      if (!saved || saved.defaults?.model !== state.defaults?.model || saved.defaults?.effort !== state.defaults?.effort) profileChoices.delete(name);
+    }
+    profileInventory = inventory;
+    $('chairman').innerHTML = providerOptions(vendor, account);
+    $('seat-setup-note').textContent = inventory.error || '';
+    $('seat-setup-note').hidden = !inventory.error;
+    renderChair(); renderSeats(); requestPreflight({ fresh: true });
+  } catch (e) { $('preflight-status').textContent = e.message; }
+}
+
+const directLoaded = new Set();
+async function loadDirectCatalogue(vendor) {
+  if (!['codex', 'agy'].includes(vendor) || directLoaded.has(vendor)) return;
+  directLoaded.add(vendor);
+  try {
+    const cat = await requestJson('/api/direct-models', { vendor }, 40_000);
+    VENDOR_META[vendor].catalogue = cat;
+    $('models-' + vendor).innerHTML = cat.models.map((m) => `<option value="${esc(m.id)}">${esc(m.label)}</option>`).join('');
+    chairEffortOptions(); renderChair(); renderSeats(); renderSearcher();
+  } catch (e) { directLoaded.delete(vendor); $('preflight-status').textContent = e.message; }
+}
+
+function defaultAccounts() {
+  const choices = providerChoices();
+  return [...choices.filter((p) => p.configured), ...choices.filter((p) => !p.configured)].map((p) => p.name);
+}
+const newProfileSeat = (account, lens) => ({ vendor: 'acp', account, lens, mood: 'grill', moodText: '', model: '', effort: '' });
+const directTransport = (vendor) => directVendor(vendor) ? { transport: 'cli' } : {};
+
 const VENDOR_LABEL = {};
 const VENDOR_META = {}; // vendor -> { kind, usageUrl, pool, catalogue, colour, profiles } from /api/seats
 let MOODS = {}, COLOURS = ['rust', 'olive', 'teal', 'dusk', 'steel'], BASELINES = {};
@@ -131,7 +181,7 @@ const isApi = (vendor) => VENDOR_META[vendor]?.kind === 'api';
 const isAcp = (vendor) => VENDOR_META[vendor]?.kind === 'acp';
 // The pool a drafted seat draws on: a CLI's login profile, or an endpoint's host.
 const seatAccount = (s) => (isApi(s.vendor) ? hostKey(s.endpoint || '') : (s.account || '').trim());
-const chairAccount = () => (isApi($('chairman').value) ? hostKey($('chairman-endpoint').value) : $('chairman-account').value.trim());
+const chairAccount = () => (isApi(chairVendor()) ? hostKey($('chairman-endpoint').value) : $('chairman-account').value.trim());
 
 // ---------- state ----------
 const S = {
@@ -168,8 +218,11 @@ const led = (state) => `<span class="led led-${esc(state || 'idle')}" title="${e
 
 // ---------- setup screen ----------
 async function setup() {
-  const { vendors, moods, colours, defaults, baselines, calibration, pools, runtime } = await requestJson('/api/seats', undefined, 40_000);
+  const [setupData, inventory] = await Promise.all([requestJson('/api/seats'), requestJson('/api/profiles', {})]);
+  profileInventory = inventory;
+  const { vendors, moods, colours, defaults, baselines, calibration, pools, runtime } = setupData;
   const demo = runtime?.mode === 'demo';
+  S.demo = demo;
   $('run-mode').textContent = demo ? 'Demo' : 'Live';
   $('run-mode').className = `run-mode ${demo ? 'demo' : 'live'}`;
   $('mode-note').textContent = demo ? 'Demo: replies and usage are scripted. No model calls are made.' : 'Live: debates send your field notes to the providers you select and use their quota or billing.';
@@ -184,8 +237,7 @@ async function setup() {
     VENDOR_LABEL[v.vendor] = v.label;
     VENDOR_META[v.vendor] = { kind: v.kind, usageUrl: v.usageUrl, pool: v.pool, catalogue: v.catalogue, colour: v.colour, profiles: v.profiles, limitedIsolation: v.limitedIsolation === true, terms: v.terms || null };
     if (v.quota) S.quota[v.vendor] = v.quota;
-    chair.insertAdjacentHTML('beforeend', `<option value="${v.vendor}">${esc(v.label)}</option>`);
-    if (v.search) $('searcher-vendor').insertAdjacentHTML('beforeend', `<option value="${v.vendor}">${esc(v.label)}</option>`);
+    if (v.search) $('searcher-vendor').insertAdjacentHTML('beforeend', `<option value="${v.vendor}">${esc(v.label)} · direct CLI</option>`);
     // one datalist per vendor, so the model field offers what that CLI is known to accept
     $('datalists').insertAdjacentHTML('beforeend', `<datalist id="models-${v.vendor}">${(v.catalogue?.models || []).map((m) => `<option value="${esc(m.id)}">${esc(m.label)}</option>`).join('')}</datalist>`);
   }
@@ -211,13 +263,19 @@ async function setup() {
     settings.chairman = { ...settings.chairman, keyEnv: keyEnvName(settings.chairman.keyEnv) };
     try { localStorage.setItem('roundtable.settings', JSON.stringify(settings)); } catch {}
   }
-  const retained = Array.isArray(saved) ? saved.filter((s) => s && VENDOR_META[s.vendor]) : [];
-  S.draft = retained.length >= 2 ? fillMissingSeatLenses(retained) : initialDraft(initialSeatVendors(vendors));
-  const filled = retained.length >= 2 ? retained.filter((s) => !String(s.lens || '').trim()).length : 0;
-  $('seat-setup-note').hidden = !filled;
-  $('seat-setup-note').textContent = filled ? `Added starter lenses to ${filled} unfinished seat${filled === 1 ? '' : 's'}. Review or edit them before opening the table.` : '';
-  S.initialDraft = retained.length >= 2 ? null : JSON.stringify(S.draft);
-  S.initialChair = !settings.chairman;
+  const accounts = defaultAccounts();
+  const migrate = (s) => {
+    if (!s || !directVendor(s.vendor) || s.transport === 'cli' || s.account || s.model || s.effort || settings.options?.memory === 'resume' || settings.options?.budget?.[s.vendor]) return s;
+    const account = providerProfile(s.vendor, inventory.profiles)?.name
+      || providerChoices().find((p) => p.conventional === s.vendor && !p.configured)?.name;
+    return account ? { ...s, vendor: 'acp', account } : s;
+  };
+  const retained = Array.isArray(saved) ? saved.filter((s) => s && VENDOR_META[s.vendor]).map(migrate) : [];
+  S.draft = retained.length >= 2 ? fillMissingSeatLenses(retained) : [accounts[0], (inventory.profiles.length === 1 ? accounts[0] : accounts[1]) || accounts[0]].map((account, i) => newProfileSeat(account, ['risk and failure modes', 'cost and effort'][i]));
+  const filled = retained.filter((s) => !String(s.lens || '').trim()).length;
+  const setupNote = inventory.error || (filled ? `Added starter lenses to ${filled} unfinished seats.` : retained.some((s) => directVendor(s.vendor) && !s.transport) ? 'Your saved direct CLI settings are selected. Choose an AgentLink profile in the provider menu to switch.' : '');
+  $('seat-setup-note').hidden = !setupNote;
+  $('seat-setup-note').textContent = setupNote;
   for (const [key, id, scale, min, max] of [
     ['critiqueRounds', 'critique-rounds', 1, 0, 8], ['autoContinueMs', 'auto', 1000, 100, 600_000], ['questionWaitMs', 'question-wait', 1000, 100, 600_000], ['wallClockMs', 'wall', 60_000, 60_000, 10_800_000],
   ]) {
@@ -243,17 +301,22 @@ async function setup() {
   $('add-searcher').disabled = !searchers.length;
   $('searcher-account').value = research?.account || '';
   $('searcher-wrap').hidden = !research; $('add-searcher').hidden = !!research;
-  const ch = settings.chairman;
+  const ch = migrate(settings.chairman) || { vendor: S.draft[0].vendor, account: S.draft[0].account };
+  chair.innerHTML = providerOptions(ch.vendor, ch.account);
   if (ch && VENDOR_META[ch.vendor]) {
-    chair.value = ch.vendor;
     for (const field of ['model', 'account', 'endpoint', 'keyEnv']) if (typeof ch[field] === 'string') $(`chairman-${field === 'keyEnv' ? 'keyenv' : field}`).value = ch[field];
   }
   chairEffortOptions();
-  if (ch?.effort && isAcp(ch.vendor)) $('chairman-effort').innerHTML = effortOptions(ch.vendor, ch.effort, ch.model, undefined, ch.account);
+  if (ch?.effort && isAcp(ch.vendor)) $('chairman-effort').innerHTML = effortOptions(ch.vendor, ch.effort, ch.model, ch.account);
   if (ch?.effort && [...$('chairman-effort').options].some((o) => o.value === ch.effort)) $('chairman-effort').value = ch.effort;
   renderSeats();
 
-  $('add-seat').addEventListener('click', () => { S.initialDraft = null; clearSetupValidation(); S.draft.push({ vendor: vendors[0].vendor, lens: nextSeatLens(S.draft), mood: 'grill', moodText: '', model: '', effort: '' }); renderSeats(); });
+  $('add-seat').addEventListener('click', () => {
+    clearSetupValidation();
+    const accounts = defaultAccounts();
+    S.draft.push(newProfileSeat(accounts.find((name) => !S.draft.some((s) => s.vendor === 'acp' && s.account === name)) || accounts[0], nextSeatLens(S.draft)));
+    renderSeats();
+  });
   $('seats').addEventListener('input', onSeatEdit);
   $('seats').addEventListener('change', onSeatEdit);
   $('seats').addEventListener('click', (ev) => {
@@ -263,26 +326,23 @@ async function setup() {
     }
     const pip = ev.target.closest('.pip');
     if (pip) {
-      S.initialDraft = null;
-      const s = S.draft[Number(pip.closest('.seat').dataset.i)];
+        const s = S.draft[Number(pip.closest('.seat').dataset.i)];
       const fam = s.vendor === 'agy' && familyOf('agy', s.model);
       if (fam) Object.assign(s, pickedModel('agy', fam.id, pip.dataset.level)); // a variant is always one level
       else s.effort = s.effort === pip.dataset.level ? '' : pip.dataset.level;
       renderSeats(); return;
     }
     const btn = ev.target.closest('.remove'); if (!btn) return;
-    S.initialDraft = null;
     if (S.draft.length <= 2) { $('seats-error').textContent = 'A table needs at least two seats.'; return; }
     S.draft.splice(Number(btn.closest('.seat').dataset.i), 1); renderSeats();
   });
-  chair.addEventListener('change', () => { S.customChairModel = false; $('chairman-model').value = ''; chairEffortOptions(); renderChair(); renderProjection(); });
-  $('chair-card').addEventListener('input', () => { S.initialChair = false; });
-  $('chair-card').addEventListener('change', () => { S.initialChair = false; });
+  chair.addEventListener('change', () => {
+    $('chairman-account').value = chair.value.startsWith('acp@') ? chair.value.slice(4) : '';
+    $('chairman-effort').value = ''; S.customChairModel = false; $('chairman-model').value = ''; chairEffortOptions(); renderChair(); renderProjection(); });
   $('chair-pips').addEventListener('click', (ev) => {
     const pip = ev.target.closest('.pip'); if (!pip) return;
-    S.initialChair = false;
     const sel = $('chairman-effort');
-    const fam = $('chairman').value === 'agy' && familyOf('agy', $('chairman-model').value.trim());
+    const fam = chairVendor() === 'agy' && familyOf('agy', $('chairman-model').value.trim());
     if (fam) { const p = pickedModel('agy', fam.id, pip.dataset.level); $('chairman-model').value = p.model; sel.value = p.effort; }
     else sel.value = sel.value === pip.dataset.level ? '' : pip.dataset.level; // the filled last pip again: back to default
     renderChair(); renderProjection();
@@ -292,18 +352,18 @@ async function setup() {
     const v = ev.target.value;
     S.customChairModel = v === '__other';
     if (S.customChairModel) { $('chairman-model').value = ''; renderChair(); $('chairman-model').focus(); return; }
-    const p = pickedModel($('chairman').value, v, $('chairman-effort').value);
+    const p = pickedModel(chairVendor(), v, $('chairman-effort').value);
     $('chairman-model').value = p.model; chairEffortOptions(); if (p.effort !== undefined) $('chairman-effort').value = p.effort || '';
-    if (isAcp($('chairman').value) && profileChoices.get(chairAccount())?.models) void loadProfileModels(chairAccount(), p.model);
+    if (isAcp(chairVendor()) && profileChoices.get(chairAccount())?.models) void loadProfileModels(chairAccount(), p.model);
     renderChair(); renderProjection();
   });
   $('chair-model-discovery').addEventListener('click', (ev) => {
     if (ev.target.closest('.profile-models')) void loadProfileModels(chairAccount(), $('chairman-model').value.trim(), true);
   });
-  $('chairman-account').addEventListener('input', () => { chairEffortOptions(); renderChair(); requestPreflight(); });
+  $('chairman-account').addEventListener('input', () => { if (isAcp(chairVendor())) chair.innerHTML = providerOptions('acp', $('chairman-account').value.trim()); chairEffortOptions(); renderChair(); requestPreflight(); });
   $('chairman').addEventListener('change', () => requestPreflight());
-  $('refresh-status').addEventListener('click', () => requestPreflight({ fresh: true }));
-  $('start-refresh').addEventListener('click', () => requestPreflight({ fresh: true }));
+  $('refresh-status').addEventListener('click', refreshConnections);
+  $('start-refresh').addEventListener('click', refreshConnections);
   // an endpoint chairman: a preset URL prefills the key variable's usual name (never a key)
   $('chairman-endpoint').addEventListener('change', () => { const pre = ENDPOINT_PRESETS.find((e) => e.url === $('chairman-endpoint').value.trim()); if (pre?.keyEnv && !$('chairman-keyenv').value.trim()) $('chairman-keyenv').value = pre.keyEnv; renderChair(); requestPreflight(); });
   for (const id of ['chairman-endpoint', 'chairman-keyenv']) $(id).addEventListener('input', () => { renderChair(); requestPreflight(); });
@@ -383,20 +443,35 @@ const profileChoices = new Map();
 function catalogueFor(vendor, account, model = '') {
   if (!isAcp(vendor)) return VENDOR_META[vendor]?.catalogue || {};
   const state = profileChoices.get(account?.trim());
-  return { models: state?.models || [], efforts: state?.levels.get(model) || [] };
+  const defaults = state?.defaults || profileInventory.profiles.find((p) => p.name === account)?.defaults || {};
+  const detail = state?.levels.get(model);
+  return { models: state?.models || [], efforts: detail?.efforts || [], effortChoices: detail?.effortChoices || [],
+    profileModel: state?.profileModel || defaults.model, defaultEffort: detail?.defaultEffort || (!model ? defaults.effort : '') };
+}
+function choiceName(choices, id) {
+  return choices?.find((c) => c.id === id)?.label || id;
+}
+function inheritedLabel(value, prefix = 'Profile default') {
+  return value ? `${prefix} · ${value}` : prefix;
+}
+function inheritedEffort(cat, model) {
+  return inheritedLabel(choiceName(cat.effortChoices, cat.defaultEffort), model && model !== cat.profileModel ? 'Session default' : 'Profile default');
 }
 function levelsFor(vendor, model, account) {
   const cat = catalogueFor(vendor, account, model);
   return modelEfforts(vendor, model, cat.efforts || [], cat.models);
 }
-const effortOptions = (vendor, chosen, model = '', none = defaultEffortLabel(vendor), account = '') => {
+const effortOptions = (vendor, chosen, model = '', account = '') => {
+  const cat = catalogueFor(vendor, account, model);
+  const none = isAcp(vendor) ? inheritedEffort(cat, model) : defaultEffortLabel(vendor);
   const levels = levelsFor(vendor, model, account);
   // Retain a saved ACP selection until the user edits it, including before discovery.
   const options = isAcp(vendor) && chosen && !levels.includes(chosen) ? [...levels, chosen] : levels;
-  return `<option value="">${esc(none)}</option>` + options.map((e) => `<option value="${esc(e)}" ${e === chosen ? 'selected' : ''}>${esc(e)}</option>`).join('');
+  return `<option value="">${esc(none)}</option>` + options.map((e) => `<option value="${esc(e)}" ${e === chosen ? 'selected' : ''}>${esc(choiceName(cat.effortChoices, e))}</option>`).join('');
 };
 
 function profileControl(account) {
+  if (S.demo) return '<span class="seat-note">Scripted demo profile</span>';
   const name = account?.trim();
   const state = profileChoices.get(name);
   const busy = !!state?.pending.size;
@@ -417,10 +492,12 @@ async function loadProfileModels(account, model = '', refresh = false) {
   const redraw = () => { chairEffortOptions(); renderChair(); renderSeats(); };
   redraw();
   try {
-    const result = await requestJson('/api/profile-models', { account: name, model, allowLimitedIsolation: true }, 25_000);
+    const result = await requestJson('/api/profile-models', { account: name, model, allowLimitedIsolation: true }, 45_000);
     state.models = result.models;
-    state.levels.set(result.effortModel, result.efforts);
-    state.message = !result.models.length ? 'This profile offers its default model.' : model && !result.models.some((m) => m.id === model) ? 'The saved model is no longer offered. Choose a listed model or the profile default.' : '';
+    state.defaults = result.defaults;
+    state.profileModel = result.profileModel;
+    state.levels.set(result.effortModel, result);
+    state.message = result.warning || (!result.models.length ? 'This profile offers its default model.' : model && !result.models.some((m) => m.id === model) ? 'The saved model is no longer offered. Choose a listed model or the profile default.' : '');
   } catch (e) { state.message = e.message; }
   finally { state.pending.delete(model); if (profileChoices.get(name) === state) redraw(); }
 }
@@ -428,8 +505,8 @@ async function loadProfileModels(account, model = '', refresh = false) {
 function chairEffortOptions() {
   const sel = $('chairman-effort');
   const keep = sel.value;
-  sel.innerHTML = effortOptions($('chairman').value, keep, $('chairman-model').value.trim(), undefined, chairAccount());
-  $('chairman-model').setAttribute('list', `models-${$('chairman').value}`);
+  sel.innerHTML = effortOptions(chairVendor(), keep, $('chairman-model').value.trim(), chairAccount());
+  $('chairman-model').setAttribute('list', `models-${chairVendor()}`);
 }
 
 // A seat's colour is its vendor's (signature-design family accents): rust Claude, olive Codex,
@@ -447,7 +524,7 @@ function modelPicker(vendor, value, idAttr = '', custom = false, account = '') {
   let current = !value ? '' : models.some((m) => m.id === selected) ? selected : '__other';
   if (custom) current = '__other';
   const opt = (m) => `<option value="${esc(m.id)}" ${m.id === current ? 'selected' : ''}>${esc(m.label)}${m.note ? ` · ${esc(m.note)}` : ''}</option>`;
-  const html = `<select class="flat model-pick" ${idAttr} aria-label="Model"><option value="">default</option>${models.length ? `<optgroup label="${isAcp(vendor) ? 'Profile models' : 'Models · most capable first'}">${models.map(opt).join('')}</optgroup>` : ''}<option value="__other" ${current === '__other' ? 'selected' : ''}>Custom model ID…</option></select>`;
+  const html = `<select class="flat model-pick" ${idAttr} aria-label="Model"><option value="">${esc(isAcp(vendor) ? inheritedLabel(choiceName(models, cat.profileModel)) : 'default')}</option>${models.length ? `<optgroup label="${isAcp(vendor) ? 'Profile models' : 'Models · most capable first'}">${models.map(opt).join('')}</optgroup>` : ''}<option value="__other" ${current === '__other' ? 'selected' : ''}>Custom model ID…</option></select>`;
   return { html, other: current === '__other' };
 }
 // A picked model as the id to send: an Antigravity model takes its effort as the suffix.
@@ -462,9 +539,11 @@ function pickedModel(vendor, picked, effort) {
 // Antigravity model offers the levels its id comes in.
 function pipsHtml(vendor, chosen, model = '', account = '') {
   const levels = (vendor === 'agy' && familyOf(vendor, model)?.levels) || levelsFor(vendor, model, account);
+  const cat = catalogueFor(vendor, account, model);
+  const label = (id) => choiceName(cat.effortChoices, id);
   const at = levels.indexOf(chosen);
-  return '<span class="pip-buttons">' + levels.map((l, i) => `<button type="button" class="pip ${i <= at ? 'on' : ''}" data-level="${esc(l)}" title="${esc(l)}" aria-label="Effort ${esc(l)}" aria-pressed="${l === chosen}"></button>`).join('') + '</span>'
-    + `<span class="pip-label">${esc(chosen || defaultEffortLabel(vendor))}</span>`;
+  return '<span class="pip-buttons">' + levels.map((l, i) => `<button type="button" class="pip ${i <= at ? 'on' : ''}" data-level="${esc(l)}" title="${esc(label(l) === l ? l : label(l) + ' (' + l + ')')}" aria-label="Effort ${esc(label(l))}" aria-pressed="${l === chosen}"></button>`).join('') + '</span>'
+    + `<span class="pip-label">${esc(chosen ? label(chosen) : isAcp(vendor) ? inheritedEffort(cat, model) : defaultEffortLabel(vendor))}</span>`;
 }
 
 // The lamp: the pre-flight answer for the seat's pool when there is one (installed, logged in,
@@ -518,7 +597,7 @@ function seatRow(s, i) {
     <div class="seat-hd">
       <span class="avatar" title="${esc(s.mood === 'custom' ? 'custom mood' : s.mood)}">${avatar(hidden ? hidden.art : s.mood === 'custom' ? 'custom' : s.mood, hidden?.sprite)}</span>
       <div class="seat-id">
-        <span class="chair-title"><select class="flat vendor" aria-label="Vendor">${Object.keys(VENDOR_META).map((v) => `<option value="${v}" ${v === s.vendor ? 'selected' : ''}>${esc(VENDOR_LABEL[v])}</option>`).join('')}</select>${n ? `<span class="seat-note">${n.trim()}</span>` : ''}<span class="kind-tag ${api ? 'api' : ''}" title="${api ? 'Billed by the endpoint, not a subscription' : isAcp(s.vendor) ? 'Billing belongs to the selected AgentLink profile' : 'The vendor CLI on your subscription'}">${esc(seatKind(VENDOR_META[s.vendor], s.endpoint))}</span></span>
+        <span class="chair-title"><select class="flat vendor" aria-label="Vendor">${providerOptions(s.vendor, s.account)}</select>${n ? `<span class="seat-note">${n.trim()}</span>` : ''}<span class="kind-tag ${api ? 'api' : ''}" title="${api ? 'Billed by the endpoint, not a subscription' : isAcp(s.vendor) ? 'Billing belongs to the selected AgentLink profile' : 'The vendor CLI on your subscription'}">${esc(seatKind(VENDOR_META[s.vendor], s.endpoint))}</span></span>
         ${hidden && !api ? picker.html.replace('<select', '<select disabled title="Locked to the lightest model"') : picker.html}<input class="flat model" aria-label="Model id" list="models-${s.vendor}" value="${esc(s.model)}" placeholder="${api ? 'model id (required)' : 'model id'}" ${picker.other ? '' : 'hidden'}>
       </div>
       <span class="lamp ${lamp.cls}" title="${esc(lamp.note)}"></span>
@@ -533,7 +612,7 @@ function seatRow(s, i) {
       ${gone ? `<span class="seat-note danger">${esc(s.model)} was retired (${esc(gone.date)}); use ${esc(gone.instead)}.</span>` : ''}
       ${api ? `<label class="f"><span class="label">Endpoint</span><input class="flat endpoint" aria-label="Endpoint base URL" list="endpoints" value="${esc(s.endpoint || '')}" placeholder="http://localhost:11434/v1" title="The base URL of an OpenAI-compatible server, ending in /v1. Plain http only on this machine or a private network."></label>
       <label class="f"><span class="label">Key var</span><input class="flat keyenv" aria-label="Key environment variable" value="${esc(s.keyEnv || '')}" placeholder="none (local server)" title="The NAME of the environment variable that holds the key, set in the shell roundtable was started from. Never the key itself."></label>` : ''}
-      <div class="f"><span class="label help-label" data-help="effort" tabindex="0" aria-describedby="help-effort">Effort</span><span class="pips ${hidden ? 'locked' : ''}">${pipsHtml(s.vendor, s.effort, s.model, s.account)}</span><select class="effort" hidden>${effortOptions(s.vendor, s.effort, s.model, undefined, s.account)}</select></div>
+      <div class="f"><span class="label help-label" data-help="effort" tabindex="0" aria-describedby="help-effort">Effort</span><span class="pips ${hidden ? 'locked' : ''}">${pipsHtml(s.vendor, s.effort, s.model, s.account)}</span><select class="effort" hidden>${effortOptions(s.vendor, s.effort, s.model, s.account)}</select></div>
       <span class="seat-note lamp-note ${lamp.cls === 'danger' || lamp.cls === 'warn' ? lamp.cls : ''}" title="${esc(lamp.note)}" tabindex="0">${esc(lamp.note)}</span>
       ${cardNotices(s.vendor)}
       ${api ? '' : `<details class="seat-more" ${isAcp(s.vendor) ? 'open' : ''}><summary>${isAcp(s.vendor) ? 'AgentLink profile (required)' : 'Login profile'}${s.account ? `: ${esc(s.account)}` : ''}</summary><input class="flat account" aria-label="${isAcp(s.vendor) ? 'AgentLink profile' : 'Login profile'}" value="${esc(s.account || '')}" placeholder="${isAcp(s.vendor) ? 'saved profile name' : 'none: your usual login'}" title="${isAcp(s.vendor) ? 'A profile already configured centrally in AgentLink' : 'A second login of this CLI; node src/doctor.js shows how to log a profile in'}">${isAcp(s.vendor) ? profileControl(s.account) : ''}</details>`}
@@ -549,10 +628,9 @@ function requestPreflight({ fresh = false } = {}) {
   const revision = ++preflightRevision;
   clearTimeout(preflightTimer);
   preflightTimer = setTimeout(async () => {
-    const seats = [...S.draft, { vendor: $('chairman').value, account: $('chairman-account').value.trim(), endpoint: $('chairman-endpoint').value, keyEnv: $('chairman-keyenv').value }];
+    const seats = [...S.draft, { vendor: chairVendor(), account: $('chairman-account').value.trim(), endpoint: $('chairman-endpoint').value, keyEnv: $('chairman-keyenv').value }];
     if (searcherOn()) seats.push(draftSearcher());
-    const keys = [...new Set([...seats.map((s) => poolKey(s.vendor, seatAccount(s), !!VENDOR_META[s.vendor]?.profiles)),
-      ...(S.initialDraft ? Object.keys(VENDOR_META).filter((v) => !isApi(v)) : [])])];
+    const keys = [...new Set(seats.map((s) => poolKey(s.vendor, seatAccount(s), !!VENDOR_META[s.vendor]?.profiles)))];
     // an API pool is checked from its URL and key-variable NAME (no request leaves the server);
     // those travel in the body, so its lamp follows every edit
     const endpoints = {};
@@ -572,18 +650,6 @@ function requestPreflight({ fresh = false } = {}) {
       for (const p of pools) {
         S.preflight[p.key] = p;
         if (p.quota && (p.quota.at ?? 0) >= (S.quota[p.key]?.at ?? 0)) S.quota[p.key] = p.quota;
-      }
-      if (S.initialDraft) {
-        const unchanged = JSON.stringify(S.draft) === S.initialDraft;
-        S.initialDraft = null; // choose once; a refresh never replaces an existing table
-        if (unchanged) {
-          const chosen = initialDraft(initialSeatVendors(Object.entries(VENDOR_META).map(([vendor, meta]) => ({ vendor, ...meta })), pools));
-          if (JSON.stringify(chosen) !== JSON.stringify(S.draft)) {
-            S.draft = chosen;
-            if (S.initialChair && chosen.length) { $('chairman').value = chosen[0].vendor; chairEffortOptions(); }
-            S.preflighting = false; renderSeats(); renderChair(); return;
-          }
-        }
       }
     } catch (e) {
       if (revision === preflightRevision) S.preflightError = e.message || 'Could not refresh status. Try Refresh status again.';
@@ -605,7 +671,7 @@ function updateLamps() {
     const note = card.querySelector('.lamp-note');
     if (note) { note.textContent = l.note; note.title = l.note; note.className = `seat-note lamp-note ${l.cls === 'danger' || l.cls === 'warn' ? l.cls : ''}`; }
   });
-  const c = poolLamp($('chairman').value, chairAccount(), $('chairman-model').value.trim());
+  const c = poolLamp(chairVendor(), chairAccount(), $('chairman-model').value.trim());
   $('chair-lamp').className = `lamp ${c.cls}`; $('chair-lamp').title = c.note;
   $('chair-note').textContent = c.note; $('chair-note').title = c.note; $('chair-note').className = `seat-note lamp-note ${c.cls === 'danger' || c.cls === 'warn' ? c.cls : ''}`;
   if (S.startConfirm && $('setup-error').textContent === S.startConfirm) $('setup-error').textContent = '';
@@ -618,7 +684,8 @@ function updateLamps() {
 // The chairman card: vendor colour, the gavel, effort pips; its controls keep their ids.
 function renderChair() {
   const restoreFocus = rememberFocus($('chair-card'));
-  const v = $('chairman').value;
+  const v = chairVendor();
+  void loadDirectCatalogue(v);
   const card = $('chair-card');
   card.style.setProperty('--seat', `var(--seat-${vendorColour(v)})`);
   $('chair-avatar').innerHTML = avatar('chairman');
@@ -644,7 +711,7 @@ function renderChair() {
 // Antigravity cannot be sealed off (config.js limitedIsolation). The card that runs on it says so,
 // its tip explains, and choosing it there is the consent the board sends (isolationAccepted).
 // An agent request has no card, so it must send options.allowLimitedIsolation itself.
-const isoNote = (vendor) => (VENDOR_META[vendor]?.limitedIsolation
+const isoNote = (vendor) => (!S.demo && VENDOR_META[vendor]?.limitedIsolation
   ? isAcp(vendor) ? '<span class="seat-note warn iso-note">Limited isolation: the profile owns tools, customization and billing. Use a trusted profile with tools disabled. Stateless memory only; missing token usage stops further seat calls.</span>'
     : '<span class="seat-note warn iso-note help-label" data-help="isolation" tabindex="0" aria-describedby="help-isolation">Limited isolation: your Antigravity customizations and MCP servers still load</span>' : '');
 const isolationAccepted = () => [...draftSeats(), draftChairman(), searcherOn() ? draftSearcher() : null].some((s) => VENDOR_META[s?.vendor]?.limitedIsolation);
@@ -759,6 +826,7 @@ function renderSearcher() {
   if (!searcherOn()) return;
   const restoreFocus = rememberFocus($('searcher-card'));
   const v = $('searcher-vendor').value;
+  void loadDirectCatalogue(v);
   $('searcher-card').style.setProperty('--seat', `var(--seat-${vendorColour(v)})`);
   $('searcher-avatar').innerHTML = avatar('searcher');
   $('searcher-profile').hidden = !VENDOR_META[v]?.profiles; // no login profiles for a CLI without a state directory
@@ -831,6 +899,7 @@ function rememberFocus(root) {
   };
 }
 function renderSeats() {
+  for (const s of S.draft) void loadDirectCatalogue(s.vendor);
   helpNotes.close();
   const restoreFocus = rememberFocus($('seats'));
   $('seats').innerHTML = S.draft.map(seatRow).join('');
@@ -842,7 +911,6 @@ function renderSeats() {
 function onSeatEdit(ev) {
   const row = ev.target.closest('.seat'); if (!row) return;
   clearSetupValidation();
-  S.initialDraft = null;
   const s = S.draft[Number(row.dataset.i)];
   if (ev.target.classList.contains('model-pick')) {
     if (ev.type !== 'change') return;
@@ -853,8 +921,13 @@ function onSeatEdit(ev) {
     if (isAcp(s.vendor) && profileChoices.get(s.account?.trim())?.models) void loadProfileModels(s.account, s.model);
     renderSeats(); renderProjection(); return;
   }
-  const vendorBefore = s.vendor;
-  s.vendor = row.querySelector('.vendor').value;
+  if (ev.target.classList.contains('vendor')) {
+    if (ev.type !== 'change') return;
+    const choice = ev.target.value;
+    delete s.transport;
+    Object.assign(s, { vendor: rawVendor(choice), account: choice.startsWith('acp@') ? choice.slice(4) : '', customModel: false, model: '', effort: '' });
+    lockHidden(s); renderSeats(); return;
+  }
   s.lens = row.querySelector('.lens').value;
   s.mood = row.querySelector('.mood').value;
   s.moodText = row.querySelector('.mood-text').value;
@@ -868,7 +941,6 @@ function onSeatEdit(ev) {
     const pre = ev.type === 'change' && ev.target.classList.contains('endpoint') && ENDPOINT_PRESETS.find((e) => e.url === s.endpoint.trim());
     if (pre?.keyEnv && !s.keyEnv.trim()) s.keyEnv = pre.keyEnv;
   }
-  if (s.vendor !== vendorBefore) { s.customModel = false; s.model = ''; s.effort = ''; lockHidden(s); renderSeats(); return; } // the catalogue changed
   if (ev.type === 'change' && (ev.target.classList.contains('mood-text') || ev.target.classList.contains('mood'))) lockHidden(s);
   if (ev.type === 'change' && ev.target.classList.contains('mood-text')) { renderSeats(); renderProjection(); return; }
   // the avatar follows the mood, the lamp the login profile or the endpoint: redraw the cards (not while typing)
@@ -886,7 +958,7 @@ function onSeatEdit(ev) {
 
 function draftSeats() {
   return S.draft.map((s, i) => ({
-    vendor: s.vendor, lens: s.lens.trim(), colour: vendorColour(s.vendor),
+    vendor: s.vendor, ...directTransport(s.vendor), lens: s.lens.trim(), colour: vendorColour(s.vendor),
     mood: s.mood === 'custom' ? { preset: 'custom', text: s.moodText.trim() } : { preset: s.mood },
     model: s.model.trim() || undefined, effort: s.effort || undefined, account: seatAccount(s) || undefined,
     ...(isApi(s.vendor) ? { endpoint: (s.endpoint || '').trim(), keyEnv: (s.keyEnv || '').trim() || undefined } : {}),
@@ -895,8 +967,8 @@ function draftSeats() {
 // The chairman as the server takes it (normaliseChairman): an endpoint chairman carries its URL,
 // key variable name and host-derived account, like a seat.
 function draftChairman() {
-  const vendor = $('chairman').value;
-  return { vendor, model: $('chairman-model').value.trim() || undefined, effort: $('chairman-effort').value || undefined, account: chairAccount() || undefined,
+  const vendor = chairVendor();
+  return { vendor, ...directTransport(vendor), model: $('chairman-model').value.trim() || undefined, effort: $('chairman-effort').value || undefined, account: chairAccount() || undefined,
     ...(isApi(vendor) ? { endpoint: $('chairman-endpoint').value.trim(), keyEnv: $('chairman-keyenv').value.trim() || undefined } : {}) };
 }
 
@@ -1042,6 +1114,7 @@ function renderProjection() {
   const vs = Object.values(p.byVendor);
   const rounds = Number($('critique-rounds').value) || 0;
   const priced = vs.filter((v) => v.cost != null);
+  $('start-profile-note').hidden = S.demo || ![...seats, chairman].some((s) => s?.vendor === 'acp');
   $('start-summary').innerHTML = seats.length ? `<b>${seats.length} seats</b> · ${seats.length * (rounds + 1) + 1 + (searcherOn() ? 1 : 0)} planned calls before retries · estimated ${k(vs.reduce((n, v) => n + v.total, 0))} tokens${priced.length ? ` · ≈ $${priced.reduce((n, v) => n + v.cost, 0).toFixed(2)} for ${priced.map((v) => esc(VENDOR_LABEL[v.vendor] || v.vendor)).join(', ')}` : ''}` : '';
 }
 
@@ -1087,10 +1160,10 @@ async function start() {
   };
   try {
     localStorage.setItem('roundtable.notes', JSON.stringify(notes));
-    localStorage.setItem('roundtable.seats', JSON.stringify(S.draft.map((s) => ({ ...s, keyEnv: keyEnvName(s.keyEnv) }))));
+    localStorage.setItem('roundtable.seats', JSON.stringify(S.draft.map((s) => ({ ...s, ...directTransport(s.vendor), keyEnv: keyEnvName(s.keyEnv) }))));
     localStorage.setItem('roundtable.budget', JSON.stringify(S.budget));
     localStorage.setItem('roundtable.settings', JSON.stringify({ options: body.options, researchQueryMode: $('research-query-mode').value, chairman: {
-      vendor: $('chairman').value, model: $('chairman-model').value, effort: $('chairman-effort').value,
+      vendor: chairVendor(), ...directTransport(chairVendor()), model: $('chairman-model').value, effort: $('chairman-effort').value,
       account: $('chairman-account').value, endpoint: $('chairman-endpoint').value, keyEnv: keyEnvName($('chairman-keyenv').value),
     } }));
   } catch {}
@@ -1610,7 +1683,7 @@ function renderGate() {
       ? (isAcp(savedChair?.vendor) ? apiSeats[0]?.value : null) || pickable.find((v) => v !== S.verdict?.seat?.vendor) || pickable[0]
       : isAcp(savedChair?.vendor) ? 'chair:acp' : (savedChair?.vendor || pickable[0]);
     const synth = S.status === 'done' && S.synthesis && S.synthesis !== 'done' && canFinish
-      ? ` <span class="synth">Write the verdict with <select id="synth-chair" aria-label="Chairman for the verdict">${pickable.map((v) => `<option value="${v}" ${v === first ? 'selected' : ''}>${esc(VENDOR_LABEL[v])}${v === savedChair?.vendor ? esc([savedChair.model, savedChair.effort, savedChair.account].filter(Boolean).map((s) => ` · ${s}`).join('')) : ''}</option>`).join('')}${apiSeats.map((o) => `<option value="${esc(o.value)}" ${o.value === first ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select> <button class="btn btn-small" id="synthesize" type="button" ${S.actionPending ? 'disabled' : ''}>${S.actionPending === 'synthesize' ? 'Starting…' : 'Write'}</button></span>` : '';
+      ? ` <span class="synth">Write the verdict with <select id="synth-chair" aria-label="Chairman for the verdict">${pickable.map((v) => `<option value="${v}" ${v === first ? 'selected' : ''}>${esc(VENDOR_LABEL[v])} · direct CLI${v === savedChair?.vendor ? esc([savedChair.model, savedChair.effort, savedChair.account].filter(Boolean).map((s) => ` · ${s}`).join('')) : ''}</option>`).join('')}${apiSeats.map((o) => `<option value="${esc(o.value)}" ${o.value === first ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select> <button class="btn btn-small" id="synthesize" type="button" ${S.actionPending ? 'disabled' : ''}>${S.actionPending === 'synthesize' ? 'Starting…' : 'Write'}</button></span>` : '';
     const focused = st.contains(document.activeElement) ? document.activeElement.id : null;
     st.innerHTML = link + (S.status === 'done' ? `<span class="status ${S.synthesis === 'done' ? 'ok' : 'warn'}">${S.synthesis === 'done' ? 'Review finished' : S.stopReason === 'human' ? 'Review stopped' : 'Review ended without a verdict'}</span> ${esc(stopExplanation(S.stopReason, S.stopContext))}${synth} Record saved locally.${S.exported ? ' Decision record exported.' : ''}${S.exportError ? ` <span class="danger">Export failed: ${esc(S.exportError)}</span>` : ''}${S.replayed ? ' <span class="muted">saved review</span>' : ''}`
       : interrupted ? `<span class="status warn">interrupted</span> ${S.interrupted?.round ? `after round ${S.interrupted.round - 1}` : 'before round 0 finished'}${S.interrupted?.partialRound != null ? `, round ${S.interrupted.partialRound} will be re-run` : ''}. Add a note or resume.`
@@ -1895,7 +1968,7 @@ $('gate-status').addEventListener('click', async (ev) => {
   const savedChair = S.configuredChairman || S.chairman;
   const chosen = seat || (pick === 'chair:acp' || pick === savedChair?.vendor ? savedChair : { vendor: pick });
   const chairman = Object.fromEntries(['vendor', 'endpoint', 'keyEnv', 'model', 'effort', 'account'].filter((key) => chosen[key] != null).map((key) => [key, chosen[key]]));
-  await boardAction('synthesize', { chairman });
+  await boardAction('synthesize', { chairman: { ...chairman, ...directTransport(chairman.vendor) } });
   if (revision === viewRevision) $('synthesize')?.focus({ preventScroll: true });
 });
 $('gate-status').addEventListener('change', (ev) => { if (ev.target.id === 'synth-chair') S.synthChoice = ev.target.value; });

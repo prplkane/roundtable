@@ -1,11 +1,12 @@
 import { LIMITS } from './validate.js';
+import { PROFILE_PROVIDERS, providerProfile } from './seats.js';
 import { localClient } from './local-http.js';
 
 export const HELP = {
   usage: 'roundtable agent <status|models|check|start|wait|answer|hold|finish|stop|resume|verdict> [--port 4747] [--id review-id] [--input file|-] [--seconds 25] [--after-round round] [--refresh]',
   commands: {
-    status: 'Without --id: cached provider setup. With --id: current step, questions, latest positions and verdict. --refresh refreshes free CLI status checks.',
-    models: 'Read model IDs and effort levels from a trusted AgentLink profile without sending a prompt. Supply --input with account, allowLimitedIsolation: true and an optional model.',
+    status: 'Without --id: cached provider setup. With --id: current step, questions, latest positions and verdict. --refresh checks saved AgentLink profile availability without opening sessions.',
+    models: 'Read advertised model and effort names, IDs and saved profile defaults without sending a prompt. Supply --input with account, allowLimitedIsolation: true and an optional model.',
     check: 'Validate --input and estimate calls/tokens without creating a review.',
     start: 'Start the review in --input. Uses the selected providers. Returns its id immediately.',
     wait: 'Wait up to --seconds (1–30) for a question or completion. After presenting questions, use --after-round N to wait for the next step without asking the same questions again. Returns one state object, not an event log.',
@@ -16,7 +17,7 @@ export const HELP = {
     resume: 'Resume an interrupted review. May make provider calls.',
     verdict: 'Request a missing or failed verdict from saved replies. May make a provider call.',
   },
-  acp: 'To use a saved AgentLink profile, select vendor="acp" and account="profile-name" for each seat and the chairman. Requires stateless memory and allowLimitedIsolation=true after the person accepts profile-owned permissions, customization and billing. Roundtable denies client tools and stops reported tool activity. AgentLink must already be installed/configured. Missing token usage stays unknown and stops further calls for that seat under its cap; no live quota is inferred.',
+  acp: 'Codex, Claude and Antigravity seats and chairmen default to AgentLink. Bare vendor codex, claude or agy selects its saved profile. For an exact profile, select vendor="acp" and account="profile-name" for each seat and the chairman. Requires stateless memory and allowLimitedIsolation=true after the person accepts profile-owned permissions, customization and billing. Roundtable denies client tools and stops reported tool activity. AgentLink must already be installed/configured. Set transport=cli explicitly for direct CLI seats. Missing token usage stays unknown and stops further calls for that seat under its cap; no live quota is inferred.',
   setup: 'Use roundtable server status to inspect the local board; roundtable server start launches it hidden if needed (add --fake for a free test). After an update, server restart refuses active reviews. This client reads its launch token locally; it never prints or stores the token.',
   input: 'check/start accept the same {fieldNotes,seats,chairman,options} JSON as the board. Check available providers first. Every result with an id carries board, a link where a person can watch the review in a browser; offer it, do not open it.',
   recipe: {
@@ -25,11 +26,11 @@ export const HELP = {
     completion: 'A start acknowledgement or seat positions are not a completed review. Keep waiting through status running and verdict until status done and verdict.status ready. If interrupted, failed, skipped or missing, report that limitation instead of supplying your own chairman result. Include the review id, board link and depth.completedCritiqueRounds in the final report.',
     lenses: 'Give every seat a different lens, taken from what the decision could get wrong: risk, cost, evidence, reversibility, long-term effects, user impact. Two seats with one lens mostly agree, which wastes a call.',
     moods: 'Pair one sceptical seat (grill) with one practical seat (builder). Use steelman when the user already leans one way, contrarian when the seats would otherwise agree too early.',
-    effort: 'effort low and the lightest model in status for the seats of a small review. Give the chairman one effort step more than the seats (medium when they run low): it judges the arguments, and at low effort it dismisses the hardest objection in a word. Raise one seat, not all, when the decision is hard to reverse.',
+    effort: 'Leave model and effort blank to follow the profile defaults. To pin a model or reasoning level, show the names reported by roundtable_models and send the corresponding IDs. Shared defaults are managed with agentlink defaults PROFILE.',
     context: 'constraints, known, assumed, reversibility and deadline go into every prompt. Fill them only with facts the user stated; put guesses under assumed, never under known. Leave a field empty rather than invent it.',
     unattended: 'Use options.unattended true for a background job with nobody to answer: it skips all pauses and keeps missing facts as assumptions. Live chat or browser reviews leave it false: ordinary checkpoints last autoContinueMs (15 seconds by default), questions last questionWaitMs (2 minutes). No answer continues automatically, without accepting a recommendation. Both modes respect the review wall clock.',
-    isolation: 'Live Antigravity requires options.allowLimitedIsolation=true. Set it only when the user has agreed to its limits: session rules deny documented tools, but the CLI cannot disable all shared customizations or MCP discovery. Choose another provider otherwise. Reported prohibited tool activity still stops the seat.',
-    terms: 'Live Antigravity also requires options.acknowledgeTermsRisk=true, for every seat, chairman or searcher on agy. Google\'s Antigravity FAQ says wrapping agy in third-party applications is not supported under consumer plans and that third-party access can get the account suspended or terminated. Show the person providers[].terms.notice and its url from status, and set the option only when they have agreed for this review; an acknowledgment on the board does not answer for an agent request. Choose another provider otherwise.',
+    isolation: 'AgentLink seats and direct Antigravity require options.allowLimitedIsolation=true. Set it only when the user has agreed to its limits: session rules deny documented tools, but the CLI cannot disable all shared customizations or MCP discovery. Choose another provider otherwise. Reported prohibited tool activity still stops the seat.',
+    terms: 'Direct Antigravity also requires options.acknowledgeTermsRisk=true, for every seat, chairman or searcher on agy. Google\'s Antigravity FAQ says wrapping agy in third-party applications is not supported under consumer plans and that third-party access can get the account suspended or terminated. Show the person directProviders[].terms.notice and its url from status, and set the option only when they have agreed for this review; an acknowledgment on the board does not answer for an agent request. Choose another provider otherwise.',
     research: 'Only when the user requests web research: options.research={query:"public search question",maxSearches:4,timeoutMs:120000}. Adds one fresh CLI call, the searcher, before discussion; only this query goes into research. Optional vendor ("codex", "claude" or "agy"; default "codex"; agy also needs allowLimitedIsolation and acknowledgeTermsRisk), model, effort and account set the searcher; without model and effort it runs that vendor\'s lightest model at low effort on the default login. All seats receive the same saved provider-supplied sources. Reported search operations are bounded, but an operation may start before its report arrives. Failed or interrupted research never reruns automatically.',
     agreement: 'When gate.reopenCalls is present, every seat already agrees. Empty answers and no message go straight to the verdict. Any answer text or message runs one more round at reopenCalls calls. Send text only if it could change a seat\'s position; a fact that confirms what the seats already said is better left for the verdict.',
   },
@@ -47,13 +48,21 @@ export async function runAgent(command, flags = {}, input, signal) {
   let result;
   if (command === 'status' && !route) {
     const setup = await request('/api/seats?cached=1');
-    const pools = setup.vendors.filter((v) => v.kind !== 'api').map((v) => v.vendor);
-    const readiness = flags.refresh ? await request('/api/preflight', { pools, fresh: true }) : await request('/api/preflight');
-    result = { mode: setup.runtime.mode, cataloguePending: setup.runtime.cataloguePending === true, providers: setup.vendors.map((v) => ({ vendor: v.vendor, kind: v.kind,
+    const inventory = await request('/api/profiles', {});
+    const pools = inventory.profiles.map((p) => 'acp@' + p.name);
+    const readiness = !pools.length ? { pools: [] } : flags.refresh
+      ? await request('/api/preflight', { pools, fresh: true })
+      : await request('/api/preflight?pools=' + encodeURIComponent(pools.join(',')));
+    result = { mode: setup.runtime.mode, cataloguePending: setup.runtime.cataloguePending === true, defaultTransport: 'agentlink', agentLink: inventory,
+      providers: Object.keys(PROFILE_PROVIDERS).map((vendor) => {
+        const profile = providerProfile(vendor, inventory.profiles);
+        return { vendor, transport: 'agentlink', account: profile?.name || null, configured: !!profile, ...(profile?.defaults ? { defaults: profile.defaults } : {}) };
+      }),
+      directProviders: setup.vendors.filter((v) => v.kind !== 'acp').map((v) => ({ vendor: v.vendor, kind: v.kind, ...(v.kind === 'cli' ? { transport: 'cli' } : {}),
       models: (v.catalogue?.models || []).map((m) => typeof m === 'string' ? m : m.id), efforts: v.catalogue?.efforts || [],
       ...(v.terms ? { terms: { notice: v.terms.notice, url: v.terms.url, acknowledgedOnBoard: v.terms.acknowledgedAt != null } } : {}) })),
       readiness: readiness.pools, defaults: setup.defaults, next: 'Check a JSON review with agent check --input file. No model call has been made.' };
-  } else if (command === 'models') result = await request('/api/profile-models', input || {}, 25_000);
+  } else if (command === 'models') result = await request('/api/profile-models', input || {}, 45_000);
   else if (command === 'check') result = await request('/api/preview', input, 40_000);
   else if (command === 'start') { const started = await request('/api/debates', input, 40_000); result = { id: started.slug, board: board(started.slug), next: `agent wait --port ${port} --id ${started.slug}` }; }
   else {

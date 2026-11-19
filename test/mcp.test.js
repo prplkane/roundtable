@@ -32,7 +32,9 @@ test('MCP retries slow and reset health reads, reads the catalogue once, and ref
       catalogueReads++;
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify({ runtime: { mode }, vendors: [], defaults: { critiqueRounds: 1 } }));
-    } else if (req.url === '/api/preflight') res.end(JSON.stringify({ pools: {} }));
+    } else if (req.url === '/') res.end('<meta name="roundtable-token" content="' + 'a'.repeat(32) + '">');
+    else if (req.url === '/api/profiles') res.end(JSON.stringify({ profiles: [] }));
+    else if (req.url === '/api/preflight') res.end(JSON.stringify({ pools: {} }));
     else if (req.url === '/api/debates/example/state') res.end(JSON.stringify({ id: 'example', status: 'done', nextAction: { type: 'report_result' },
       verdict: { status: 'ready', sections: { RECOMMENDATION: unicode } } }));
     else { res.statusCode = 404; res.end('{}'); }

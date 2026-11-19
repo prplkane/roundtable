@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normaliseSeats, normaliseChairman, moodLine, MOODS, COLOURS, initialSeatVendors, nextSeatLens, fillMissingSeatLenses, seatSetupIssue } from '../src/seats.js';
+import { normaliseSeats, normaliseChairman, moodLine, routeReviewProfiles, MOODS, COLOURS, profileChoicesFor, nextSeatLens, fillMissingSeatLenses, seatSetupIssue } from '../src/seats.js';
 import { ADAPTERS } from '../src/adapters/config.js';
 
 const V = ADAPTERS;
@@ -32,20 +32,10 @@ test('seat validation identifies the blank or duplicate lens and custom mood wit
   assert.equal(seatSetupIssue(seats), null);
 });
 
-test('first use chooses two CLI seats, preferring ready default logins and reusing a sole ready vendor', () => {
-  const vendors = Object.entries(V).map(([vendor, a]) => ({ vendor, kind: a.kind }));
-  const snapshot = structuredClone(vendors);
-  assert.deepEqual(initialSeatVendors(vendors), ['claude', 'codex']);
-  assert.deepEqual(initialSeatVendors(vendors, [
-    { key: 'claude', state: 'bad' }, { key: 'codex', state: 'ok' }, { key: 'agy', state: 'ok' },
-  ]), ['codex', 'agy']);
-  assert.deepEqual(initialSeatVendors(vendors, [{ key: 'codex', state: 'ok' }]), ['codex', 'codex']);
-  assert.deepEqual(initialSeatVendors(vendors, [
-    { key: 'claude', state: 'bad' }, { key: 'codex', state: 'warn' }, { key: 'agy@work', state: 'ok' }, { key: 'api', state: 'ok' },
-  ]), ['claude', 'codex'], 'unknown or named logins do not imply a ready default login');
-  assert.deepEqual(initialSeatVendors([{ vendor: 'agy', kind: 'cli' }]), ['agy', 'agy']);
-  assert.deepEqual(initialSeatVendors([{ vendor: 'api', kind: 'api' }]), []);
-  assert.deepEqual(vendors, snapshot);
+test('profile choices keep provider identity, ambiguous accounts and missing setup distinct', () => {
+  assert.deepEqual(profileChoicesFor([]).map((p) => [p.name, p.configured]), [['codex', false], ['claude', false], ['agy', false]]);
+  const profiles = [{ name: 'codex', provider: 'claude' }, { name: 'a', provider: 'antigravity' }, { name: 'b', provider: 'antigravity' }];
+  assert.deepEqual(profileChoicesFor(profiles), [{ name: 'codex', vendor: 'claude', configured: true }, { name: 'a', configured: true }, { name: 'b', configured: true }]);
 });
 
 test('two instances of one vendor get their own ids and numbered labels, and their vendor colour', () => {
@@ -248,4 +238,21 @@ test('Antigravity preview normalization checks variant IDs for each role and han
   assert.throws(() => normaliseChairman(invalid, { ...ctx, models: {} }), /unavailable/);
   assert.throws(() => normaliseChairman({ ...seat, model: 'unlisted' }, ctx), /unavailable/);
   assert.equal(normaliseChairman({ ...seat, model: 'new-id' }, { ...ctx, models: {} }).model, 'new-id');
+});
+
+test('named review providers route seats, chairman and caps through saved profiles', () => {
+  const profiles = [{ name: 'work', provider: 'codex' }, { name: 'claude', provider: 'claude' }, { name: 'agy', provider: 'antigravity' }];
+  const input = { seats: [{ vendor: 'codex', lens: 'risk' }, { vendor: 'agy', lens: 'cost' }], chairman: { vendor: 'claude' }, options: { budget: { codex: { tokens: 50 } } } };
+  const plan = routeReviewProfiles(input, profiles);
+  assert.deepEqual(plan.seats.map((s) => [s.vendor, s.account]), [['acp', 'work'], ['acp', 'agy']]);
+  assert.deepEqual(plan.chairman, { vendor: 'acp', account: 'claude' });
+  assert.deepEqual(plan.options.budget, { 'acp@work': { tokens: 50 } });
+  assert.deepEqual(input.options.budget, { codex: { tokens: 50 } });
+  const budget = { codex: { tokens: 30 }, 'acp@work': { tokens: 50 } };
+  assert.deepEqual(routeReviewProfiles({ ...input, options: { research: { vendor: 'codex' }, budget } }, profiles).options.budget, budget);
+  assert.throws(() => routeReviewProfiles(input, []), /agentlink add codex/);
+  assert.throws(() => routeReviewProfiles(input, [...profiles, { name: 'another', provider: 'codex' }]), /Choose a saved/);
+  const direct = { seats: [{ vendor: 'codex', transport: 'cli', account: 'local' }] };
+  assert.deepEqual(routeReviewProfiles(direct, []).seats, direct.seats);
+  assert.throws(() => routeReviewProfiles({ ...input, seats: [...input.seats, ...direct.seats] }, profiles), /separate caps/);
 });

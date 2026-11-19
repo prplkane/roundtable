@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.7.0
+
+- Read model and reasoning-level display names and saved defaults from AgentLink beta.3.
+  Profile discovery can list replacements for a retired central selection. Review sessions
+  inherit profile settings and verify explicit overrides before sending a prompt.
+
+- Default Codex, Claude and Antigravity seats and chairmen to saved AgentLink profiles
+  in the browser, CLI and MCP. Leave model and effort empty to follow the profile,
+  or refresh its advertised choices. Direct CLI seats remain available explicitly.
 
 - Read AgentLink model choices and per-model reasoning levels from the selected profile
   in the board or CLI. Direct Codex reads its installed catalogue, with GPT-6.2 Sol and
