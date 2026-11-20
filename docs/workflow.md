@@ -857,7 +857,7 @@ Codex, Claude and Antigravity seats and chairmen use saved AgentLink profiles by
 Install AgentLink and add the providers you want to use. Existing profiles can be reused.
 
 ```sh
-npm install -g @prplkane/agentlink@0.3.0-beta.3
+npm install -g @prplkane/agentlink@beta
 agentlink add codex --provider codex
 agentlink add claude --provider claude
 agentlink add agy --provider antigravity
