@@ -196,8 +196,8 @@ test('a call to another vendor adds no unknown cost to a dollar-capped vendor', 
   const next = { codex: { tokens: 20, cost: null } };
   assert.equal(budgetCheck(budget, {}, next), null);
   assert.equal(budgetCheck(budget, { claude: { tokens: 20, cost: 0.8 } }, next), null);
-  assert.equal(budgetCheck(budget, { claude: { tokens: 20, cost: 1.2 } }, next).kind, 'usd');
-  assert.equal(budgetCheck(budget, { claude: { tokens: 20, cost: 0, costUnknown: true } }, next).kind, 'usd-unknown');
+  assert.equal(budgetCheck(budget, { claude: { tokens: 20, cost: 1.2 } }, next), null);
+  assert.equal(budgetCheck(budget, { claude: { tokens: 20, cost: 0, costUnknown: true } }, next), null);
 });
 
 test('unknown tokens refuse further calls to a token-capped vendor without blocking an unrelated chairman', () => {

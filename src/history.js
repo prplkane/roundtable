@@ -170,9 +170,17 @@ const cost = (n) => Number.isFinite(n) && n >= 0 ? n : null;
 // Keep a strict allowlist: no titles, replies, prompts, notes, paths, account IDs or raw output.
 function numericCall(row) {
   const usage = row.usage ? Object.fromEntries(['input', 'cacheRead', 'cacheWrite', 'output', 'thinking', 'ms'].map((k) => [k, number(row.usage[k])])) : null;
-  if (usage) { usage.cost = cost(row.usage.cost); usage.usageVersion = 3; }
-  return { type: 'attempt', seat: { vendor: /^(claude|codex|agy|api)$/.test(row.seat?.vendor) ? row.seat.vendor : 'unknown', ...(row.seat?.model ? { model: String(row.seat.model).slice(0, 200) } : {}) },
-    kind: row.kind === 'verdict' || row.type === 'verdict' ? 'verdict' : 'reply', round: number(row.round), fresh: row.fresh === true,
+  if (usage) {
+    usage.cost = cost(row.usage.cost);
+    usage.usageVersion = 3;
+    for (const key of ['providerTotal', 'modelSteps']) if (Number.isSafeInteger(row.usage[key]) && row.usage[key] >= 0) usage[key] = row.usage[key];
+    if (row.usage.tokenCoverage?.reported === 0) usage.tokenCoverage = { reported: 0, of: 1 };
+  }
+  const research = row.kind === 'research';
+  return { type: 'attempt', seat: { vendor: /^(claude|codex|agy|acp|api)$/.test(row.seat?.vendor) ? row.seat.vendor : 'unknown', ...(row.seat?.model ? { model: String(row.seat.model).slice(0, 200) } : {}) },
+    kind: research ? 'research' : row.kind === 'verdict' || row.type === 'verdict' ? 'verdict' : 'reply', round: research ? -1 : number(row.round), fresh: row.fresh === true,
+    ...(research && Number.isInteger(row.searches) && row.searches >= 0 && row.searches <= 9 ? { searches: row.searches } : {}),
+    ...(research && row.errorKind ? { errorKind: 'failed' } : {}),
     usage, cost: cost(row.cost), ms: number(row.ms) };
 }
 

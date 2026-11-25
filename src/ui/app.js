@@ -1,3 +1,4 @@
+import { DEFAULT_SEARCHER, defaultSearchLimit, verificationNote } from '/src/research.js';
 import { rollup, hasUsableRound, positions } from '/src/engine.js';
 import { optionLabel } from '/src/contract.js';
 import { poolKey, poolVendor, poolAccount, hostKey, seatKind, PROFILE_PROVIDERS, providerProfile, profileChoicesFor, nextSeatLens, fillMissingSeatLenses, seatSetupIssue, hiddenMood, lightestModel, keyEnvName, HIDDEN_MOODS } from '/src/seats.js';
@@ -290,12 +291,14 @@ async function setup() {
   syncResearchQuery();
   $('notes').addEventListener('input', syncResearchQuery);
   $('research-query-mode').addEventListener('change', () => { syncResearchQuery(); $('research-query').focus(); });
-  $('research-searches').value = research?.maxSearches || 4;
+  let customSearchLimit = research?.maxSearches != null;
+  $('research-scopes').value = (research?.sourceScopes || []).join('\n');
   $('research-time').value = (research?.timeoutMs || 120000) / 1000;
   // a new searcher starts on its vendor's lightest model at low effort; a saved one keeps its own
   // (settings saved before the searcher had its own model name none, so they start light too)
   const searchers = [...$('searcher-vendor').options].map((o) => o.value);
   $('searcher-vendor').value = searchers.includes(research?.vendor) ? research.vendor : searchers.includes(DEFAULT_SEARCHER) ? DEFAULT_SEARCHER : searchers[0] || '';
+  $('research-searches').value = research?.maxSearches ?? defaultSearchLimit($('searcher-vendor').value);
   const named = !!research && ['model', 'effort', 'account'].some((key) => Object.hasOwn(research, key)) && $('searcher-vendor').value === (research.vendor || DEFAULT_SEARCHER);
   if (named) { $('searcher-model').value = research.model || ''; $('searcher-effort').value = research.effort || ''; } else lightSearcher($('searcher-vendor').value);
   $('add-searcher').disabled = !searchers.length;
@@ -375,7 +378,12 @@ async function setup() {
   $('add-searcher').addEventListener('click', () => { setSearcher(true); $('research-query').focus(); });
   $('remove-searcher').addEventListener('click', () => { setSearcher(false); $('add-searcher').focus(); });
   // another vendor: its own lightest model and login, not the last vendor's
-  $('searcher-vendor').addEventListener('change', () => { lightSearcher($('searcher-vendor').value); renderSearcher(); renderProjection(); requestPreflight(); });
+  $('research-searches').addEventListener('input', () => { customSearchLimit = true; renderProjection(); });
+  $('searcher-vendor').addEventListener('change', () => {
+    const vendor = $('searcher-vendor').value;
+    if (!customSearchLimit) $('research-searches').value = defaultSearchLimit(vendor);
+    lightSearcher(vendor); renderSearcher(); renderProjection(); requestPreflight();
+  });
   $('searcher-card').addEventListener('change', (ev) => {
     if (ev.target.id !== 'searcher-model-pick') return;
     S.customSearcherModel = ev.target.value === '__other';
@@ -793,11 +801,10 @@ $('vendor-terms').addEventListener('cancel', (event) => { if ($('vendor-terms-ca
 // Not a seat: one call before round 0 that gathers cited sources from its visible query. A card
 // next to the chairman's, added and removed like a seat, with its own vendor, model, effort and
 // login. The vendor list holds only CLIs that can search with every other tool off (/api/seats).
-const DEFAULT_SEARCHER = 'codex'; // research.js: what an agent request without a vendor gets
 const searcherOn = () => !$('searcher-wrap').hidden;
 const searcherAccount = () => (VENDOR_META[$('searcher-vendor').value]?.profiles ? $('searcher-account').value.trim() : '');
 function draftSearcher() {
-  return { vendor: $('searcher-vendor').value, model: $('searcher-model').value.trim() || undefined, effort: $('searcher-effort').value || undefined, account: searcherAccount() || undefined };
+  return { vendor: $('searcher-vendor').value, maxSearches: Number($('research-searches').value), model: $('searcher-model').value.trim() || undefined, effort: $('searcher-effort').value || undefined, account: searcherAccount() || undefined };
 }
 // The lightest model at low effort: finding and quoting sources needs little reasoning. An
 // Antigravity id carries its level, so its "low" is part of the model.
@@ -1103,9 +1110,10 @@ function renderProjection() {
         const row = p.bySeat[id];
         return `<span class="chip ${fill(id, segments.indexOf(id))}" style="--seat: var(--seat-${colourOf(id)})" title="${esc(row.calls)} calls${row.model ? ', ' + esc(row.model) : ''}${row.weight !== 1 ? `, model weight ×${row.weight}` : ''}"><span>${esc(label(id))}</span><b>${k(row.total)}</b><span>${row.cost != null ? `$${row.cost.toFixed(2)}` : ''}</span></span>`;
       }).join('')}</div>
+      ${v.seats.includes('research') ? `<p class="pool-note">Research estimate uses ${p.bySeat.research.samples ? `${p.bySeat.research.samples} matching historical call(s)` : 'a planning allowance with no matching history'}. Actual usage can vary.</p>` : ''}
       ${v.weighted !== v.total ? `<p class="pool-note">≈ ${k(v.weighted)} pool units after model weight.</p>` : ''}
       <div class="pool-window-section" data-vendor="${esc(v.vendor)}" data-pool="${esc(pool)}"><div class="pool-note pool-reading"></div><div class="pool-manual">${poolEntry(v.vendor, v.weighted)}</div></div>
-      <div class="pool-cap" data-vendor="${esc(v.vendor)}"><label for="cap-${esc(v.vendor)}" title="Projected before each call, with the calls in flight and the verdict reserved. The vendor does not enforce it.">Cap</label><input id="cap-${esc(v.vendor)}" name="tokens" type="number" min="0" step="1000" placeholder="tokens" value="${cap?.tokens ?? ''}" aria-label="Token cap for ${esc(VENDOR_LABEL[v.vendor] || v.vendor)}">${v.cost != null || cap?.usd > 0 ? `<input name="usd" type="number" min="0" step="0.05" placeholder="$" value="${cap?.usd ?? ''}" aria-label="Dollar cap for ${esc(VENDOR_LABEL[v.vendor] || v.vendor)}">` : ''}${cap?.tokens > 0 && v.total > cap.tokens ? '<span class="warn">the projection is over this cap</span>' : ''}${usageLink(v.vendor)}</div>
+      <div class="pool-cap" data-vendor="${esc(v.vendor)}"><label for="cap-${esc(v.vendor)}" title="Includes fresh input, cache reads and writes, and output. Projected before each call, with the calls in flight and the verdict reserved. The vendor does not enforce it.">Cap</label><input id="cap-${esc(v.vendor)}" name="tokens" type="number" min="0" step="1000" placeholder="tokens" value="${cap?.tokens ?? ''}" aria-label="Token cap for ${esc(VENDOR_LABEL[v.vendor] || v.vendor)}">${v.cost != null || cap?.usd > 0 ? `<input name="usd" type="number" min="0" step="0.05" placeholder="$" value="${cap?.usd ?? ''}" aria-label="Dollar cap for ${esc(VENDOR_LABEL[v.vendor] || v.vendor)}">` : ''}${cap?.tokens > 0 && v.total > cap.tokens ? '<span class="warn">the projection is over this cap</span>' : ''}${usageLink(v.vendor)}</div>
       ${cap?.usd > 0 && v.cost == null ? '<p class="pool-note warn" data-dollar-warning>No dollar estimate is available. This dollar cap blocks calls; clear it to proceed with a token cap instead.</p>' : ''}
     </div>`;
   }).join('') || '<span class="muted">Seat at least one instance.</span>';
@@ -1156,6 +1164,7 @@ async function start() {
     chairman: draftChairman(),
     options: { critiqueRounds: Number($('critique-rounds').value), autoContinueMs: Number($('auto').value) * 1000, questionWaitMs: Number($('question-wait').value) * 1000, wallClockMs: Number($('wall').value) * 60000, memory: $('memory').value, unattended: $('unattended').checked, allowLimitedIsolation: isolationAccepted(), acknowledgeTermsRisk: termsAccepted(), budget: budgetBody(),
       ...(searcherOn() ? { research: { vendor: $('searcher-vendor').value, query: $('research-query').value.trim(), maxSearches: Number($('research-searches').value), timeoutMs: Number($('research-time').value) * 1000,
+        sourceScopes: $('research-scopes').value.split(/\r?\n/).map(s => s.trim()).filter(Boolean),
         model: $('searcher-model').value.trim(), effort: $('searcher-effort').value, account: searcherAccount() } } : {}) },
   };
   try {
@@ -1495,19 +1504,19 @@ function renderUsage() {
   // A sum over calls of which some reported nothing carries a "+" (at least this much), the same
   // mark the debates list uses; the counts are in its title. A figure nobody reported is a dash.
   const plus = (cov, what) => (cov && cov.reported < cov.of ? `<span class="partial" title="${cov.reported} of ${cov.of} calls report ${what}">+</span>` : '');
-  const tokens = (n, x) => x.tokenCoverage?.reported === 0 ? '<span class="muted" title="No call reported token usage">unknown</span>'
+  const tokens = (n, x) => x.tokenCoverage?.reported === 0 && !n ? '<span class="muted" title="No call reported token usage">unknown</span>'
     : `${fmt(n)}${plus(x.tokenCoverage, 'token usage')}`;
   const cost = (c, x) => (c == null ? '<span class="muted" title="This CLI does not report a cost">—</span>' : `$${c.toFixed(2)}${plus(x?.costCoverage, 'a cost')}`);
   const secs = (ms) => `${Math.round((ms || 0) / 1000)}s`;
   // last: the seat's input in the latest round it took part in (cache included), the figure that
   // says whether rounds stay flat (stateless) or grow (resume)
-  const row = (name, x, cls = '', last = null, position = null) => `<tr class="${cls}" data-position="${esc(position || 'none')}"><td>${name}</td><td class="data num">${tokens(x.input, x)}</td><td class="data num">${tokens(x.cacheRead + x.cacheWrite, x)}</td><td class="data num">${tokens(x.output, x)}</td><td class="data num">${cost(x.cost, x)}</td><td class="data num">${secs(x.ms)}</td><td class="data num">${last ? `<span title="Round ${esc(last.round)}">${tokens(last.usage.input + last.usage.cacheRead + last.usage.cacheWrite, last.usage)}</span>` : ''}</td></tr>`;
+  const row = (name, x, cls = '', last = null, position = null) => `<tr class="${cls}" data-position="${esc(position || 'none')}"><td>${name}</td><td class="data num">${tokens(x.input, x)}</td><td class="data num">${tokens(x.cacheRead + x.cacheWrite, x)}</td><td class="data num">${tokens(x.output, x)}</td><td class="data num">${x.providerTotal == null ? '—' : fmt(x.providerTotal) + plus(x.providerTotalCoverage, 'complete CLI totals')}</td><td class="data num">${cost(x.cost, x)}</td><td class="data num">${secs(x.ms)}</td><td class="data num">${last ? `<span title="Round ${esc(last.round)}">${tokens(last.usage.input + last.usage.cacheRead + last.usage.cacheWrite, last.usage)}</span>` : ''}</td></tr>`;
   const pools = [...new Set([...S.seats.map(seatPool), ...(S.chairman ? [seatPool(S.chairman)] : []), ...(u.bySeat.research ? [seatPool(u.bySeat.research.seat)] : [])])];
   // the models this debate runs on a pool: a quota in groups (agy) shows only their groups
   const seatedModels = (key) => [...S.seats, S.chairman || S.configuredChairman, u.bySeat.research?.seat].filter((s) => s && seatPool(s) === key).map((s) => s.model || '');
   const rows = [];
   for (const pool of pools) {
-    rows.push(`<tr class="pool-row"><td colspan="7">${poolLine(pool, seatedModels(pool))}</td></tr>`);
+    rows.push(`<tr class="pool-row"><td colspan="8">${poolLine(pool, seatedModels(pool))}</td></tr>`);
     if (u.bySeat.research && seatPool(u.bySeat.research.seat) === pool) { const rs = u.bySeat.research.seat; rows.push(row(`<span class="seat-cell" style="--seat: var(--seat-${esc(vendorColour(rs.vendor))})"><span class="seat-dot"></span><span><span class="seat-lens">searcher</span><span class="seat-meta">${esc([VENDOR_LABEL[rs.vendor] || rs.vendor, seatMeta(rs)].filter(Boolean).join(' · '))}</span></span></span>`, u.bySeat.research.usage)); }
     const seated = [...S.seats.filter((s) => seatPool(s) === pool), ...(S.chairman && seatPool(S.chairman) === pool ? [S.chairman] : [])];
     for (const seat of seated) {
@@ -1520,7 +1529,7 @@ function renderUsage() {
       // the lens reads first; who runs it and on what sits beneath in the data face
       const name = `<span class="seat-cell" style="--seat: var(--seat-${esc(seat.colour)})"><span class="seat-dot"></span><span><span class="seat-lens">${esc(seat.lens)}${isChair ? '' : led(S.conn[seat.id] || 'idle')}</span><span class="seat-meta">${esc([seatName(seat), seatMeta(seat)].filter(Boolean).join(' · '))}</span></span></span>`;
       const out = seatDown(seat);
-      rows.push(x ? row(name, x, '', last, position) : `<tr data-position="none"><td>${name}</td><td class="data ${out ? 'danger' : 'muted'}" colspan="6">${out ? `out: ${esc(ERROR_LINE[out.kind] || out.kind)} no tokens charged` : 'no call yet'}</td></tr>`);
+      rows.push(x ? row(name, x, '', last, position) : `<tr data-position="none"><td>${name}</td><td class="data ${out ? 'danger' : 'muted'}" colspan="7">${out ? `out: ${esc(ERROR_LINE[out.kind] || out.kind)} no tokens charged` : 'no call yet'}</td></tr>`);
     }
   }
   const cur = S.rounds.length ? S.rounds.length - 1 : null;
@@ -1819,7 +1828,7 @@ function renderResearch() {
   }
   stopScan();
   if (r.status !== 'done') { $('research-body').textContent = r.error || 'Research was interrupted. It will not rerun automatically.'; return; }
-  $('research-body').innerHTML = `<p class="hint">${r.searches} reported search operation${r.searches === 1 ? '' : 's'} · gathered ${esc(r.gatheredAt)}. Every seat and the chairman receive this same saved bundle. Citations, excerpts and publication dates are supplied by the searcher's provider and are not independently checked.</p>`
+  $('research-body').innerHTML = `<p class="hint">${r.searches} reported search operation${r.searches === 1 ? '' : 's'} · gathered ${esc(r.gatheredAt)}. Every seat and the chairman receive this same saved bundle. ${esc(verificationNote(r))}</p>`
     + (r.sources || []).map((s) => `<details><summary>${esc(s.id)} · ${esc(s.title)}</summary><p><a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.url)}</a></p><p>${esc(s.excerpt)}</p><p class="hint">Published: ${esc(s.publishedAt || 'not reported')}</p></details>`).join('');
 }
 

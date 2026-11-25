@@ -972,7 +972,7 @@ Press **+ Add searcher** under the seats to add its card, next to the chairman's
 By default its visible **Query** follows your question and candidate options. It investigates
 facts for and against them; it does not recommend an answer. Choose **Custom query** to edit
 the draft or enter an exact question. A custom query stays unchanged when you edit the review.
-Only the displayed query goes to the searcher: other context and discussion answers are excluded.
+The searcher receives the displayed query and any allowed source URLs. Other field notes stay with the panel.
 Review it for private details. The same decision question is useful when you need outside
 evidence; leave the searcher off when you already have the facts you want the seats to reason from.
 The card has its own vendor,
@@ -993,7 +993,7 @@ divided by three as an additive token estimate, including resumed conversations 
 Measured dollar baselines are adjusted for that extra input. These are conservative planning
 allowances, not exact token counts or guaranteed spending limits.
 
-Set its **Limits**: searches (1–8 reported operations) and time (30–600 seconds). An operation
+Set the search and time limits (1–8 reported operations and 30–600 seconds). Antigravity defaults to two searches and is asked to plan independent queries together. Codex and Claude default to four. Local estimates use measured research calls with the same search count, preferring the selected model. The board shows how many samples it has. A token cap covers input, cache reads and writes, and output for that provider. Usage details show the CLI total separately when available. A completed model step can supply a lower bound if Antigravity stops before reporting final usage. A partial measurement still blocks new calls under that provider’s token cap. Startup rebuilds research statistics from retained transcripts. Older numeric summaries whose transcripts were deleted cannot recover the original role or search count. A separately funded panel can proceed when it has usable evidence. An operation
 can contain several queries or page visits, and can begin before the CLI reports it. A Codex
 searcher is asked to make one operation carrying up to that many queries, and another only
 when the first returned nothing usable: each further operation resends everything gathered so
@@ -1009,20 +1009,7 @@ excerpts are shorter than Codex's. Local commands, files, MCP and delegation rem
 While the searcher works, the review state reads **Searcher at work** and the sources panel
 shows its eye moving down a column of results (still, with reduced motion).
 
-The board saves up to eight sources with URLs, excerpts, publication dates where reported,
-and the time the bundle was gathered. A date that is not a real `YYYY-MM-DD` date (a month
-only, a year only, "unknown") is saved as not reported; the source itself is kept. Citations and excerpts are supplied by the searcher's provider, not
-independently verified by Roundtable. Every seat and the chairman gets the identical saved
-bundle, with tools disabled during discussion. The source panel, agent state, field-notes
-file and Markdown export include it. Its spending appears as the **searcher** row in Usage
-details and a **searcher** segment in the quota picture.
-
-If the searcher repeats a URL, Roundtable keeps one citation in first-seen order. The first
-title and publication date are kept; distinct excerpts are appended only when the complete
-combined text fits 1,200 characters. All entries must still pass validation, including
-duplicates, and the response must contain at most eight entries before deduplication.
-Different query strings and fragments remain distinct URLs. This cleanup is local and makes
-no extra model call; repeated sources do not discard an otherwise usable search result.
+Roundtable opens public HTTPS pages, follows bounded redirects and saves up to eight distinct resolved URLs with their page titles, matching passages and collection time. Unconfirmed publication dates are left empty. **Allowed source URLs** (agent field `sourceScopes`) accepts up to eight HTTPS hosts or path prefixes. For official or versioned documentation, enter the required document or directory. If search supplies no usable citation, Roundtable can check a specific document URL you provided without another model call. It never crawls a directory. All discussion participants receive the same saved passages. A match establishes what the page says. Reviewers still need to judge whether it supports their conclusion. Empty evidence stops discussion. Older saved bundles retain their provider-supplied excerpts and provenance. The board, agent state and Markdown record include the evidence and the counts of omitted candidates.
 
 A Codex search can stop making progress in two ways. Most often one of its requests, the search
 or the answer after it, streams nothing: at low effort (the searcher's default) Codex reconnects

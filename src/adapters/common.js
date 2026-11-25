@@ -29,15 +29,38 @@ const reportedCost = (v) => Number.isFinite(v) && v >= 0 ? v : null;
 // Pull the normalised fields out of one JSON object using the config's dot paths.
 export function pickJson(obj, paths) {
   const n = (p) => dig(obj, p);
+  const usage = usageCounters({ input: n(paths.input), cacheRead: n(paths.cacheRead), cacheWrite: n(paths.cacheWrite),
+    output: n(paths.output), thinking: n(paths.thinking) });
+  const total = n(paths.total);
+  if (usage && Number.isSafeInteger(total) && total >= 0) usage.providerTotal = total;
   return {
     text: String(dig(obj, paths.text) ?? ''),
     sessionId: dig(obj, paths.sessionId) ?? null,
-    usage: usageCounters({ input: n(paths.input), cacheRead: n(paths.cacheRead), cacheWrite: n(paths.cacheWrite),
-      output: n(paths.output), thinking: n(paths.thinking) }),
+    usage,
     cost: reportedCost(dig(obj, paths.cost)),
     quota: paths.quota ? (dig(obj, paths.quota) ?? null) : null,
     isError: paths.isError ? dig(obj, paths.isError) === true : false,
   };
+}
+
+// Completed Antigravity model steps are incremental. Repeated updates for an index describe one step.
+function completedStepUsage(events, paths) {
+  const steps = new Map();
+  for (const event of events) {
+    const s = event.step_update;
+    if (s?.step_type !== 'agent_response' || s.state !== 'DONE' || !Number.isSafeInteger(s.step_index) || s.step_index < 0) continue;
+    const u = pickJson(s, paths).usage;
+    if (u) steps.set(s.step_index, u);
+  }
+  if (!steps.size) return null;
+  const sum = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thinking: 0 };
+  let providerTotal;
+  for (const u of steps.values()) {
+    for (const k of Object.keys(sum)) sum[k] += u[k];
+    if (u.providerTotal != null) providerTotal = (providerTotal ?? 0) + u.providerTotal;
+  }
+  return usageCounters(sum) && { ...sum, modelSteps: steps.size, tokenCoverage: { reported: 0, of: 1 },
+    ...(Number.isSafeInteger(providerTotal) ? { providerTotal } : {}) };
 }
 
 // Same for a JSONL stream: each path names the event type that carries the value.
@@ -231,6 +254,11 @@ export function makeAdapter(name, overrides = {}) {
       completed = !!last;
       const obj = last ? last.result : {};
       picked = pickJson(obj, cfg.paths);
+      if (name === 'agy') {
+        const lower = completedStepUsage(events, cfg.paths);
+        if (lower && picked.usage) picked.usage.modelSteps = lower.modelSteps;
+        else if (lower) picked.usage = lower;
+      }
       usedTools = !!guard?.(obj, events);
     } else if (cfg.output === 'jsonl') {
       const events = parseLines(res.stdout);

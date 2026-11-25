@@ -14,7 +14,7 @@
 import { validateReply, validateVerdict } from './contract.js';
 import { filterReply } from './seats.js';
 import { round0Prompt, roundPrompt, recoveryPrompt, repromptText, chairmanPrompt, statelessPrefix, statelessRoundPrompt, statelessRepromptText, verdictRepromptText } from './prompts.js';
-import { projectRound, projectChairman, budgetCheck, unknownUsageMessage, researchInputTokens } from './estimate.js';
+import { projectRound, projectChairman, budgetCheck, unknownUsageMessage, researchInputTokens, researchEstimate } from './estimate.js';
 import { noteRecord, storedNote } from './notes.js';
 import { safeProgress } from './progress.js';
 import { researchSettings, researchPrompt, researchSources } from './research.js';
@@ -63,7 +63,7 @@ const EMPTY_USAGE = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, thinking
 // synthesisOnly: with resume, skip the rounds and write the verdict (POST .../synthesize).
 // limitGroup(seat): for a login whose limits differ by model group (agy), the group the seat's
 // model draws on, from the server's quota read; null for one set of limits or an unknown group.
-export function createDebate({ fieldNotes, seats, chairman, options = {}, runner, gate, store, emit = () => {}, now = Date.now, resume = null, baselines = {}, provenance = {}, cancel = () => {}, synthesisOnly = false, limitGroup = () => null }) {
+export function createDebate({ fieldNotes, seats, chairman, options = {}, runner, verifySources, gate, store, emit = () => {}, now = Date.now, resume = null, baselines = {}, provenance = {}, cancel = () => {}, synthesisOnly = false, limitGroup = () => null }) {
   const opts = { ...DEFAULTS, ...options, strictTools: true };
   if (opts.research) opts.research = researchSettings(opts.research);
   const maxRound = opts.critiqueRounds;
@@ -658,7 +658,8 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       state.fieldNotes = fieldNotes;
       return true;
     }
-    let result;
+    let result, verification;
+    const researchDeadline = now() + opts.research.timeoutMs;
     if (resume) result = { ok: false, error: 'Research was interrupted before a usable source bundle was saved. It was not rerun. Check provider usage before starting a new review.', kind: 'interrupted' };
     else {
       state.status = 'researching';
@@ -667,22 +668,40 @@ export function createDebate({ fieldNotes, seats, chairman, options = {}, runner
       // the searcher: its own vendor, model, effort and login profile from the research settings
       const { vendor, model, effort, account } = opts.research;
       const seat = { id: 'research', index: -2, vendor, label: 'Searcher', lens: 'searcher', model, effort, account };
-      result = await callSeat(seat, researchPrompt(opts.research), -1, 'research', chairmanCall(seat), { isChairman: true });
+      const estimate = researchEstimate(opts.research, baselines);
+      const projection = profiled(seat, { [vendor]: { tokens: estimate.input + estimate.output, cost: estimate.cost } });
+      result = await callSeat(seat, researchPrompt(opts.research), -1, 'research', projection, { isChairman: true });
     }
     if (result.ok) {
       try {
         if (!Number.isInteger(result.searches) || result.searches < 1 || result.searches > opts.research.maxSearches) throw new Error('Research did not report a usable search-operation count.');
         const gatheredAt = new Date(now()).toISOString();
-        state.research = { status: 'done', sources: researchSources(result.text, gatheredAt), gatheredAt, searches: result.searches, attemptId: result.attemptId };
+        let sources = researchSources(result.text, gatheredAt, { allowEmpty: !!verifySources && opts.research.sourceScopes?.some(scope => !new URL(scope).pathname.endsWith('/')) });
+        if (verifySources) {
+          const left = researchDeadline - now();
+          if (left <= 0) throw new DOMException('The research time limit expired before checking sources.', 'TimeoutError');
+          const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(left)]);
+          const checked = await verifySources(sources, opts.research, signal);
+          checkInterrupted();
+          signal.throwIfAborted();
+          sources = checked.sources.map(source => ({ ...source, gatheredAt }));
+          verification = checked.verification;
+          if (!sources.length) throw new Error('No cited page supplied usable evidence within the requested source scope.');
+        }
+        state.research = { status: 'done', sources, ...(verification ? { verification } : {}), gatheredAt, searches: result.searches, attemptId: result.attemptId };
         fieldNotes = { ...fieldNotes, research: state.research.sources }; state.fieldNotes = fieldNotes;
         record({ type: 'research', ...state.research });
         store?.writeFieldNotes?.(fieldNotes, state.seats);
         fire('research', state.research);
         state.status = 'running';
         return true;
-      } catch (e) { result = { ...result, ok: false, kind: 'format', error: e.message }; }
+      } catch (e) {
+        checkInterrupted();
+        const kind = controller.signal.aborted ? 'killed' : e.name === 'TimeoutError' ? 'timeout' : 'format';
+        result = { ...result, ok: false, kind, error: e.message };
+      }
     }
-    state.research = { status: 'failed', error: result.error, errorKind: result.kind, attemptId: result.attemptId, progress: result.progress, searches: result.searches };
+    state.research = { status: 'failed', error: result.error, errorKind: result.kind, ...(verification ? { verification } : {}), attemptId: result.attemptId, progress: result.progress, searches: result.searches };
     record({ type: 'research', ...state.research }); fire('research', state.research);
     state.stopReason = stopRequested ? 'human' : expired() ? 'wall-clock' : 'research-failed';
     return false;
@@ -847,8 +866,16 @@ export function addUsage(a, b) {
   const ca = cov(a), cb = cov(b);
   const tokens = (u) => u?.tokenCoverage || { reported: u ? 1 : 0, of: u ? 1 : 0 };
   const ta = tokens(a), tb = tokens(b);
+  const cliCoverage = u => {
+    if (u?.providerTotalCoverage) return u.providerTotalCoverage;
+    const coverage = tokens(u);
+    return u?.providerTotal != null ? coverage : { reported: 0, of: coverage.of };
+  };
+  const pa = cliCoverage(a), pb = cliCoverage(b);
   const usageVersion = a?.usageVersion ?? b?.usageVersion;
   return { input: sum('input'), cacheRead: sum('cacheRead'), cacheWrite: sum('cacheWrite'), output: sum('output'), thinking: sum('thinking'), cost, ms: sum('ms'),
+    ...(a?.providerTotal != null || b?.providerTotal != null ? { providerTotal: sum('providerTotal'),
+      providerTotalCoverage: { reported: pa.reported + pb.reported, of: pa.of + pb.of } } : {}),
     costCoverage: { reported: ca.reported + cb.reported, of: ca.of + cb.of },
     tokenCoverage: { reported: ta.reported + tb.reported, of: ta.of + tb.of }, ...(usageVersion ? { usageVersion } : {}) };
 }
@@ -893,7 +920,7 @@ export function rollup(rows) {
   let total = null; // not a zero row: costCoverage counts only real calls
   let unknownAttempts = 0;
   for (const r of ledgerEntries(rows)) {
-    if (!r.usage) unknownAttempts++;
+    if (!r.usage || r.usage.tokenCoverage?.reported < r.usage.tokenCoverage?.of) unknownAttempts++;
     const usage = r.usage || { ...EMPTY_USAGE, cost: r.cost ?? null, ms: r.ms || 0, tokenCoverage: { reported: 0, of: 1 } };
     const key = r.seat ? (r.seat.id || `${r.seat.vendor}:${r.seat.lens}`) : 'other';
     bySeat[key] = { seat: r.seat || null, usage: addUsage(bySeat[key]?.usage, usage) };

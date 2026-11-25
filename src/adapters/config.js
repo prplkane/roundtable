@@ -371,6 +371,7 @@ export const ADAPTERS = {
       sessionId: 'conversation_id',
       input: 'usage.input_tokens',
       cacheRead: 'usage.cache_read_tokens',
+      total: 'usage.total_tokens',
       cacheWrite: null,
       output: 'usage.output_tokens',
       thinking: 'usage.thinking_tokens',
@@ -385,6 +386,8 @@ export const ADAPTERS = {
     // stays the seat's. A tool step's ACTIVE and DONE updates share its step_index.
     research: {
       args: (args) => args,
+      searchHint: ({ maxSearches }) => maxSearches === 1 ? 'Plan one focused search and answer from its results.'
+        : 'Plan independent queries first and request them together in one model response. Finish from that batch unless a material evidence gap requires a follow-up within the limit.',
       searchIds: (e) => {
         const names = agyToolNames(e), i = e?.step_update?.step_index;
         return names.length === 1 && names[0] === AGY_SEARCH ? [Number.isSafeInteger(i) ? `step-${i}` : null] : [];

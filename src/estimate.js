@@ -4,6 +4,7 @@
 // Baselines come from this machine's own transcripts (tokens per call, fresh round-0 calls and
 // resumed later calls separately). Effort multipliers are guesses until measured deltas replace
 // them; they live here and nowhere else.
+import { defaultSearchLimit } from './research.js';
 import { quotaGroup } from './adapters/models.js';
 
 export const EFFORT_MULTIPLIER = { low: 0.7, medium: 1, high: 1.4, xhigh: 1.8, ultra: 2.2, max: 2.6 };
@@ -66,14 +67,29 @@ function median(xs) {
 // Transcript rows (any number of debates) -> per-vendor medians per call.
 export function baselinesFrom(rows) {
   const acc = {};
+  const research = new Map();
   for (const r of rows || []) {
-    if (r.kind === 'research') continue; // web evidence gathering has a different context size
     if (!r.usage || !r.seat?.vendor) continue;
+    if (r.usage.tokenCoverage && r.usage.tokenCoverage.reported < r.usage.tokenCoverage.of) continue;
     if (r.type !== 'reply' && r.type !== 'verdict' && r.type !== 'attempt') continue;
     // a call the server refused before the model ran (an endpoint's 429) reports zero tokens: known
     // spending for the caps, but no sample of what a call costs
     if (!((r.usage.input || 0) + (r.usage.cacheRead || 0) + (r.usage.cacheWrite || 0) + (r.usage.output || 0))) continue;
     if (typeof r.sessionId === 'string' && r.sessionId.startsWith('fake-')) continue; // a scripted seat
+    if (r.kind === 'research') {
+      if (!Number.isInteger(r.searches) || r.searches < 1 || r.searches > 8 || r.errorKind) continue;
+      const keys = [r.seat.vendor];
+      if (r.seat.model) keys.push(`${r.seat.vendor}:${r.seat.model}`);
+      for (const key of keys) {
+        if (!research.has(key)) research.set(key, {});
+        const group = research.get(key)[r.searches] ??= { input: [], output: [], steps: [], cost: [] };
+        group.input.push(r.usage.input + (r.usage.cacheRead || 0) + (r.usage.cacheWrite || 0));
+        group.output.push(r.usage.output);
+        if (r.usage.modelSteps > 0) group.steps.push(r.usage.modelSteps);
+        if (typeof r.usage.cost === 'number') group.cost.push(r.usage.cost);
+      }
+      continue;
+    }
     // Rows since 0.2.0 say whether the call resumed a session; older rows are fresh at round 0 only.
     const kind = r.type === 'verdict' || r.kind === 'verdict' || r.round === 0 || r.fresh === true ? 'fresh' : 'resumed';
     const v = (acc[r.seat.vendor] ??= { fresh: { input: [], output: [], cost: [] }, resumed: { input: [], output: [], cost: [] } });
@@ -94,7 +110,24 @@ export function baselinesFrom(rows) {
       out[vendor][kind] = { input: median(v[kind].input), output: median(v[kind].output), n: v[kind].input.length, cost: v[kind].cost.length ? median100(v[kind].cost) : null, nCost: v[kind].cost.length };
     }
   }
+  for (const [key, groups] of research) {
+    (out[key] ??= {}).research = Object.fromEntries(Object.entries(groups).map(([limit, g]) => [limit, {
+      input: median(g.input), output: median(g.output), samples: g.input.length,
+      modelSteps: g.steps.length ? median(g.steps) : null, cost: g.cost.length ? median100(g.cost) : null,
+    }]));
+  }
   return out;
+}
+
+// A sample describes completed searches, not every prompt sent to the same CLI.
+export function researchEstimate(settings, baselines = {}) {
+  const vendor = settings.vendor || 'codex', limit = settings.maxSearches ?? defaultSearchLimit(vendor);
+  const measured = baselines[`${vendor}:${settings.model}`]?.research?.[limit] || baselines[vendor]?.research?.[limit];
+  if (measured) return measured;
+  if (vendor === 'agy') return { input: 34_000 + (limit - 1) * 4_000, output: 1000, samples: 0, modelSteps: null, cost: null };
+  const b = baseFor(vendor, 'fresh', baselines), m = EFFORT_MULTIPLIER[settings.effort] ?? 1;
+  return { input: Math.round(b.input * CHAIRMAN_INPUT_FACTOR), output: Math.round(b.output * 1.5 * m),
+    cost: projectChairman({ chairman: { ...settings, vendor }, baselines })[vendor].cost, samples: 0, modelSteps: null };
 }
 
 function baseFor(vendor, kind, baselines) {
@@ -146,8 +179,10 @@ export function project({ seats, chairman, critiqueRounds = 3, baselines = {}, m
   if (research) {
     const selected = typeof research === 'object' ? research : {}; // the searcher's own vendor, model and effort
     const vendor = selected.vendor || 'codex';
-    const fresh = baseFor(vendor, 'fresh', baselines), m = EFFORT_MULTIPLIER[selected.effort] ?? 1;
-    add(vendor, 'research', [{ input: fresh.input * CHAIRMAN_INPUT_FACTOR, output: fresh.output * 1.5 * m }], selected.model);
+    const estimate = researchEstimate(selected, baselines);
+    add(vendor, 'research', [estimate], selected.model);
+    bySeat.research.samples = estimate.samples;
+    bySeat.research.modelSteps = estimate.modelSteps;
   }
   const total = Object.values(byVendor).reduce((a, v) => a + v.total, 0);
   return { bySeat, byVendor, total, critiqueRounds };
@@ -302,11 +337,11 @@ export function projectChairman({ chairman, baselines = {}, researchTokens = 0 }
 // ({vendor: {tokens?, usd?}})? Returns the first crossing, or null.
 export function budgetCheck(budget, spent, next) {
   for (const [vendor, cap] of Object.entries(budget || {})) {
-    if (!cap) continue;
+    if (!cap || !next?.[vendor]) continue;
     // No new call to this vendor adds zero cost. An actual call whose projection is unknown
     // still carries cost: null and must be refused under a dollar cap.
-    const s = spent?.[vendor] || { tokens: 0, cost: 0 }, n = next?.[vendor] || { tokens: 0, cost: 0 };
-    if (cap.tokens > 0 && s.tokensUnknown && next?.[vendor]) return { vendor, kind: 'tokens-unknown', spent: s.tokens, projected: n.tokens, cap: cap.tokens };
+    const s = spent?.[vendor] || { tokens: 0, cost: 0 }, n = next[vendor];
+    if (cap.tokens > 0 && s.tokensUnknown) return { vendor, kind: 'tokens-unknown', spent: s.tokens, projected: n.tokens, cap: cap.tokens };
     if (cap.tokens > 0 && s.tokens + n.tokens > cap.tokens) return { vendor, kind: 'tokens', spent: s.tokens, projected: n.tokens, cap: cap.tokens };
     // A dollar cap cannot be checked against a cost nobody reported: that is a crossing of its
     // own kind, not a zero.

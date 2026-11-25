@@ -19,6 +19,7 @@ import { rebuildDebate, normaliseRows } from './store.js';
 import { rollup } from './engine.js';
 import { optionIds, optionId, optionLabel, recommendationPick, verdictSections, VERDICT_HEADERS } from './contract.js';
 import { normLabel } from './validate.js';
+import { verificationNote } from './research.js';
 import { noteRecord, noteAuthor } from './notes.js';
 
 // The chairman's sections, same tolerance as the board (markdown emphasis around the header).
@@ -152,19 +153,24 @@ export function decisionRecord(rows, slug, { warnings = [], metadataOnly = false
   const humanNotes = [rb.initialNotes?.length ? `### Before round 0\n\n${formatNotes(rb.initialNotes)}` : null,
     ...rb.humanNotes.map((ns, i) => (ns?.length ? `### After round ${i}\n\n${formatNotes(ns)}` : null))].filter(Boolean).join('\n\n');
   const costCell = (u) => (u.cost == null ? 'not reported' : `$${u.cost.toFixed(2)}${u.costCoverage && u.costCoverage.reported < u.costCoverage.of ? ` (partial: ${u.costCoverage.reported} of ${u.costCoverage.of} calls report a cost)` : ''}`);
-  const tokens = (n, u) => u.tokenCoverage?.reported === 0 ? 'unknown'
+  const tokens = (n, u) => u.tokenCoverage?.reported === 0 && !n ? 'unknown'
     : `${k(n)}${u.tokenCoverage && u.tokenCoverage.reported < u.tokenCoverage.of ? ' (partial)' : ''}`;
+  const hasCliTotal = usage.total.providerTotal != null;
+  const usageRow = (label, u) => {
+    const cli = u.providerTotal == null ? 'not reported' : tokens(u.providerTotal, { tokenCoverage: u.providerTotalCoverage });
+    return `| ${label} | ${tokens(u.input, u)} | ${tokens(u.cacheRead + u.cacheWrite, u)} | ${tokens(u.output, u)} | ${costCell(u)} |${hasCliTotal ? ` ${cli} |` : ''}`;
+  };
   const usageRows = seats.map((s) => {
     const u = usage.bySeat[s.id ?? `${s.vendor}:${s.lens}`]?.usage;
-    return u ? `| ${s.label || s.vendor} · ${s.lens} | ${tokens(u.input, u)} | ${tokens(u.cacheRead + u.cacheWrite, u)} | ${tokens(u.output, u)} | ${costCell(u)} |` : null;
+    return u ? usageRow(`${s.label || s.vendor} · ${s.lens}`, u) : null;
   }).filter(Boolean);
   const ch = usage.bySeat.chairman?.usage;
   const researchUsage = usage.bySeat.research?.usage;
-  if (researchUsage) usageRows.push(`| searcher (${usage.bySeat.research.seat?.vendor || rb.options?.research?.vendor || 'codex'}) | ${tokens(researchUsage.input, researchUsage)} | ${tokens(researchUsage.cacheRead + researchUsage.cacheWrite, researchUsage)} | ${tokens(researchUsage.output, researchUsage)} | ${costCell(researchUsage)} |`);
-  if (ch) usageRows.push(`| chairman (${rb.chairman?.vendor || '?'}) | ${tokens(ch.input, ch)} | ${tokens(ch.cacheRead + ch.cacheWrite, ch)} | ${tokens(ch.output, ch)} | ${costCell(ch)} |`);
+  if (researchUsage) usageRows.push(usageRow(`searcher (${usage.bySeat.research.seat?.vendor || rb.options?.research?.vendor || 'codex'})`, researchUsage));
+  if (ch) usageRows.push(usageRow(`chairman (${rb.chairman?.vendor || '?'})`, ch));
   const t = usage.total;
   const usageTable = usageRows.length
-    ? ['| seat | input | cache | output | cost |', '|---|---|---|---|---|', ...usageRows, `| **debate** | ${tokens(t.input, t)} | ${tokens(t.cacheRead + t.cacheWrite, t)} | ${tokens(t.output, t)} | ${costCell(t)} |`].join('\n')
+    ? [`| seat | input | cache | output | cost |${hasCliTotal ? ' CLI total |' : ''}`, `|---|---|---|---|---|${hasCliTotal ? '---|' : ''}`, ...usageRows, usageRow('**debate**', t)].join('\n')
     : '';
   // a grammar line names an id: show its label in its place
   const recText = v.parsed ? v.RECOMMENDATION.replace(/^\s*(opt-\d+)\b\.?/, (m, id) => `**${optionLabel(id, options)}** (${id})`) : '';
@@ -184,7 +190,7 @@ export function decisionRecord(rows, slug, { warnings = [], metadataOnly = false
     ...section('Question', `${fn.decision}\n\nOptions:\n${options.map((o) => `- ${o}`).join('\n')}`),
     ...section('Field notes', notesBody),
     ...(rb.research ? section('Shared web evidence', rb.research.status === 'done'
-      ? ['Provider-supplied citations, excerpts and publication dates; not independently verified. Every seat received this saved bundle.',
+      ? [verificationNote(rb.research),
         `Gathered: ${rb.research.gatheredAt}. Reported search operations: ${rb.research.searches}.`,
         ...rb.research.sources.map((s) => `### ${s.id}: ${s.title.replace(/[\r\n]/g, ' ')}\n\n<${s.url}>\n\nPublished: ${s.publishedAt || 'not reported'}\n\n> ${s.excerpt.replace(/\r?\n/g, '\n> ')}`)].join('\n\n')
       : rb.research.error || 'Research was interrupted; no source bundle was saved.') : []),
