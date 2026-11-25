@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ADAPTERS, ARGV_LIMIT, CODEX_NO_TOOLS, CODEX_NO_TELEMETRY, CODEX_RUNTIME, CODEX_STREAM_RECONNECTS, codexStream, codexStreamIdleMs } from '../src/adapters/config.js';
-import { buildArgs, pickJson, pickJsonl, makeAdapter, detectToolUse, usageDelta } from '../src/adapters/common.js';
+import { buildArgs, checkEphemeralCli, pickJson, pickJsonl, makeAdapter, detectToolUse, usageDelta } from '../src/adapters/common.js';
 import { claudeQuota, codexQuota } from '../src/adapters/quota.js';
 import { cleanEnv, profileHome, runProcess, killAll, liveChildren, resolveBinary } from '../src/adapters/spawn.js';
 import { mkdtempSync, writeFileSync, existsSync, readFileSync, mkdirSync, readdirSync } from 'node:fs';
@@ -19,11 +19,22 @@ test('claude: fresh call on stdin, resume appends --resume', () => {
 test('a fresh call saves no session in the CLI\'s history unless resume memory will continue it', () => {
   const flag = { claude: '--no-session-persistence', codex: '--ephemeral' };
   for (const [vendor, f] of Object.entries(flag)) {
+    assert.ok(buildArgs(ADAPTERS[vendor], { prompt: 'hi', providerHistory: 'require-ephemeral' }).args.includes(f));
+    assert.ok(!buildArgs(ADAPTERS[vendor], { prompt: 'hi', providerHistory: 'provider-default' }).args.includes(f));
+    assert.throws(() => buildArgs(ADAPTERS[vendor], { prompt: 'hi', keepSession: true, providerHistory: 'require-ephemeral' }), /non-saving/);
     assert.ok(buildArgs(ADAPTERS[vendor], { prompt: 'hi' }).args.includes(f), `${vendor}: a stateless call`);
     assert.ok(!buildArgs(ADAPTERS[vendor], { prompt: 'hi', keepSession: true }).args.includes(f), `${vendor}: the first call resume memory continues`);
     assert.ok(!buildArgs(ADAPTERS[vendor], { prompt: 'hi', sessionId: 'S1' }).args.includes(f), `${vendor}: a resumed call keeps its session going`);
   }
+  assert.throws(() => buildArgs(ADAPTERS.agy, { prompt: 'hi', providerHistory: 'require-ephemeral' }), /non-saving/);
   assert.equal(ADAPTERS.agy.ephemeral, undefined, 'agy has no such flag');
+});
+
+test('strict history verifies the exact non-saving flag of the installed CLI, without a prompt', async () => {
+  const help = text => ({ file: process.execPath, prefix: ['-e', `console.log(${JSON.stringify(text)})`, '--'] });
+  await checkEphemeralCli(ADAPTERS.codex, help('Options:\n  --ephemeral   Run without a saved thread.'));
+  await assert.rejects(checkEphemeralCli(ADAPTERS.codex, help('--ephemeral-experimental')), /could not confirm --ephemeral/);
+  await assert.rejects(checkEphemeralCli(ADAPTERS.claude, help('Usage: claude [options]')), /could not confirm --no-session-persistence/);
 });
 
 test('codex: resume replaces the subcommand and keeps the trailing "-" last', () => {

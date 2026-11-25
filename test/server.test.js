@@ -1142,6 +1142,62 @@ test('only the board records the Antigravity terms acknowledgment; until then no
   } finally { srv.child.kill(); }
 });
 
+test('strict chat history checks every distinct profile and refuses unsupported participants before dispatch', { timeout: 60_000 }, async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rt-strict-history-'));
+  const emptyPath = path.join(root, 'empty');
+  mkdirSync(emptyPath);
+  const wire = path.join(root, 'wire.jsonl');
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^path$/i.test(k)));
+  const srv = await startServer(root, ['--no-open'], { ...env, PATH: emptyPath,
+    ROUNDTABLE_AGENTLINK_CLI: path.resolve('test/fixtures/fake-acp.mjs'), ACP_FIXTURE_MODE: 'mixed-history', ACP_FIXTURE_LOG: wire });
+  const post = (route, body) => fetch(srv.base + route, { method: 'POST', headers: { 'content-type': 'application/json', 'x-roundtable-token': srv.token }, body: JSON.stringify(body) });
+  const events = () => existsSync(wire) ? readFileSync(wire, 'utf8').trim().split('\n').map(JSON.parse) : [];
+  const seat = { vendor: 'acp', account: 'work', lens: 'risk' };
+  const body = { fieldNotes: { decision: 'Run the trial?', options: ['Trial', 'Wait'] }, seats: [seat, { ...seat, lens: 'cost' }],
+    chairman: seat, options: { providerHistory: 'require-ephemeral', critiqueRounds: 0, unattended: true, allowLimitedIsolation: true, acknowledgeTermsRisk: true } };
+  try {
+    const preview = await post('/api/preview', body);
+    assert.equal(preview.status, 200);
+    assert.equal(events().filter(e => e.rpc?.method === 'session/new').length, 1, 'identical profile/model probes are shared');
+    for (const change of [
+      { chairman: { vendor: 'acp', account: 'agy' } },
+      { seats: [seat, { vendor: 'acp', account: 'agy', lens: 'cost' }] },
+      { options: { ...body.options, research: { vendor: 'agy', query: 'Trial cost?' } } },
+      { chairman: { vendor: 'api', model: 'local', endpoint: 'http://localhost:11434/v1' } },
+    ]) {
+      const response = await post('/api/debates', { ...body, ...change });
+      assert.equal(response.status, 400);
+      assert.match((await response.json()).error, /non-saving session/);
+    }
+    const missing = await post('/api/debates', { ...body, chairman: { vendor: 'codex', transport: 'cli' } });
+    assert.equal(missing.status, 400);
+    assert.match((await missing.json()).error, /could not confirm --ephemeral/);
+    assert.equal(events().filter(e => e.rpc?.method === 'session/prompt').length, 0);
+    const started = await post('/api/debates', body);
+    const { slug } = await started.json();
+    assert.ok(slug);
+    await readEvents(await fetch(`${srv.base}/api/debates/${slug}/events`), e => e.type === 'done');
+    const rows = readFileSync(path.join(root, slug, 'transcript.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    assert.deepEqual(rows.filter(r => r.type === 'attempt').map(r => r.progress.providerHistory), ['ephemeral', 'ephemeral', 'ephemeral']);
+    assert.equal(events().filter(e => e.rpc?.method === 'session/prompt').length, 3);
+
+    const recovered = '2026-10-25-saved-research';
+    const dir = path.join(root, recovered);
+    mkdirSync(dir);
+    const head = rows.find(r => r.type === 'field-notes');
+    head.options.research = { vendor: 'codex', query: 'What did the trial show?' };
+    const source = { title: 'Trial', url: 'https://example.com/trial', excerpt: 'The trial was reversible.' };
+    const evidence = { type: 'research', status: 'done', gatheredAt: new Date().toISOString(), searches: 1, sources: [source] };
+    writeFileSync(path.join(dir, 'transcript.jsonl'), [head, evidence].map(r => JSON.stringify(r)).join('\n') + '\n');
+    const resumed = await post(`/api/debates/${recovered}/resume`, {});
+    assert.equal(resumed.status, 200, 'the missing direct Codex searcher is never called on recovery');
+    await readEvents(await fetch(`${srv.base}/api/debates/${recovered}/events`), e => e.type === 'done');
+    const saved = readFileSync(path.join(dir, 'transcript.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(saved.filter(r => r.type === 'attempt' && r.kind === 'research').length, 0);
+    assert.deepEqual(saved.filter(r => r.type === 'attempt').map(r => r.progress.providerHistory), ['ephemeral', 'ephemeral', 'ephemeral']);
+  } finally { srv.child.kill(); }
+});
+
 test('a live review routes named providers and its chairman through saved AgentLink profiles', { timeout: 45_000 }, async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'rt-profile-defaults-'));
   const emptyPath = path.join(root, 'empty');

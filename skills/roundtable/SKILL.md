@@ -27,6 +27,9 @@ one-time `roundtable setup --client codex` (or `claude` / `agy`) step.
    A deep review or several consequential trade-offs can justify two critique rounds within
    the user's limits. Consensus may end early. Missing facts stay unknown or labelled assumptions.
    Use saved AgentLink profiles for Codex, Claude and Antigravity seats and the chairman.
+   When the user requires unsaved provider chats, set `options.providerHistory` to
+   `require-ephemeral` with stateless memory. If a profile cannot meet that requirement,
+   report which one failed. Direct Codex and Claude CLI seats can also run non-saving sessions.
    Leave model and effort empty for profile defaults. Use `roundtable_models` when the
    person wants a specific model or reasoning level. Show its display name and send its advertised ID. Use `acp@PROFILE` for a profile cap.
    Follow the guide's provider consent requirements; connecting an assistant does not grant

@@ -7,6 +7,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { adapters, ADAPTERS, quotaReaders, poolsByAccount } from './adapters/index.js';
+import { checkEphemeralCli } from './adapters/common.js';
 import { agentLinkBinary, discoverProfile, inspectProfileSession, listProfiles } from './adapters/acp.js';
 import { profileHome, killAll, liveChildren, resolveBinary, runProcess, cleanEnv } from './adapters/spawn.js';
 import { checkPool, STATUS, endpointLamp, createPreflightCache } from './preflight.js';
@@ -277,11 +278,16 @@ function loadDebate(slug) {
 // Continue an interrupted debate: the engine is recreated from the field-notes row (seats with
 // their recorded session ids, used when memory is 'resume') and runs from the first incomplete
 // round. A message belongs to the last complete round, or precedes round zero if none completed.
-function resumeDebate(d, body = {}) {
+async function resumeDebate(d, body = {}) {
   recoverFailed(d);
   if (!d.interrupted) throw new Error(d.finished ? 'This debate is finished.' : 'This debate is running.');
-  prepareTranscript(d);
   const rb = d.rebuilt;
+  if (!FAKE && rb.options?.providerHistory === 'require-ephemeral') {
+    // Recovery reuses saved evidence and never launches the searcher again.
+    await checkProviderSessions([...rb.seats, rb.chairman], rb.options.providerHistory);
+    if (!d.interrupted || debates.get(d.slug) !== d) throw new Error('This review changed while checking provider sessions. Refresh its status.');
+  }
+  prepareTranscript(d);
   const message = String(body.message || '').trim();
   if (message) {
     const round = rb.nextRound - 1;
@@ -416,7 +422,7 @@ function deleteSessions(ids, finishedOnly = false) {
 // supersedes the old one.
 // body.chairman (optional): write it with another vendor, for example when the first chairman's
 // quota ran out. Checked like the setup screen's chairman.
-function synthesizeDebate(d, body = {}) {
+async function synthesizeDebate(d, body = {}) {
   recoverFailed(d);
   if (!d.finished) throw new Error(d.interrupted ? 'This debate was interrupted; resume it first.' : 'This debate is still running.');
   if (d.synthesizing) throw new Error('The verdict is being written.');
@@ -428,6 +434,10 @@ function synthesizeDebate(d, body = {}) {
     for (const k of ['vendor', 'model', 'effort', 'account', 'keyEnv', 'endpoint']) if (body.chairman[k] != null && (typeof body.chairman[k] !== 'string' || body.chairman[k].length > (k === 'endpoint' ? 500 : 200))) throw new Error(`chairman ${k}: text of at most ${k === 'endpoint' ? 500 : 200} characters`);
     chairman = normaliseChairman(body.chairman, { vendors: ADAPTERS, efforts: effortsByVendor(), models: modelsByVendor() });
     if (!chairman) throw new Error('chairman vendor: one of ' + Object.keys(ADAPTERS).join(', '));
+  }
+  if (!FAKE && rb.options?.providerHistory === 'require-ephemeral') {
+    await checkProviderSessions([chairman], rb.options.providerHistory);
+    if (!d.finished || d.synthesizing || debates.get(d.slug) !== d || rebuildDebate(d.store.readTranscript()).synthesis === 'done') throw new Error('This review changed while checking the chairman. Refresh its status.');
   }
   prepareTranscript(d);
   d.synthesizing = true;
@@ -530,25 +540,34 @@ async function prepareDebate(raw, { board = false } = {}) {
   // the board always names the searcher's settings, even "default"; an agent may leave them out
   const named = ['model', 'effort', 'account'].some((k) => raw?.options?.research && Object.hasOwn(raw.options.research, k));
   if (options.research) options.research = searcherSettings(options.research, named);
-  if (!FAKE) {
-    // Validate each distinct pinned profile/model once, before any review prompt can run.
-    // An unpinned review goes straight to the profile defaults.
-    const checks = new Map();
-    for (const s of [...seats, chairman]) {
-      if (s?.vendor !== 'acp' || (!s.model && !s.effort)) continue;
-      const key = JSON.stringify([s.account, s.model || '']);
-      if (!checks.has(key)) checks.set(key, { account: s.account, model: s.model || '', efforts: new Set() });
-      if (s.effort) checks.get(key).efforts.add(s.effort);
-    }
-    await Promise.all([...checks.values()].map(async ({ account, model, efforts }) => {
-      const cat = await inspectProfileSession(account, model);
-      if (model && !cat.models.some((m) => m.id === model)) throw new Error(`AgentLink profile ${account} no longer offers model ${model}. Refresh profile models or choose the profile default.`);
-      for (const effort of efforts) {
-        if (!cat.efforts.includes(effort)) throw new Error(`AgentLink profile ${account} does not offer effort ${effort} for ${model || 'its default model'}. Refresh profile models.`);
-      }
-    }));
-  }
+  if (!FAKE) await checkProviderSessions([...seats, chairman, options.research], options.providerHistory);
   return { fieldNotes, seats, chairman, options };
+}
+
+async function checkProviderSessions(participants, mode) {
+  const checks = new Map(), direct = new Set();
+  for (const s of participants.filter(Boolean)) {
+    if (s.vendor !== 'acp') {
+      if (mode === 'require-ephemeral') {
+        const adapter = ADAPTERS[s.vendor];
+        if (!adapter?.ephemeralHelp) throw new Error(`${adapter?.label || s.vendor} cannot confirm a non-saving session. Choose a compatible provider or change the provider chat history setting.`);
+        direct.add(adapter);
+      }
+      continue;
+    }
+    if (mode !== 'require-ephemeral' && !s.model && !s.effort) continue;
+    const key = JSON.stringify([s.account, s.model || '']);
+    if (!checks.has(key)) checks.set(key, { account: s.account, model: s.model || '', efforts: new Set() });
+    if (s.effort) checks.get(key).efforts.add(s.effort);
+  }
+  await Promise.all([...direct].map(adapter => checkEphemeralCli(adapter)));
+  await Promise.all([...checks.values()].map(async ({ account, model, efforts }) => {
+    const cat = await inspectProfileSession(account, model, {}, mode === 'require-ephemeral' ? mode : 'prefer-ephemeral');
+    if (model && !cat.models.some((m) => m.id === model)) throw new Error(`AgentLink profile ${account} no longer offers model ${model}. Refresh profile models or choose the profile default.`);
+    for (const effort of efforts) {
+      if (!cat.efforts.includes(effort)) throw new Error(`AgentLink profile ${account} does not offer effort ${effort} for ${model || 'its default model'}. Refresh profile models.`);
+    }
+  }));
 }
 
 // The searcher runs on its own settings, checked like the chairman's. A request that names none
@@ -621,6 +640,7 @@ function attachEngine(d, { fieldNotes, seats, chairman, options, resume = null, 
       acknowledgeTermsRisk: opts.acknowledgeTermsRisk === true || termsRecord.acknowledged(vendor),
       research: opts.research,
       keepSession: opts.keepSession === true,
+      providerHistory: opts.providerHistory,
       minimal: !!opts.seat?.mood?.hidden, // a hidden mood runs as cheaply as its vendor allows
     });
   // After every reply the vendor's quota is read again (not awaited) where a free read exists, so
@@ -774,7 +794,7 @@ const server = http.createServer(async (req, res) => {
       const html = (await readFile(path.join(UI, 'index.html'), 'utf8'))
         .replace('<meta name="roundtable-token" content="">', `<meta name="roundtable-token" content="${TOKEN}">`)
         .replace('<span class="end" id="st-version"></span>', `<span class="end" id="st-version">v${VERSION}</span>`);
-      res.writeHead(200, { 'content-type': MIME['.html'], 'cache-control': 'no-store', 'set-cookie': `rt_board=${BOARD_COOKIE}; HttpOnly; SameSite=Strict; Path=/` });
+      res.writeHead(200, { 'content-type': MIME['.html'], 'cache-control': 'no-store', 'x-roundtable-version': VERSION, 'set-cookie': `rt_board=${BOARD_COOKIE}; HttpOnly; SameSite=Strict; Path=/` });
       return res.end(html);
     }
     if (req.method === 'GET' && p.startsWith('/ui/')) return serveFile(res, path.join(UI, path.normalize(p.slice(4))));
@@ -927,8 +947,8 @@ const server = http.createServer(async (req, res) => {
         body.message = validateMessage({ message: answerMessage(d.pending.info.questions, body.answers, body.message, { attributed: body.source === 'agent' && !relayed }) }).message;
         if (relayed) body.source = 'relayed';
       }
-      if (m[2] === 'resume') { resumeDebate(d, body); return json(res, 200, { ok: true }); }
-      if (m[2] === 'synthesize') { synthesizeDebate(d, await reviewConnections(body)); return json(res, 200, { ok: true }); }
+      if (m[2] === 'resume') { await resumeDebate(d, body); return json(res, 200, { ok: true }); }
+      if (m[2] === 'synthesize') { await synthesizeDebate(d, await reviewConnections(body)); return json(res, 200, { ok: true }); }
       if (m[2] === 'accept') return json(res, 200, acceptDecision(d, body));
       if (m[2] === 'export') {
         if (!d.finished) return requestError(res, 400, 'Export after the verdict; the record needs the whole debate.', 'export');

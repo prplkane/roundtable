@@ -14,7 +14,7 @@ import { scanMarkup, startScan, stopScan } from '/ui/scan.js';
 import { icon } from '/ui/icons.js';
 import { loaderMarkup } from '/ui/loader.js';
 import { noteRecord, noteLabel } from '/src/notes.js';
-import { progressText } from '/src/progress.js';
+import { progressText, providerHistoryText } from '/src/progress.js';
 import { unlock as unlockSound, setSound, soundEnabled, playCue } from '/ui/sound.js';
 import { providerWarning, groupQuestions, answerMessage, stopExplanation, cancellationReason, remainingWindow, argumentHtml, ceremonyOutcome, verdictView, verdictResultText, verdictHeadline, defaultSearchQuery } from '/src/review-view.js';
 
@@ -247,6 +247,7 @@ async function setup() {
   $('auto').value = defaults.autoContinueMs / 1000;
   $('question-wait').value = (defaults.questionWaitMs || 120000) / 1000;
   $('wall').value = defaults.wallClockMs / 60000;
+  $('provider-history-mode').value = defaults.providerHistory || 'prefer-ephemeral';
   $('memory').value = defaults.memory || 'stateless';
   try { const saved = JSON.parse(localStorage.getItem('roundtable.notes') || 'null'); if (saved) for (const [k, v] of Object.entries(saved)) if (k !== 'options' && $(k)) $(k).value = v; S.options = String(saved?.options || '').split('\n').map((o) => o.trim()).filter(Boolean); } catch {}
   if (!S.options || S.options.length < 2) S.options = [...(S.options || []), '', ''].slice(0, Math.max(2, S.options?.length || 0));
@@ -283,6 +284,7 @@ async function setup() {
     const value = settings.options?.[key];
     if (Number.isInteger(value) && value >= min && value <= max) $(id).value = value / scale;
   }
+  if (['prefer-ephemeral', 'require-ephemeral', 'provider-default'].includes(settings.options?.providerHistory)) $('provider-history-mode').value = settings.options.providerHistory;
   if (['stateless', 'resume'].includes(settings.options?.memory)) $('memory').value = settings.options.memory;
   $('unattended').checked = settings.options?.unattended === true;
   const research = settings.options?.research;
@@ -1162,7 +1164,7 @@ async function start() {
   const body = {
     fieldNotes, seats: draftSeats(),
     chairman: draftChairman(),
-    options: { critiqueRounds: Number($('critique-rounds').value), autoContinueMs: Number($('auto').value) * 1000, questionWaitMs: Number($('question-wait').value) * 1000, wallClockMs: Number($('wall').value) * 60000, memory: $('memory').value, unattended: $('unattended').checked, allowLimitedIsolation: isolationAccepted(), acknowledgeTermsRisk: termsAccepted(), budget: budgetBody(),
+    options: { critiqueRounds: Number($('critique-rounds').value), autoContinueMs: Number($('auto').value) * 1000, questionWaitMs: Number($('question-wait').value) * 1000, wallClockMs: Number($('wall').value) * 60000, memory: $('memory').value, providerHistory: $('provider-history-mode').value, unattended: $('unattended').checked, allowLimitedIsolation: isolationAccepted(), acknowledgeTermsRisk: termsAccepted(), budget: budgetBody(),
       ...(searcherOn() ? { research: { vendor: $('searcher-vendor').value, query: $('research-query').value.trim(), maxSearches: Number($('research-searches').value), timeoutMs: Number($('research-time').value) * 1000,
         sourceScopes: $('research-scopes').value.split(/\r?\n/).map(s => s.trim()).filter(Boolean),
         model: $('searcher-model').value.trim(), effort: $('searcher-effort').value, account: searcherAccount() } } : {}) },
@@ -1536,6 +1538,9 @@ function renderUsage() {
   if (cur != null && u.byRound[String(cur)]) rows.push(row(`Round ${cur}`, u.byRound[String(cur)], 'subtotal'));
   rows.push(row('Debate total', u.total, 'total'));
   $('usage').querySelector('tbody').innerHTML = rows.join('');
+  const history = $('provider-history');
+  history.textContent = providerHistoryText(S.rows);
+  history.hidden = !history.textContent;
   const keys = [...new Set([...S.seats, ...(S.chairman || S.configuredChairman ? [S.chairman || S.configuredChairman] : [])].map((seat) => poolKey(seat.vendor, seat.account, !!VENDOR_META[seat.vendor]?.profiles)))];
   $('usage-summary').innerHTML = keys.map((key) => {
     const q = S.quota[key];
@@ -1862,7 +1867,7 @@ function tick() {
 }
 
 // ---------- human bar ----------
-const post = (what, body = {}) => requestJson(`/api/debates/${S.slug}/${what}`, body);
+const post = (what, body = {}) => requestJson(`/api/debates/${S.slug}/${what}`, body, ['resume', 'synthesize'].includes(what) ? 40_000 : undefined);
 async function boardAction(action, body, onSuccess) {
   if (S.actionPending) return;
   const revision = viewRevision;

@@ -7,11 +7,29 @@ const BOUNDS = { elapsedMs: 86_400_000, timeoutMs: 10_800_000, firstOutputMs: 86
 const STAGES = new Set(['waiting', 'started', 'reasoning', 'reply', 'completed', 'tool', 'searching', 'reconnecting', 'provider-error', 'headers', 'body']);
 const OUTCOMES = new Set(['exited', 'completed', 'timeout', 'cancelled', 'spawn-error', 'provider-error', 'policy', 'output-limit', 'protocol']);
 
+const HISTORY = new Set(['ephemeral', 'archived', 'removed', 'provider-managed', 'unconfirmed']);
+
+export function providerHistoryText(rows) {
+  const counts = { ephemeral: 0, archived: 0, removed: 0, 'provider-managed': 0, unconfirmed: 0 };
+  for (const row of rows) {
+    const history = row.progress?.providerHistory;
+    if (row.type === 'attempt' && HISTORY.has(history)) counts[history]++;
+  }
+  const parts = [];
+  if (counts.ephemeral) parts.push(`${counts.ephemeral} never saved to chat history`);
+  if (counts.archived) parts.push(`${counts.archived} archived`);
+  if (counts.removed) parts.push(`${counts.removed} removed from active history`);
+  if (counts['provider-managed']) parts.push(`${counts['provider-managed']} managed by the provider`);
+  if (counts.unconfirmed) parts.push(`${counts.unconfirmed} with cleanup unconfirmed`);
+  return parts.length ? `Internal provider chats · ${parts.join(' · ')}` : '';
+}
+
 export function safeProgress(input) {
   const out = {};
   for (const [key, max] of Object.entries(BOUNDS)) if (Number.isSafeInteger(input?.[key]) && input[key] >= 0 && input[key] <= max) out[key] = input[key];
   if (STAGES.has(input?.stage)) out.stage = input.stage;
   if (OUTCOMES.has(input?.outcome)) out.outcome = input.outcome;
+  if (HISTORY.has(input?.providerHistory)) out.providerHistory = input.providerHistory;
   return out;
 }
 

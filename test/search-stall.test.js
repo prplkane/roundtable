@@ -140,20 +140,22 @@ async function review({ timeoutMs = 120_000, research, clock = null }) {
   const state = await createDebate({ fieldNotes, seats, now, options: { research: { vendor: 'codex', query: 'public question', maxSearches: 2, timeoutMs }, critiqueRounds: 0, unattended: true },
     store: { append: (r) => rows.push(r) },
     runner: async (vendor, prompt, sid, o) => {
-      if (o.research) { searchCalls.push(o.timeoutMs); return research(searchCalls.length, clock); }
+      if (o.research) { searchCalls.push(o.timeoutMs); return research(searchCalls.length, clock, o.research.maxSearches, prompt); }
       return { text: o.seat.id === 'chairman' ? verdict : reply(o.seat.index), usage };
     } }).run();
   return { state, rows, searchCalls, attempts: rows.filter((r) => r.type === 'attempt' && r.kind === 'research') };
 }
 
-test('a stalled search is started once more within the same time limit, and the review goes on', async () => {
+test('a stalled search uses only the remaining operations and time, and the review goes on', async () => {
   const clock = { t: Date.now() };
-  const { state, searchCalls, attempts } = await review({ clock, research: (n, c) => {
-    if (n === 1) { c.t += 41_000; throw Object.assign(stall(), { research: { searches: 2 } }); }
+  const { state, searchCalls, attempts } = await review({ clock, research: (n, c, limit, prompt) => {
+    assert.equal(limit, n === 1 ? 2 : 1);
+    assert.ok(prompt.includes(`Use at most ${limit} search operations`));
+    if (n === 1) { c.t += 41_000; throw Object.assign(stall(), { research: { searches: 1 } }); }
     return { text: sources, usage, research: { searches: 1 } };
   } });
-  assert.deepEqual(attempts.map((a) => a.searches), [2, 1], 'each attempt keeps its own search count');
-  assert.equal(state.research.searches, 1, 'the evidence comes from the attempt that answered');
+  assert.deepEqual(attempts.map((a) => a.searches), [1, 1], 'each attempt keeps its own search count');
+  assert.equal(state.research.searches, 2, 'the review reports all observed operations');
   assert.equal(state.research.status, 'done');
   assert.equal(searchCalls.length, 2);
   assert.equal(searchCalls[0], 120_000);
@@ -170,8 +172,8 @@ test('no retry when too little time is left, after a second stall, or for a time
   assert.ok(120_000 - 100_000 < SEARCH_RETRY_MIN_MS);
   assert.deepEqual([r.state.research.status, r.searchCalls.length], ['failed', 1]);
   assert.equal(r.state.stopReason, 'research-failed');
-  // two stalls: one retry, never a second
-  r = await review({ clock: { t: Date.now() }, research: (n, c) => { c.t += 41_000; throw stall(); } });
+  // Two stalls with zero observed searches: one retry, never a second
+  r = await review({ clock: { t: Date.now() }, research: (n, c) => { c.t += 41_000; throw Object.assign(stall(), { research: { searches: 0 } }); } });
   assert.deepEqual([r.state.research.status, r.searchCalls.length], ['failed', 2]);
   // the plain time limit running out is not a stall: research is still never rerun for it
   r = await review({ research: () => { throw Object.assign(new Error('timed out'), { code: 'TIMEOUT', kind: 'timeout' }); } });
@@ -181,10 +183,22 @@ test('no retry when too little time is left, after a second stall, or for a time
   assert.deepEqual([r.state.research.status, r.searchCalls.length], ['failed', 1]);
 });
 
+test('exhausted or unreported search counts stop before paying for a second attempt', async () => {
+  for (const searches of [2, undefined]) {
+    const error = Object.assign(stall(), { research: { searches } });
+    const { state, searchCalls, attempts } = await review({ research: () => { throw error; } });
+    assert.equal(searchCalls.length, 1);
+    assert.equal(state.research.status, 'failed');
+    assert.equal(state.research.searches, searches);
+    assert.equal(attempts[0].searches, searches);
+    assert.match(state.research.error, searches == null ? /did not report the search count/ : /allowance was exhausted/);
+  }
+});
+
 test('a search whose CLI used up its reconnects on a silent stream is started once more', async () => {
   const clock = { t: Date.now() };
   const { state, searchCalls, attempts } = await review({ clock, research: (n, c) => {
-    if (n === 1) { c.t += 80_000; throw Object.assign(new Error('Codex\'s provider connection stalled before completion.'), { code: 'CLI_FAILURE', kind: 'timeout' }); }
+    if (n === 1) { c.t += 80_000; throw Object.assign(new Error('Codex\'s provider connection stalled before completion.'), { code: 'CLI_FAILURE', kind: 'timeout', research: { searches: 0 } }); }
     return { text: sources, usage, research: { searches: 1 } };
   } });
   assert.deepEqual(attempts.map((a) => [a.systemCode, a.errorKind]), [['CLI_FAILURE', 'timeout'], [undefined, undefined]]);

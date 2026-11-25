@@ -17,6 +17,7 @@ export const HELP = {
     resume: 'Resume an interrupted review. May make provider calls.',
     verdict: 'Request a missing or failed verdict from saved replies. May make a provider call.',
   },
+  providerHistory: 'options.providerHistory defaults to prefer-ephemeral. Choose require-ephemeral with stateless memory to verify every selected provider before sending any review prompt. Choose provider-default to let each provider retain chats normally. Usage details show the outcome.',
   acp: 'Codex, Claude and Antigravity seats and chairmen default to AgentLink. Bare vendor codex, claude or agy selects its saved profile. For an exact profile, select vendor="acp" and account="profile-name" for each seat and the chairman. Requires stateless memory and allowLimitedIsolation=true after the person accepts profile-owned permissions, customization and billing. Roundtable denies client tools and stops reported tool activity. AgentLink must already be installed/configured. Set transport=cli explicitly for direct CLI seats. Missing token usage stays unknown and stops further calls for that seat under its cap; no live quota is inferred.',
   setup: 'Use roundtable server status to inspect the local board; roundtable server start launches it hidden if needed (add --fake for a free test). After an update, server restart refuses active reviews. This client reads its launch token locally; it never prints or stores the token.',
   input: 'check/start accept the same {fieldNotes,seats,chairman,options} JSON as the board. Check available providers first. Every result with an id carries board, a link where a person can watch the review in a browser; offer it, do not open it.',
@@ -42,7 +43,8 @@ export async function runAgent(command, flags = {}, input, signal) {
   const port = Number(flags.port || process.env.PORT || 4747);
   if (!Number.isInteger(port) || port < LIMITS.port[0] || port > LIMITS.port[1]) throw new Error('Port must be a number from 1 to 65535.');
   if (flags.id && !/^[a-z0-9-]+$/.test(flags.id)) throw new Error('Invalid review id.');
-  const { base, request } = localClient(port, signal);
+  const dispatchesReview = ['check', 'start', 'answer', 'finish', 'resume', 'verdict'].includes(command);
+  const { base, request } = localClient(port, signal, { requireCurrentVersion: dispatchesReview });
   const route = flags.id ? `/api/debates/${flags.id}` : null;
   const board = (id) => `${base}/#${id}`; // where a person can watch this review in a browser
   let result;
@@ -118,7 +120,7 @@ export async function runAgent(command, flags = {}, input, signal) {
       if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('Input must be a JSON object.');
       if (['answer', 'finish', 'stop', 'resume'].includes(command)) body.source = 'agent';
       if (['answer', 'hold'].includes(command) && !Number.isInteger(body.round)) throw new Error('An answer or time extension needs the round number from the current state.');
-      result = await request(`${route}/${command === 'answer' ? 'continue' : command === 'verdict' ? 'synthesize' : command}`, body);
+      result = await request(`${route}/${command === 'answer' ? 'continue' : command === 'verdict' ? 'synthesize' : command}`, body, ['resume', 'verdict'].includes(command) ? 40_000 : undefined);
       result = { ...result, id: flags.id, board: board(flags.id), next: `agent wait --port ${port} --id ${flags.id}` };
     }
   }

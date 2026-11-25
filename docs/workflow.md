@@ -474,6 +474,29 @@ AgentLink seats use fresh ACP sessions and the selected profile's permissions, a
 in section 7c. Preview checks pinned model IDs and effort levels in a fresh profile session
 without sending a prompt. Unpinned seats follow the profile default.
 
+#### Provider chat history
+
+The setting applies to the searcher, seats and chairman. Agent clients set
+`options.providerHistory` in the review request.
+
+| Setting | Behavior |
+| --- | --- |
+| Keep out of history when possible (`prefer-ephemeral`, default) | Requests a non-saving session. A compatible AgentLink gateway can archive a session after use when the provider only supports archiving. Other providers use their own history settings. |
+| Require a non-saving session (`require-ephemeral`) | Requires stateless memory. Roundtable verifies the installed direct CLI flags and checks every selected AgentLink connection before dispatch. Every new AgentLink session must also confirm non-saving mode before it receives a prompt. An unsupported connection stops setup. |
+| Use provider default (`provider-default`) | Leaves session persistence to the provider. A provider that normally saves chats may show the individual calls in its history. |
+
+With AgentLink 0.3.0-beta.4 and earlier, the default preference uses provider-managed history
+and strict mode refuses the profile. AgentLink 0.3.0-beta.5 adds negotiation for each bridge. Stock
+Codex ACP can archive a chat after use, Claude ACP supports non-saving sessions, and
+Antigravity uses provider-managed history. Archiving removes a chat from active history
+and may leave a saved copy.
+
+For a non-saving Codex seat today, select direct CLI transport, stateless memory and
+strict history. Roundtable checks `codex exec --help` for `--ephemeral`. Direct Claude
+supports `--no-session-persistence`. **Usage details** counts calls by their reported
+history outcome. Roundtable keeps its review transcript with every setting. Inference billing
+and service data retention follow each provider’s terms.
+
 The following behaviours apply to direct CLI seats.
 
 - Every CLI seat has its own session and working folder, `debates/<slug>/seats/<id>/`.
@@ -511,7 +534,10 @@ The following behaviours apply to direct CLI seats.
 - **Memory**: leave on `stateless`. Each round is a fresh call with the field notes, the seat's
   own last reply and the others' replies. This avoids resending the full conversation, but
   token use and cost still vary. `resume` retains a conversation and can grow the context each
-  round. Neither setting controls the provider's logging or retention policy.
+  round. Stateless seat prompts put the shared field notes, evidence and reply format before
+  the lens. A provider that supports prefix caching can reuse this input across compatible
+  calls. The chairman receives each distinct argument in full. A verbatim repeat by the same
+  seat can refer to the earlier round. Provider logging and retention follow vendor policy.
 - **Unattended**, off by default: the table never waits for you. The window after the blind
   round is skipped, and the seats are told that nobody answers questions, so they state what
   they would have asked as an assumption instead; the question line leaves their contract, which
@@ -857,7 +883,7 @@ Codex, Claude and Antigravity seats and chairmen use saved AgentLink profiles by
 Install AgentLink and add the providers you want to use. Existing profiles can be reused.
 
 ```sh
-npm install -g @prplkane/agentlink@0.3.0-beta.3
+npm install -g @prplkane/agentlink@beta
 agentlink add codex --provider codex
 agentlink add claude --provider claude
 agentlink add agy --provider antigravity
@@ -1019,11 +1045,11 @@ more arrives while its process remains open, so no silence limit fires. Roundtab
 searcher call that makes no progress for 40 seconds (a "Reconnecting" notice counts as progress,
 since those reconnects are bounded) and starts it once more if at least 30 seconds of the
 searcher's time limit remain; a call whose reconnects were all used up is started once more the
-same way. This recovery does not identify or fix the cause of the stall. Both attempts share one
-limit, both are
-recorded, and the stalled one's usage stays unknown, since Codex reports none for it. The retry
-is a fresh call with its own search limit, so one research step can run up to twice the
-configured number of searches; each attempt's row in the record says how many it ran. A stall
+same way. Both attempts share the time and search limits. Roundtable subtracts the operations
+already observed and gives the retry the remaining allowance. If the first attempt used the
+allowance or its search count is unknown, research stops. The record keeps each attempt's count
+and usage. The evidence panel shows their combined observed searches. Missing token usage stays
+unknown. A stall
 is noticed after 40 seconds and a retry needs 30 more, so a time limit under about 75 seconds
 leaves no room for one. A Codex token cap can also refuse the retry, since the stalled attempt's
 spending is unknown.

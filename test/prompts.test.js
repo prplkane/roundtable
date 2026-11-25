@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { statelessPrefix, statelessRoundPrompt, roundPrompt, chairmanPrompt, statelessRepromptText, verdictRepromptText, repromptText } from '../src/prompts.js';
+import { round0Prompt, statelessPrefix, statelessRoundPrompt, roundPrompt, chairmanPrompt, statelessRepromptText, verdictRepromptText, repromptText } from '../src/prompts.js';
 import { validateReply, validateVerdict, verdictSections } from '../src/contract.js';
 
 const fieldNotes = { decision: 'Choose a release', options: ['Ship', 'Wait'] };
@@ -25,6 +25,35 @@ test('every model-content prompt boundary preserves content within its assigned 
     assert.ok(records(prompt).some((r) => r.text === attack), 'ordinary Markdown and hostile text are preserved as data');
     assert.ok(records(prompt).filter((r) => r.kind === 'note').every((r) => r.text === notes[0].text));
   }
+});
+
+test('blind seats share the complete evidence and format prefix across lenses, rounds and repairs', () => {
+  const source = { id: 'S1', url: 'https://example.com/a', title: 'Field observation', excerpt: 'A measured effect.', gatheredAt: '2026-01-01' };
+  const seat = { fieldNotes: { ...fieldNotes, research: [source] }, lens: 'risk', mood: 'sceptical', seatCount: 2 };
+  const prefix = statelessPrefix(seat);
+  const common = prefix.slice(0, prefix.indexOf('Your lens:'));
+  assert.ok(common.includes(source.excerpt) && common.includes('ASSUMPTIONS:'));
+  const blind = round0Prompt(seat);
+  assert.ok(blind.startsWith(prefix));
+  const peer = round0Prompt({ ...seat, lens: 'financing', mood: { preset: 'custom', text: 'Assess interest charges.' } });
+  assert.equal(peer.slice(0, peer.indexOf('Your lens:')), common);
+  assert.doesNotMatch(blind, /financing|interest charges/);
+  assert.ok(statelessRoundPrompt({ prefix, round: 1, maxRound: 2, own: 'previous', others: [], notes: [] }).startsWith(prefix));
+  assert.ok(statelessRepromptText({ prefix, round: 0, maxRound: 2, text: 'bad format', errors: [] }).startsWith(prefix));
+});
+
+test('chairman references only exact repeats by the same lens and preserves changed dissent and human notes', () => {
+  const a = { lens: 'risk', text: attack.repeat(3) };
+  const b = { lens: 'cost', text: a.text };
+  const changed = { ...a, text: a.text + ' One exception.' };
+  const short = { lens: 'timing', text: 'PASS' };
+  const rounds = [[a, b, short], [a, b, short], [changed, b, short]];
+  const notes = [[], [{ text: 'Correct the deadline.', source: 'human' }], []];
+  const entries = records(chairmanPrompt({ fieldNotes, rounds, humanNotes: notes }));
+  assert.deepEqual(entries.filter(r => r.kind === 'seat_repeat').map(r => [r.lens, r.round, r.identicalToRound]), [['risk', 1, 0], ['cost', 1, 0], ['cost', 2, 0]]);
+  assert.deepEqual(entries.filter(r => r.kind === 'seat' && r.lens !== 'timing').map(r => r.text), [a.text, b.text, changed.text]);
+  assert.equal(entries.filter(r => r.text === 'PASS').length, 3);
+  assert.ok(entries.some(r => r.kind === 'note' && r.source === 'human' && r.text === 'Correct the deadline.'));
 });
 
 test('decorated duplicate reply and verdict headers fail validation without banning ordinary headings', () => {

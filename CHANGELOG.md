@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.0
+
+- Add a per-review provider chat history setting for the searcher, seats and chairman.
+  Prefer a non-saving session, require one before sending any prompt, or use the provider
+  default. AgentLink handles per-vendor lifecycle commands. Usage details distinguish
+  never-saved sessions, archived chats, provider-managed history and unconfirmed cleanup.
+- Agent commands that check or advance a review verify the running board version before
+  submitting review data. An older board could silently ignore the history setting.
+- Resuming a strict review rechecks the panel and reuses saved research even if the
+  original searcher is no longer installed.
+- Share the field notes, web evidence and a shorter reply format at the start of seat prompts.
+  The chairman sees a round reference for exact repeated arguments from the same seat.
+- Apply one search-operation allowance across a stalled search and its retry. An exhausted
+  allowance or an unknown search count stops the retry. Each attempt retains its usage record.
+
 ## 0.7.1
 
 - Scope budget admission to the providers and profiles needed by the next action. An over-budget searcher can finish without blocking a separately funded panel.

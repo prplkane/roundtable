@@ -9,7 +9,8 @@ if (process.argv[2] === 'list') {
   ]));
   process.exit(0);
 }
-const mode = process.env.ACP_FIXTURE_MODE || 'review';
+const scenario = process.env.ACP_FIXTURE_MODE || 'review';
+const mode = scenario === 'mixed-history' ? (process.argv[3] === 'agy' ? 'close-only' : 'claude-history') : scenario;
 const log = (event) => { if (process.env.ACP_FIXTURE_LOG) appendFileSync(process.env.ACP_FIXTURE_LOG, JSON.stringify({ pid: process.pid, ...event }) + '\n'); };
 const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
 const sid = `fixture-${process.pid}`;
@@ -31,7 +32,10 @@ if (process.argv[2] === 'models') {
     effort: chosen === 'fake-choice' ? { current: 'deep', choices: [{ id: 'deep', name: 'Think deeply' }] } : { current: level.currentValue, choices: choices(level) } }));
   process.exit(0);
 }
-let pending;
+const historyKey = 'agentlink.dev/session-history';
+const archive = ['codex-history', 'refuse-history', 'slow-history', 'late-new', 'permission', 'auth', 'late-tool', 'wait'];
+const strategy = archive.includes(mode) ? 'archive-on-close' : ['claude-history', 'missing-history-ack', 'refuse-new', 'wrong-version'].includes(mode) ? 'ephemeral' : mode === 'close-only' ? 'provider-managed' : null;
+let pending, negotiated, history;
 log({ start: true, account: process.argv[3], cwd: process.cwd(), script: process.argv[1] });
 const reader = createInterface({ input: process.stdin });
 if (mode === 'stubborn') setInterval(() => {}, 1000);
@@ -46,19 +50,27 @@ reader.on('line', (line) => {
     if (mode === 'large') return process.stdout.write('x'.repeat(9 * 1024 * 1024));
     if (mode === 'crash') return process.exit(2);
     const version = mode === 'version' ? 2 : message.params.protocolVersion;
+    negotiated = strategy && message.params.clientCapabilities?._meta?.[historyKey]?.version === 1;
+    const sessionCapabilities = strategy || mode === 'legacy-history' ? { delete: {}, close: {}, title: {} } : {};
+    const name = mode === 'claude-history' ? '@agentclientprotocol/claude-agent-acp'
+      : ['codex-history', 'refuse-history'].includes(mode) ? '@agentclientprotocol/codex-acp' : 'offline-roundtable-fixture';
     return answer({ protocolVersion: version,
-      [version === 2 ? 'capabilities' : 'agentCapabilities']: {},
-      [version === 2 ? 'info' : 'agentInfo']: { name: 'offline-roundtable-fixture', version: '1' }, authMethods: [] });
+      [version === 2 ? 'capabilities' : 'agentCapabilities']: { sessionCapabilities, ...(negotiated ? { _meta: { [historyKey]: { version: mode === 'wrong-version' ? 2 : 1, strategy } } } : {}) },
+      [version === 2 ? 'info' : 'agentInfo']: { name, version: '1' }, authMethods: [] });
   }
   if (message.method === 'session/new') {
+    if (mode === 'refuse-new') return send({ id: message.id, error: { code: -32602, message: 'Private detail', data: { code: 'SESSION_HISTORY_UNSUPPORTED' } } });
+    history = negotiated && message.params._meta?.[historyKey]?.mode && mode !== 'missing-history-ack' ? strategy : null;
+    const created = { sessionId: sid, configOptions, ...(history ? { _meta: { [historyKey]: { status: history } } } : {}) };
     if (mode === 'auth') return send({ id: message.id, error: { code: -32000, message: 'Login needed' } });
+    if (mode === 'late-new') return setTimeout(() => answer(created), 400);
     if (mode === 'early-wrong-session') {
       const frames = [{ jsonrpc: '2.0', id: message.id, result: { sessionId: sid, configOptions } },
         { jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'another-session',
           update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Wrong session' } } } }];
       return process.stdout.write(frames.map(JSON.stringify).join('\n') + '\n');
     }
-    return answer({ sessionId: sid, configOptions });
+    return answer(created);
   }
   if (mode === 'model-dependent' && message.method === 'session/set_config_option' && message.params.value === 'fake-choice') {
     configOptions = [{ ...option, currentValue: 'fake-choice' }, { ...level, currentValue: 'deep', options: [{ value: 'deep', name: 'Deep' }] }];
@@ -67,6 +79,13 @@ reader.on('line', (line) => {
   if (message.method === 'session/set_config_option') {
     if (mode !== 'unconfirmed') configOptions = configOptions.map((o) => (o.configId ?? o.id) === message.params.configId ? { ...o, currentValue: message.params.value } : o);
     return answer({ configOptions });
+  }
+  if (['session/delete', 'session/close', 'session/set_title'].includes(message.method)) {
+    if (message.params.sessionId !== sid) throw new Error('Wrong session ID');
+    if (mode === 'slow-history') return;
+    if (mode === 'refuse-history') return send({ id: message.id, error: { code: -32603, message: 'Synthetic metadata failure' } });
+    if (mode === 'late-tool') update({ sessionUpdate: 'tool_call', toolCallId: 'late', kind: 'edit' });
+    return answer(history ? { _meta: { [historyKey]: { status: history === 'archive-on-close' ? 'archived' : history } } } : {});
   }
   if (message.method === 'session/cancel') {
     if (pending != null) send({ id: pending, result: { stopReason: 'cancelled' } });
