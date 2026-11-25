@@ -139,6 +139,7 @@
               <div class="f"><span class="label help-label" data-help="searchLimits" tabindex="0" aria-describedby="help-searchLimits">Limits</span><span class="searcher-limits"><input id="research-searches" class="flat" type="number" min="1" max="8" value="4" aria-label="Search limit"> searches · <input id="research-time" class="flat" type="number" min="30" max="600" value="120" aria-label="Time limit in seconds"> s</span></div>
               <span class="seat-note lamp-note" id="searcher-note" tabindex="0"></span>
               <span class="iso-slot" id="searcher-iso"></span>
+              <details class="seat-more"><summary>Allowed source URLs</summary><label for="research-scopes">Optional HTTPS hosts or paths, one per line. Roundtable opens public pages to check excerpts.</label><textarea id="research-scopes" rows="3"></textarea></details>
               <details class="seat-more" id="searcher-profile"><summary>Login profile</summary><input id="searcher-account" class="flat" placeholder="none: your usual login" aria-label="Searcher login profile"></details>
             </div>
           </article>
@@ -179,7 +180,7 @@
         <button class="fold-toggle" id="usage-toggle" type="button" aria-expanded="false" aria-controls="usage-details">Usage details</button>
       </div>
       <div id="usage-details" class="panel usage-details" hidden>
-        <table id="usage"><thead><tr><th class="label">Pool and seat</th><th class="label num" title="Fresh input tokens">Input</th><th class="label num" title="Input tokens read from or written to the provider's cache">Cached</th><th class="label num">Output</th><th class="label num" title="A + marks a sum where some calls reported no cost">Cost</th><th class="label num">Time</th><th class="label num" title="Input tokens, cache included, that this seat sent in its latest round">Last round</th></tr></thead><tbody></tbody></table>
+        <table id="usage"><thead><tr><th class="label">Pool and seat</th><th class="label num" title="Fresh input tokens">Input</th><th class="label num" title="Input tokens read from or written to the provider's cache">Cached</th><th class="label num">Output</th><th class="label num" title="Separate total reported by the provider when available. A + indicates incomplete coverage.">CLI total</th><th class="label num" title="A + marks a sum where some calls reported no cost">Cost</th><th class="label num">Time</th><th class="label num" title="Input tokens, cache included, that this seat sent in its latest round">Last round</th></tr></thead><tbody></tbody></table>
       </div>
       <header class="review-head" aria-label="Review">
         <h2 id="board-title" class="review-question"></h2>

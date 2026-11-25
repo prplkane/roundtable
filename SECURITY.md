@@ -247,7 +247,7 @@ Demo mode uses scripted replies.
   remain. Codex turns on live `web_search`; Claude gets `WebSearch` as its only tool, approved
   for that call; Antigravity, whose search cannot be switched off or on, keeps its deny rules,
   and any reported tool other than `search_web` stops the call. API endpoints cannot search. Only the
-  displayed search query goes into that call. The board initially fills it from the decision
+  displayed search query and optional source URL scopes go into that call. The board initially fills it from the decision
   question and options; Custom query lets the person edit it. Other field notes and discussion
   answers are excluded. Search terms and visited pages are handled by the provider, so review
   the query for private details. The local wall clock,
@@ -255,11 +255,7 @@ Demo mode uses scripted replies.
   contain multiple queries/page visits, and an excess operation may already have started when
   its event arrives. This is not a provider-enforced search or billing ceiling. Research
   spending joins the review's vendor budget and is shown separately from discussion seats.
-  Up to eight source URLs, dates and excerpts are saved as provider-supplied, unverified data;
-  all returned records are validated before repeated normalized URLs are combined into one
-  citation. The first title/date are retained and distinct excerpts are appended only when
-  their complete combined text fits the 1,200-character limit. The raw eight-record limit
-  still applies; malformed duplicates cannot bypass validation. No repair call is made.
+  Live research checks up to eight provider citations and, if needed, explicit document URLs supplied by the user. The local server opens public HTTPS pages with no credentials, cookies, or referrer. Each connection uses a checked public DNS address. Redirect destinations must also pass address and scope checks. Reads have byte, redirect and time limits. Only matching page text and the resolved title and URL reach the panel. These checks do not establish the truth of a claim. An empty result ends the review. Existing records retain their original provenance.
   Every seat and the chairman receives that same bundle. Source text cannot authorize tools
   or human decisions. Failed or interrupted research stops before discussion and is never
   automatically rerun, with one exception: a Codex searcher call that makes no progress for 40

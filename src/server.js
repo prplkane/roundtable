@@ -13,6 +13,7 @@ import { checkPool, STATUS, endpointLamp, createPreflightCache } from './preflig
 import { retired, quotaGroup } from './adapters/models.js';
 import { vendorCatalogue } from './adapters/catalogue.js';
 import { createDebate, DEFAULTS } from './engine.js';
+import { verifyResearchSources } from './source-check.js';
 import { normaliseSeats, normaliseChairman, MOODS, COLOURS, poolKey, poolVendor, poolAccount, lightestModel, PROFILE_PROVIDERS, routeReviewProfiles } from './seats.js';
 import { slugFor, openDebateDir, rebuildDebate } from './store.js';
 import { exportDebate, validateTarget, decisionRecord } from './export.js';
@@ -377,7 +378,7 @@ async function listDebates() {
     if (row.state === 'corrupt') return row;
     const state = activeDebate(debates.get(row.slug)) ? 'running' : finished ? 'finished' : 'interrupted';
     return { ...row, state, status: state === 'finished' ? row.status : state,
-      tokens: u.tokenCoverage?.reported === 0 ? null : u.input + u.cacheRead + u.cacheWrite + u.output,
+      tokens: u.tokenCoverage?.reported === 0 && !(u.input + u.cacheRead + u.cacheWrite + u.output) ? null : u.input + u.cacheRead + u.cacheWrite + u.output,
       tokensPartial: !!(u.tokenCoverage && u.tokenCoverage.reported < u.tokenCoverage.of),
       cost: u.cost, costPartial: !!(u.costCoverage && u.costCoverage.reported < u.costCoverage.of) };
   });
@@ -644,6 +645,7 @@ function attachEngine(d, { fieldNotes, seats, chairman, options, resume = null, 
 
   d.debate = createDebate({
     fieldNotes, seats, chairman, options, runner, gate, store, resume, baselines, provenance: FAKE ? { fake: true } : {}, synthesisOnly,
+    verifySources: FAKE ? undefined : verifyResearchSources,
     // agy: the limit group a seat's model draws on, from the latest quota read, so a used-up
     // group benches only its own seats; null for a vendor with one set of limits
     limitGroup: (seat) => quotaGroup(quota[keyOf(seat.vendor, seat.account)]?.groups, seat.model),

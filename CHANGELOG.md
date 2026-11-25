@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.1
+
+- Scope budget admission to the providers and profiles needed by the next action. An over-budget searcher can finish without blocking a separately funded panel.
+- Show the Antigravity CLI total alongside cache-inclusive accounting. Preserve completed model-step usage as a lower bound when a call ends early.
+- Keep research history separate from replies. Estimate research by model and search count, show the sample size and default Antigravity to two searches planned together.
+- Check resolved public source pages and excerpts before discussion. Optional HTTPS source scopes restrict the evidence to specified hosts and paths. Saved reviews reuse their original evidence.
+
 ## 0.7.0
 
 - Read model and reasoning-level display names and saved defaults from AgentLink beta.3.

@@ -6,7 +6,7 @@ import { positions, ledgerEntries, synthesisOf } from './engine.js';
 import { ADAPTERS } from './adapters/config.js';
 import { optionId, humanQuestion } from './contract.js';
 import { noteRecord, storedNote } from './notes.js';
-import { researchSources } from './research.js';
+import { researchSources, checkedCounts } from './research.js';
 
 // Usage rows written before usageVersion 3 carry the vendor's own input figure. Bring them to
 // the one meaning (input = uncached) by the vendor's cache semantics. Idempotent: a row already
@@ -188,7 +188,7 @@ export function rebuildDebate(rows) {
     try {
       const gatheredAt = new Date(research.gatheredAt).toISOString();
       if (!Number.isInteger(research.searches) || research.searches < 1 || research.searches > 8) throw new Error('invalid count');
-      research = { status: 'done', gatheredAt, searches: research.searches, attemptId: research.attemptId,
+      research = { status: 'done', gatheredAt, searches: research.searches, attemptId: research.attemptId, ...checkedCounts(research.verification),
         sources: researchSources(JSON.stringify({ sources: research.sources }), gatheredAt) };
       fieldNotes.research = research.sources;
     } catch { research = { status: 'failed', errorKind: 'format', error: 'The saved research bundle is invalid. It was not refetched.' }; }

@@ -224,6 +224,56 @@ function scripted(calls) {
   };
 }
 
+test('exhausted or partially measured Gemini research cannot strand a separately funded panel', async () => {
+  for (const spent of [50_000, 50_001, 104_411, null]) {
+    for (const sameChair of [false, true]) {
+      const calls = [], rows = [], panel = scripted(calls);
+      const options = { critiqueRounds: 0, unattended: true, research: { ...settings, vendor: 'agy' }, budget: { agy: { tokens: 50_000 } } };
+      const runner = async (vendor, prompt, sid, opts) => {
+        const result = await panel(vendor, prompt, sid, opts);
+        if (opts.research) result.usage = spent == null ? { input: 16000, output: 0, tokenCoverage: { reported: 0, of: 1 } } : { input: 10_000, cacheRead: spent - 10_000, output: 0 };
+        return result;
+      };
+      const state = await createDebate({ fieldNotes, seats, chairman: { vendor: sameChair ? 'agy' : 'codex' },
+        options, runner, store: { append: row => rows.push(row) } }).run();
+      assert.equal(calls.filter(c => c.opts.research).length, 1);
+      const postSearch = calls.slice(1);
+      if (sameChair) {
+        assert.deepEqual(postSearch, []);
+        assert.equal(state.stopReason, 'budget');
+        assert.equal(rows.find(r => r.type === 'budget').vendor, 'agy');
+      } else {
+        assert.deepEqual(postSearch.map(c => c.opts.seat.id).sort(), ['chairman', 'seat-0', 'seat-1']);
+        assert.equal(state.verdict.failed, false);
+        assert.equal(rows.some(r => r.type === 'budget'), false);
+      }
+      if (spent == null) {
+        assert.equal(rollup(rows).bySeat.research.usage.input, 16000);
+        assert.equal(rollup(rows).unknownAttempts, 1);
+      }
+    }
+  }
+});
+
+test('only checked evidence is dispatched, saved and recovered, and empty evidence ends before the panel', async () => {
+  for (const usable of [true, false]) {
+    const calls = [], rows = [];
+    const counts = { checked: 1, unavailable: 0, outsideScope: 0, unsupported: usable ? 0 : 1, duplicates: 0 };
+    const verifySources = async parsed => ({ verification: counts, sources: usable ? [{ ...parsed[0], excerpt: 'Text actually found on the source page.' }] : [] });
+    const state = await createDebate({ ...body(), runner: scripted(calls), verifySources, store: { append: r => rows.push(r) } }).run();
+    assert.deepEqual(state.research.verification, counts);
+    assert.deepEqual(rebuildDebate(rows).research.verification, counts);
+    assert.deepEqual(snapshot(state).research.verification, counts);
+    if (usable) {
+      assert.ok(calls.slice(1).every(c => c.prompt.includes('Text actually found') && !c.prompt.includes(sources[0].excerpt)));
+      assert.match(decisionRecord(rows, 'evidence').markdown, /Page text checked for 1 of 1/);
+    } else {
+      assert.equal(calls.length, 1);
+      assert.equal(state.stopReason, 'research-failed');
+    }
+  }
+});
+
 test('research runs once before blind replies and the identical saved evidence reaches recovery, verdict and export', async () => {
   for (const memory of ['stateless', 'resume']) {
     const calls = [], rows = [];
@@ -252,7 +302,7 @@ test('research runs once before blind replies and the identical saved evidence r
     assert.ok(continued.filter((c) => !c.sid).every((c) => c.prompt.includes(sources[0].url)));
     const md = decisionRecord(rows, 'synthetic-research').markdown;
     assert.ok(md.includes(sources[0].url));
-    assert.match(md, /not independently verified/);
+    assert.match(md, /Provider-supplied citations/);
   }
 });
 
@@ -320,6 +370,39 @@ test('the searcher runs on the vendor chosen for it, and its call and estimate g
 // Shapes from Claude CLI 2.1.292 and agy 1.4.11 searching once (stream-json), trimmed.
 const claudeSearchEvent = (id, name = 'WebSearch') => JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input: { query: 'synthetic public query' } }] } });
 const agyStep = (index, name, state = 'DONE') => JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'C1', step_index: index, state, step_type: 'tool', tool_name: name, tool_info: { name, parameters: { query: 'synthetic public query' } } } });
+
+test('Antigravity retains completed model-step lower bounds and replaces them with terminal totals', async () => {
+  const run = makeAdapter('agy', { bin: { file: process.execPath, prefix: [path.resolve('test/fixtures/fake-cli.mjs')] } });
+  const modelStep = (index, state) => JSON.stringify({ event: 'step_update', step_update: { step_index: index, state,
+    step_type: 'agent_response', usage: { input_tokens: 10, cache_read_tokens: 8, output_tokens: 2, total_tokens: 12 } } });
+  const opts = { research: { ...settings, vendor: 'agy', maxSearches: 1 }, allowLimitedIsolation: true, acknowledgeTermsRisk: true };
+  const base = [modelStep(0, 'ACTIVE'), modelStep(0, 'DONE'), modelStep(0, 'DONE'), agyStep(1, 'search_web'), modelStep(2, 'DONE')];
+  try {
+    process.env.FAKE_SHAPE = 'agy';
+    process.env.FAKE_PRELUDE = base.join('\n') + '\n';
+    process.env.FAKE_TOKEN_USAGE = JSON.stringify({ input_tokens: 25, output_tokens: 5, cache_read_tokens: 16, total_tokens: 30 });
+    const result = await run('Question', null, opts);
+    assert.equal(result.usage.modelSteps, 2);
+    assert.equal(result.usage.providerTotal, 30);
+    assert.equal(result.usage.input, 25);
+    assert.equal(result.usage.tokenCoverage, undefined);
+    process.env.FAKE_SLEEP = '8000';
+    for (const code of ['RESEARCH_LIMIT', 'TIMEOUT']) {
+      process.env.FAKE_PRELUDE = [...base, ...(code === 'RESEARCH_LIMIT' ? [agyStep(3, 'search_web')] : [])].join('\n') + '\n';
+      await assert.rejects(run('Question', null, { ...opts, timeoutMs: code === 'TIMEOUT' ? 1600 : 5000 }), e => {
+        assert.equal(e.code, code);
+        assert.deepEqual(e.usage.tokenCoverage, { reported: 0, of: 1 });
+        assert.equal(e.usage.modelSteps, 2);
+        assert.equal(e.usage.input, 20);
+        assert.equal(e.usage.cacheRead, 16);
+        assert.equal(e.usage.providerTotal, 24);
+        return true;
+      });
+    }
+  } finally {
+    for (const name of ['FAKE_SHAPE', 'FAKE_PRELUDE', 'FAKE_TOKEN_USAGE', 'FAKE_SLEEP']) delete process.env[name];
+  }
+});
 const searchModels = (n) => JSON.stringify({ modelUsage: {
   'claude-haiku-4-5': { inputTokens: 18, outputTokens: 619, cacheReadInputTokens: 10562, cacheCreationInputTokens: 3167, webSearchRequests: 0, thinkingTokens: 484 },
   'claude-haiku-4-5-20251001': { inputTokens: 10190, outputTokens: 143, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, webSearchRequests: n, thinkingTokens: 0 } } });

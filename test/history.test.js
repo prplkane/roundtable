@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { dataDirectory, legacyHistory, acquireDataLock, checkedHistoryPath, removeHistory, createUsageStore, createHistoryIndex } from '../src/history.js';
 import { slugFor } from '../src/store.js';
+import { researchEstimate } from '../src/estimate.js';
 
 const temporary = () => mkdtempSync(path.join(os.tmpdir(), 'rt-history-'));
 function saved(root, id, rows) {
@@ -12,6 +13,31 @@ function saved(root, id, rows) {
   writeFileSync(path.join(dir, 'transcript.jsonl'), rows.map(JSON.stringify).join('\n') + '\n');
   return dir;
 }
+
+test('sync repairs retained research history and reload preserves search counts, CLI totals and partial coverage', () => {
+  const root = temporary();
+  const research = { type: 'attempt', attemptId: 'r1', kind: 'research', round: -1, searches: 2, fresh: true,
+    seat: { vendor: 'agy', model: 'flash', id: 'research' },
+    usage: { input: 18000, cacheRead: 16000, output: 1000, modelSteps: 2, providerTotal: 19000, usageVersion: 3 } };
+  const partial = { ...research, attemptId: 'r2', errorKind: 'timeout', usage: { ...research.usage, input: 2000, tokenCoverage: { reported: 0, of: 1 } } };
+  const reply = { ...research, attemptId: 'r3', kind: 'reply', round: 0, seat: { vendor: 'acp', model: 'small' }, usage: { input: 100, output: 20, usageVersion: 3 } };
+  saved(root, 'review', [research, partial, reply]);
+  const prior = createUsageStore(root);
+  prior.record('review', [{ ...research, kind: 'reply', searches: undefined, round: 0 }]);
+  prior.save();
+  assert.ok(prior.baselines().agy.fresh);
+  createUsageStore(root).sync();
+  const store = createUsageStore(root), stats = store.baselines();
+  assert.equal(stats.agy.fresh, undefined);
+  assert.equal(stats.acp.fresh.input, 100);
+  assert.deepEqual(researchEstimate({ vendor: 'agy', model: 'flash', maxSearches: 2 }, stats),
+    { input: 34000, output: 1000, samples: 1, modelSteps: 2, cost: null });
+  assert.equal(researchEstimate({ vendor: 'agy', maxSearches: 1 }, stats).samples, 0);
+  assert.ok(researchEstimate({ vendor: 'agy', maxSearches: 4 }, stats).input > researchEstimate({ vendor: 'agy', maxSearches: 1 }, stats).input);
+  assert.equal(store.summary().providerTotal, 38000);
+  assert.deepEqual(store.summary().providerTotalCoverage, { reported: 1, of: 3 });
+  assert.deepEqual(store.summary().tokenCoverage, { reported: 2, of: 3 });
+});
 
 test('history summaries are cached, refreshed and asynchronously read without retaining replays', async () => {
   const root = temporary();

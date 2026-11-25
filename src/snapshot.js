@@ -2,7 +2,7 @@ import { rollup, hasUsableRound, DEFAULTS } from './engine.js';
 import { groupQuestions, stopExplanation, cancellationReason } from './review-view.js';
 import { optionLabel, verdictSections } from './contract.js';
 import { safeProgress } from './progress.js';
-import { researchSources } from './research.js';
+import { researchSources, checkedCounts } from './research.js';
 
 const RESEARCH_FAILURES = {
   timeout: 'Research did not finish before its time limit.',
@@ -29,14 +29,14 @@ function researchSnapshot(research) {
     try {
       const gatheredAt = new Date(research.gatheredAt).toISOString();
       if (gatheredAt !== research.gatheredAt || !integerWithin(research.searches, 1, 8)) throw new Error('invalid metadata');
-      return { status: 'done', gatheredAt, searches: research.searches,
+      return { status: 'done', gatheredAt, searches: research.searches, ...checkedCounts(research.verification),
         sources: researchSources(JSON.stringify({ sources: research.sources }), gatheredAt) };
     } catch { return { status: 'failed', errorKind: 'format', error: RESEARCH_FAILURES.format }; }
   }
   const errorKind = research.status === 'interrupted' ? 'interrupted'
     : Object.hasOwn(RESEARCH_FAILURES, research.errorKind) ? research.errorKind : 'other';
   return { status: research.status === 'interrupted' ? 'interrupted' : 'failed', errorKind,
-    error: RESEARCH_FAILURES[errorKind], progress: safeProgress(research.progress),
+    error: research.verification && errorKind === 'format' ? 'No cited page passed the source checks.' : RESEARCH_FAILURES[errorKind], progress: safeProgress(research.progress), ...checkedCounts(research.verification),
     ...(integerWithin(research.searches, 0, 9) ? { searches: research.searches } : {}) };
 }
 
@@ -95,6 +95,7 @@ export function reviewSnapshot(d) {
     verdict: verdict ? { status: verdict.skipped ? 'skipped' : verdict.failed ? 'failed' : 'ready',
       ...(sections ? { sections: Object.fromEntries(Object.entries(sections).map(([key, lines]) => [key, lines.filter((x) => x.trim()).join('\n')])) } : { reason: verdict.reason || verdict.errorKind || 'format' }) } : null,
     usage: { input: usage.input, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, output: usage.output,
+      ...(usage.providerTotal != null ? { providerTotal: usage.providerTotal, providerTotalCoverage: usage.providerTotalCoverage } : {}),
       cost: usage.cost, tokenCoverage: usage.tokenCoverage, costCoverage: usage.costCoverage },
   };
 }
