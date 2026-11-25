@@ -431,7 +431,7 @@ details.panel:not([open]) > .panel-title { border-bottom: 0; }
    ends at the panel's edge instead of in a blank column. */
 .rules { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-3) var(--space-4); border-top: var(--border-width) solid var(--color-border); }
 .rules .field { flex: 0 0 140px; }
-.rules .field:has(#memory) { flex: 1 1 260px; }
+.rules .field:has(#memory, #provider-history-mode) { flex: 1 1 260px; }
 .rules .field-check { flex: 0 0 auto; }
 .rules .field-check .check { min-height: 36px; }
 /* Unattended: an arming switch. The checkbox stays for the keyboard and screen readers; the

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { safeProgress, progressText } from '../src/progress.js';
+import { safeProgress, progressText, providerHistoryText } from '../src/progress.js';
 import { makeAdapter } from '../src/adapters/common.js';
 import { createDebate } from '../src/engine.js';
 
@@ -15,6 +15,14 @@ test('transport diagnostics admit only bounded numbers and fixed stages, never p
   assert.match(progressText({ elapsedMs: 100, reconnects: 1 }), /reconnected 1 time and started the answer again/);
   assert.deepEqual(safeProgress({ elapsedMs: -1, eventCount: Infinity, exitCode: '0', stage: 'PRIVATE-MARKER', outcome: 'PRIVATE-MARKER', reconnects: 101 }), {});
   assert.match(progressText({ elapsedMs: 100, stdoutBytes: 0, stderrBytes: 0 }), /No provider output arrived/);
+});
+
+test('provider history counts completed attempts once and ignores arbitrary provider strings', () => {
+  const attempt = providerHistory => ({ type: 'attempt', progress: { providerHistory } });
+  assert.deepEqual(safeProgress({ providerHistory: 'private text' }), {});
+  assert.equal(providerHistoryText([attempt('private text')]), '');
+  const rows = [attempt('ephemeral'), attempt('archived'), attempt('removed'), attempt('provider-managed'), attempt('unconfirmed'), { ...attempt('removed'), type: 'reply' }];
+  assert.equal(providerHistoryText(rows), 'Internal provider chats · 1 never saved to chat history · 1 archived · 1 removed from active history · 1 managed by the provider · 1 with cleanup unconfirmed');
 });
 
 test('CLI timeouts distinguish no output and reasoning stalls; complete Codex replies survive a stuck exit', async () => {

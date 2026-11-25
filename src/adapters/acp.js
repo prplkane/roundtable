@@ -10,7 +10,11 @@ import { agentLinkProfile } from '../seats.js';
 import { VERSION } from '../version.js';
 
 const LIMIT = 8 * 1024 * 1024;
+const SESSION_ACTION_MS = 1500;
+const HISTORY_KEY = 'agentlink.dev/session-history';
+const HISTORY_STRATEGIES = new Set(['ephemeral', 'archive-on-close', 'provider-managed']);
 const fault = (message, code = 'PROVIDER_PROTOCOL', kind = 'other') => Object.assign(new Error(message), { code, kind });
+const unsupportedHistory = (profile) => Object.assign(fault(`AgentLink profile ${profile} cannot confirm a non-saving session. Choose a compatible profile or change the provider chat history setting.`, 'ACP_UNSUPPORTED'), { status: 400 });
 const policy = () => Object.assign(fault('ACP agent requested or reported prohibited tool activity. This seat is stopped for the review.', 'TOOL_POLICY', 'policy'), { usedTools: true });
 const record = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 
@@ -61,11 +65,20 @@ export function promptUsage(value, cost, ms) {
   return { input: uncached, output, cacheRead, cacheWrite, thinking, cost, ms, usageVersion: 3 };
 }
 
-function connect(bin, profile, { cwd, env, signal, onUpdate }) {
+// Metadata may outlive the turn. A timeout never starts another model call.
+function boundedAction(start) {
+  return new Promise(resolve => {
+    const timer = setTimeout(() => resolve(false), SESSION_ACTION_MS);
+    start(ok => { clearTimeout(timer); resolve(ok); });
+  });
+}
+
+function connect(bin, profile, { cwd, env, signal, providerHistory, onUpdate }) {
   const child = spawn(bin.file, [...bin.prefix, 'acp', profile], {
     cwd, env, windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'],
   });
   let next = 0, pendingText = '', bytes = 0, failure, closed = false, closing = false, sessionId;
+  let capabilities = {}, strategy, history, openingId, finishOpening;
   const pending = new Map();
   const send = (message) => { if (!closed && child.stdin.writable) child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n'); };
   const cancel = () => { if (sessionId) send({ method: 'session/cancel', params: { sessionId } }); };
@@ -79,8 +92,11 @@ function connect(bin, profile, { cwd, env, signal, onUpdate }) {
   const aborted = () => fail(signal.reason || fault('ACP call cancelled.', 'KILLED', 'killed'));
   const exit = new Promise((resolve) => child.once('close', () => {
     closed = true;
+    finishOpening?.(false);
     if (pendingText.trim()) fail(fault('ACP stdout ended with an incomplete JSON-RPC frame.'));
     if (!closing) fail(fault('ACP process exited before the call completed. Run agentlink check for this profile.', 'CLI_EXIT'));
+    for (const p of pending.values()) if (p.optional) p.reject();
+    pending.clear();
     resolve();
   }));
   child.on('error', (e) => fail(fault(`Could not launch AgentLink (${e.code || 'spawn error'}).`, e.code || 'CLI_EXIT', 'missing')));
@@ -88,6 +104,7 @@ function connect(bin, profile, { cwd, env, signal, onUpdate }) {
   function receive(message) {
     if (!record(message) || message.jsonrpc !== '2.0') throw fault('Invalid ACP JSON-RPC envelope.');
     if (Object.hasOwn(message, 'method')) {
+      if (failure) return;
       if (typeof message.method !== 'string') throw fault('Invalid ACP method.');
       if (Object.hasOwn(message, 'id')) {
         if (message.method === 'session/request_permission') {
@@ -106,10 +123,23 @@ function connect(bin, profile, { cwd, env, signal, onUpdate }) {
       return;
     }
     if (!Object.hasOwn(message, 'id') || Object.hasOwn(message, 'result') === Object.hasOwn(message, 'error')) throw fault('Invalid ACP response.');
+    // A successful session/new owns this ID even when cancellation raced the response.
+    // Bind it before reading updates coalesced in the same stdout chunk.
+    if (openingId !== undefined && message.id === openingId) {
+      openingId = undefined;
+      if (typeof message.result?.sessionId === 'string' && message.result.sessionId) {
+        sessionId = message.result.sessionId;
+        const status = message.result._meta?.[HISTORY_KEY]?.status;
+        history = strategy ? (status === strategy ? status : 'unconfirmed') : 'provider-managed';
+      }
+      finishOpening?.(true);
+    }
     const p = pending.get(message.id);
+    if (failure && !p?.optional) return;
     if (!p) throw fault('ACP response has an unknown request ID.');
     pending.delete(message.id);
     if (message.error) {
+      if (p.method === 'session/new' && ['SESSION_HISTORY_UNSUPPORTED', 'SESSION_HISTORY_UNCONFIRMED'].includes(message.error.data?.code)) return p.reject(unsupportedHistory(profile));
       if (p.method === 'session/new' && ['OPTION_UNAVAILABLE', 'OPTION_UNCONFIRMED'].includes(message.error.data?.code)) {
         p.reject(fault(`AgentLink could not apply a saved default for ${profile}. Inspect choices with agentlink models ${profile} and update them with agentlink defaults ${profile}.`, 'ACP_UNSUPPORTED'));
         return;
@@ -119,49 +149,78 @@ function connect(bin, profile, { cwd, env, signal, onUpdate }) {
         : `ACP request failed: ${String(message.error.message || 'unknown error').slice(0, 500)}`, 'CLI_FAILURE', auth ? 'auth' : 'other'));
     } else if (!record(message.result)) p.reject(fault('ACP response result must be an object.'));
     else {
-      // Bind at the receive boundary: the next frame can be in this same chunk,
-      // before the awaiting session/new caller gets a chance to resume.
-      if (p.method === 'session/new' && typeof message.result.sessionId === 'string') sessionId = message.result.sessionId;
+      if (p.method === 'initialize') {
+        const agent = message.result.agentCapabilities;
+        capabilities = agent?.sessionCapabilities ?? {};
+        const extension = agent?._meta?.[HISTORY_KEY];
+        if (providerHistory !== 'provider-default' && extension?.version === 1 && HISTORY_STRATEGIES.has(extension.strategy)) strategy = extension.strategy;
+      }
       p.resolve(message.result);
     }
   }
   const accountBytes = (d) => {
     bytes += Buffer.byteLength(d);
     if (bytes > LIMIT) { fail(fault('ACP output exceeded the local size limit.', 'OUTPUT_LIMIT')); return false; }
-    return !failure;
+    return true;
   };
   child.stderr.on('data', accountBytes); // diagnostics are bounded, never copied into review records
   child.stdout.setEncoding('utf8').on('data', (d) => {
     if (!accountBytes(d)) return;
     pendingText += d;
-    try {
-      let i;
-      while ((i = pendingText.indexOf('\n')) >= 0) {
-        const line = pendingText.slice(0, i); pendingText = pendingText.slice(i + 1);
-        if (line.trim()) receive(JSON.parse(line));
-        if (failure) break;
-      }
-    } catch (e) { fail(e instanceof SyntaxError ? fault('ACP stdout contained invalid JSON.') : e); }
+    let i;
+    while ((i = pendingText.indexOf('\n')) >= 0) {
+      const line = pendingText.slice(0, i); pendingText = pendingText.slice(i + 1);
+      if (!line.trim()) continue;
+      try { receive(JSON.parse(line)); }
+      catch (e) { fail(e instanceof SyntaxError ? fault('ACP stdout contained invalid JSON.') : e); }
+    }
   });
   signal.addEventListener('abort', aborted, { once: true });
   if (signal.aborted) aborted();
+  // These metadata requests only address the id returned to this connection by session/new.
+  // A late acknowledgement still has a matching id. A slow or unavailable history operation
+  // must not discard a paid reply or trigger a second model call.
+  function closeSession() {
+    if (!sessionId || closed || !child.stdin.writable) return Promise.resolve(false);
+    const id = ++next;
+    return boundedAction(done => {
+      pending.set(id, { method: 'session/close', optional: true, resolve: done, reject: () => done(false) });
+      send({ id, method: 'session/close', params: { sessionId } });
+    });
+  }
   return {
-    setSession(id) { sessionId = id; },
+    async newSession() {
+      if (providerHistory === 'require-ephemeral' && strategy !== 'ephemeral') throw unsupportedHistory(profile);
+      const session = await this.request('session/new', { cwd, mcpServers: [],
+        ...(strategy ? { _meta: { [HISTORY_KEY]: { mode: providerHistory } } } : {}) });
+      if (typeof session.sessionId !== 'string' || !session.sessionId) throw fault('ACP agent did not return a session ID.');
+      if (providerHistory === 'require-ephemeral' && history !== 'ephemeral') throw unsupportedHistory(profile);
+      return session;
+    },
     check() { if (failure) throw failure; },
     request(method, params) {
       if (failure) return Promise.reject(failure);
       const id = ++next;
+      if (method === 'session/new') openingId = id;
       return new Promise((resolve, reject) => { pending.set(id, { resolve, reject, method }); send({ id, method, params }); });
     },
     async close() {
+      if (closing) { await exit; return history; }
       closing = true;
       signal.removeEventListener('abort', aborted);
+      if (openingId !== undefined && !closed) await boundedAction(done => { finishOpening = done; });
+      if (openingId !== undefined) history = 'unconfirmed';
+      if (sessionId) {
+        const result = record(capabilities.close) || strategy === 'archive-on-close' ? await closeSession() : null;
+        if (history === 'archive-on-close') history = result?._meta?.[HISTORY_KEY]?.status === 'archived' ? 'archived' : 'unconfirmed';
+      }
       if (!closed) {
         child.stdin.end();
         // Leave time for AgentLink's own bridge cleanup and lease release.
         const timer = setTimeout(() => killTree(child), 2000);
         try { await exit; } finally { clearTimeout(timer); }
       }
+      return history;
     },
   };
 }
@@ -189,6 +248,7 @@ async function selectOption(connection, session, value, { category, ids, what })
 
 async function withProfile(prompt, previousSession, opts, { bin, env: suppliedEnv }, inspect) {
   const profile = agentLinkProfile(opts.account);
+  const providerHistory = opts.providerHistory ?? 'prefer-ephemeral';
   if (!opts.allowLimitedIsolation) throw fault('ACP profiles control their own permissions and customization. Accept limited isolation before using this profile.', 'ISOLATION_REQUIRED', 'policy');
   if (previousSession || opts.keepSession) throw fault('ACP seats currently require stateless memory; no previous session was loaded.', 'ACP_STATELESS_REQUIRED');
   if (opts.research) throw fault('ACP seats do not support Roundtable web research.', 'ACP_UNSUPPORTED');
@@ -202,22 +262,21 @@ async function withProfile(prompt, previousSession, opts, { bin, env: suppliedEn
   const timer = setTimeout(() => timeout.abort(fault('ACP call timed out.', 'TIMEOUT', 'timeout')), opts.timeoutMs ?? 300_000);
   const signal = AbortSignal.any([call.signal, timeout.signal, ...(opts.signal ? [opts.signal] : [])]);
   const started = Date.now();
-  let text = '', cost = null, activePrompt = false;
+  let text = '', cost = null, endUsage, activePrompt = false;
   let connection;
   try {
     if (signal.aborted) throw signal.reason;
-    connection = connect(launch, profile, { cwd, env, signal, onUpdate: (update) => {
+    connection = connect(launch, profile, { cwd, env, signal, providerHistory, onUpdate: (update) => {
       if (!activePrompt) return;
       if (update.sessionUpdate === 'agent_message_chunk') {
         if (update.content?.type !== 'text' || typeof update.content.text !== 'string') throw fault('ACP review replies must contain text.');
         text += update.content.text;
       } else if (update.sessionUpdate === 'usage_update' && update.cost?.currency === 'USD' && Number.isFinite(update.cost.amount) && update.cost.amount >= 0) cost = update.cost.amount;
     } });
-    const init = await connection.request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'roundtable', version: VERSION } });
+    const init = await connection.request('initialize', { protocolVersion: 1,
+      clientCapabilities: providerHistory === 'provider-default' ? {} : { _meta: { [HISTORY_KEY]: { version: 1 } } }, clientInfo: { name: 'roundtable', version: VERSION } });
     if (init.protocolVersion !== 1) throw fault('This Roundtable client requires ACP v1; the agent negotiated an incompatible protocol.', 'ACP_UNSUPPORTED');
-    const session = await connection.request('session/new', { cwd, mcpServers: [] });
-    if (typeof session.sessionId !== 'string' || !session.sessionId) throw fault('ACP agent did not return a session ID.');
-    connection.setSession(session.sessionId);
+    const session = await connection.newSession();
     const hasModel = advertised(session, MODEL).some((o) => o.value === opts.model);
     if (opts.model && (!inspect || hasModel)) await selectOption(connection, session, opts.model, MODEL);
     if (inspect) {
@@ -235,15 +294,19 @@ async function withProfile(prompt, previousSession, opts, { bin, env: suppliedEn
     }
     activePrompt = true;
     const result = await connection.request('session/prompt', { sessionId: session.sessionId, prompt: [{ type: 'text', text: prompt }] });
+    endUsage = result.usage;
     connection.check();
     if (result.stopReason !== 'end_turn') throw fault(`ACP turn did not complete (${String(result.stopReason || 'missing stop reason')}).`, result.stopReason === 'cancelled' ? 'KILLED' : 'CLI_FAILURE', result.stopReason === 'cancelled' ? 'killed' : 'other');
     if (!text.trim()) throw fault('ACP agent completed without a text answer.');
-    await connection.close();
+    activePrompt = false;
+    const historyOutcome = await connection.close();
     connection.check();
     const ms = Date.now() - started;
-    return { text, usage: promptUsage(result.usage, cost, ms), cost, ms, sessionId: session.sessionId, usedTools: false };
+    return { text, usage: promptUsage(endUsage, cost, ms), cost, ms, sessionId: session.sessionId, usedTools: false, progress: { providerHistory: historyOutcome } };
   } catch (e) {
-    throw Object.assign(e, { usage: null, cost, ms: Date.now() - started });
+    const providerHistory = await connection?.close();
+    const ms = Date.now() - started;
+    throw Object.assign(e, { usage: promptUsage(endUsage, cost, ms), cost, ms, ...(providerHistory ? { progress: { providerHistory } } : {}) });
   } finally {
     clearTimeout(timer);
     try { await connection?.close(); } finally { call.release(); }
@@ -255,12 +318,12 @@ export function makeAcpAdapter(launch = {}) {
 }
 
 // Explicit local setup action. The profile receives an empty workspace and no prompt.
-export async function inspectProfileSession(account, model = '', launch = {}) {
+export async function inspectProfileSession(account, model = '', launch = {}, providerHistory = 'prefer-ephemeral') {
   agentLinkProfile(account);
   if (typeof model !== 'string' || model.length > 200) throw new Error('Model ID must be at most 200 characters.');
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'roundtable-profile-'));
   try {
-    return await withProfile(null, null, { account, model, cwd, timeoutMs: 20_000, allowLimitedIsolation: true }, launch, true);
+    return await withProfile(null, null, { account, model, cwd, providerHistory, timeoutMs: 20_000, allowLimitedIsolation: true }, launch, true);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

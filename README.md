@@ -32,7 +32,7 @@ For live reviews, sign in to the provider CLIs you use and create their AgentLin
 profiles once. The browser and the Codex workflow use the same profiles.
 
 ```sh
-npm install -g @prplkane/roundtable @prplkane/agentlink@0.3.0-beta.3
+npm install -g @prplkane/roundtable @prplkane/agentlink@beta
 agentlink add codex --provider codex
 agentlink add claude --provider claude
 agentlink add agy --provider antigravity
@@ -54,12 +54,15 @@ and a first live run, see the [test-drive guide](docs/workflow.md#a-first-live-t
 Codex coordinates the review through Roundtable's Model Context Protocol (MCP) tools.
 Each seat runs through a named AgentLink profile using the Agent Client Protocol (ACP).
 You can use the same profile for several seats or choose a different one for each.
+Roundtable requests a non-saving session by default. AgentLink beta.4 and earlier leave
+history to the provider. See the [provider chat history settings](docs/workflow.md#provider-chat-history)
+for supported bridges and strict mode.
 
 Install both tools. This example uses Codex and Claude seats. Sign in to those CLIs and
 configure trusted review profiles with their tools disabled before sending them a decision.
 
 ```sh
-npm install -g @prplkane/roundtable @prplkane/agentlink@0.3.0-beta.3
+npm install -g @prplkane/roundtable @prplkane/agentlink@beta
 agentlink add risk-review --provider codex
 agentlink add cost-review --provider claude
 agentlink check risk-review

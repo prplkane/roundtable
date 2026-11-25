@@ -113,7 +113,7 @@ export function normaliseUsage(cfg, u, rawCost = null) {
 // keepSession: the call's session will be resumed (resume memory), so the CLI must save it. Any
 // other fresh call adds the CLI's `ephemeral` argv when it has one; a resumed call never does,
 // since its session goes on.
-export function buildArgs(cfg, { prompt, sessionId = null, model = null, effort = null, instructionsFile = null, timeoutMs = 300_000, keepSession = false }) {
+export function buildArgs(cfg, { prompt, sessionId = null, model = null, effort = null, instructionsFile = null, timeoutMs = 300_000, keepSession = false, providerHistory = 'prefer-ephemeral' }) {
   const useStdin = cfg.promptVia === 'stdin' ||
     (cfg.promptVia === 'argv-or-stdin' && prompt.length > ARGV_LIMIT);
   const streamMode = useStdin && !!cfg.stdinArgs;
@@ -121,7 +121,9 @@ export function buildArgs(cfg, { prompt, sessionId = null, model = null, effort 
   const args = sessionId ? cfg.resume(sessionId, base) : [...base];
   const extra = [];
   if (cfg.stream) extra.push(...cfg.stream(timeoutMs, effort)); // the stream's idle limit fits inside the call limit
-  if (!keepSession && !sessionId && cfg.ephemeral) extra.push(...cfg.ephemeral);
+  const canRunEphemeral = !keepSession && !sessionId && cfg.ephemeral;
+  if (providerHistory === 'require-ephemeral' && !canRunEphemeral) throw new Error(`${cfg.label} cannot confirm a non-saving session.`);
+  if (providerHistory !== 'provider-default' && canRunEphemeral) extra.push(...cfg.ephemeral);
   if (model && cfg.model) extra.push(...cfg.model(model));
   if (instructionsFile) extra.push('-c', `model_instructions_file=${JSON.stringify(instructionsFile)}`);
   // Skip the effort flag when the model id already names the level (agy), so nothing is said twice.
@@ -134,6 +136,17 @@ export function buildArgs(cfg, { prompt, sessionId = null, model = null, effort 
   if (useStdin) stdin = cfg.stdinWrap ? cfg.stdinWrap(prompt) : prompt;
   else args.push(cfg.argvFlag + prompt);
   return { args, stdin, streamMode };
+}
+
+// Strict reviews also check the installed CLI. Reading help never opens a session.
+export async function checkEphemeralCli(cfg, bin) {
+  let help;
+  try {
+    const command = bin ?? resolveBinary(cfg.binary, cfg.npmBin);
+    help = await runProcess(command, cfg.ephemeralHelp, { env: cleanEnv(), timeoutMs: 5000, maxOutputBytes: 384 * 1024 });
+  } catch { /* A missing or unresponsive CLI cannot confirm support. */ }
+  const words = help?.code === 0 ? (help.stdout + '\n' + help.stderr).split(/[\s,=]+/) : [];
+  if (!cfg.ephemeral.every(flag => words.includes(flag))) throw new Error(`${cfg.label} could not confirm ${cfg.ephemeral.join(' ')} in its CLI help. Check the installation or choose another provider.`);
 }
 
 // Build a run(prompt, sessionId, opts) for one config row. All three adapters are this
@@ -173,10 +186,10 @@ export function makeAdapter(name, overrides = {}) {
     const guard = searching ? searching.foreignTool : cfg.usedTools; // search allowed, every other tool still stops the call
     if (cfg.limitedIsolation && !opts.allowLimitedIsolation) throw Object.assign(new Error('Explicit consent to limited isolation is required.'), { code: 'ISOLATION_REQUIRED' });
     if (cfg.terms && opts.acknowledgeTermsRisk !== true) throw Object.assign(new Error(`The person has not acknowledged ${cfg.label}'s terms notice.`), { code: 'TERMS_ACK_REQUIRED' });
-    bin ??= cfg.bin || resolveBinary(cfg.binary, cfg.npmBin); // cfg.bin: a test's fake CLI
     // One time limit for the process and for the argv derived from it (cfg.stream).
     const timeoutMs = research ? Math.min(research.timeoutMs, opts.timeoutMs ?? research.timeoutMs) : opts.timeoutMs ?? 300_000;
-    const built = buildArgs(cfg, { prompt, sessionId, model: opts.model, effort: opts.effort, instructionsFile, timeoutMs, keepSession: opts.keepSession === true });
+    const built = buildArgs(cfg, { prompt, sessionId, model: opts.model, effort: opts.effort, instructionsFile, timeoutMs, keepSession: opts.keepSession === true, providerHistory: opts.providerHistory });
+    bin ??= cfg.bin || resolveBinary(cfg.binary, cfg.npmBin); // cfg.bin: a test's fake CLI
     const { stdin, streamMode } = built;
     const args = searching ? searching.args(built.args) : built.args;
 
@@ -316,6 +329,7 @@ export function makeAdapter(name, overrides = {}) {
     // An error result is not a reply; what the call cost still counts.
     if (picked.isError) throw Object.assign(new Error(`${cfg.label}: ${picked.text.trim().slice(0, 300)}`), { raw, ...accounting, sessionId: picked.sessionId });
     const quota = cfg.normaliseQuota && picked.quota ? cfg.normaliseQuota(picked.quota) : null;
+    progress.providerHistory = opts.providerHistory !== 'provider-default' && !sessionId && !opts.keepSession && cfg.ephemeral ? 'ephemeral' : 'provider-managed';
     return { text: picked.text.trim(), ...accounting, sessionId: picked.sessionId, quota, usedTools, raw };
   }
 }

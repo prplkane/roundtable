@@ -69,6 +69,11 @@ export function validateDebateRequest(body, { adapters }) {
   if (o.critiqueRounds != null) options_.critiqueRounds = int(o.critiqueRounds, 'critiqueRounds', LIMITS.critiqueRounds);
   for (const k of ['autoContinueMs', 'questionWaitMs', 'wallClockMs', 'callTimeoutMs']) if (o[k] != null) options_[k] = int(o[k], k, LIMITS[k]);
   if (o.memory != null) { if (!['stateless', 'resume'].includes(o.memory)) fail('memory', 'stateless or resume'); options_.memory = o.memory; }
+  if (o.providerHistory != null) {
+    if (!['prefer-ephemeral', 'require-ephemeral', 'provider-default'].includes(o.providerHistory)) fail('providerHistory', 'prefer-ephemeral, require-ephemeral or provider-default');
+    options_.providerHistory = o.providerHistory;
+  }
+  if (options_.providerHistory === 'require-ephemeral' && options_.memory === 'resume') fail('memory', 'non-saving sessions require stateless memory');
   // an endpoint seat has no thread at the vendor to continue, so `resume` prompts would reach it
   // with no context: refuse the table rather than run it on half-prompts
   if (options_.memory === 'resume' && [...body.seats, body.chairman].some((s) => s && adapters[s.vendor]?.kind === 'api')) fail('memory', 'resume needs a session to continue, and an API endpoint seat has none; use stateless');

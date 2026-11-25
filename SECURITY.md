@@ -23,8 +23,14 @@ Demo mode uses scripted replies.
   temporary session in an empty directory, refuses client operations and sends no prompt.
   Roundtable checks explicit review pins using its own ACP v1 session before the review.
   ACP output, including stderr, is bounded to 8 MiB per call. Roundtable sends
-  `session/cancel` on interruption and closes the connection, with process-tree
-  termination after a bounded grace period. Already-orphaned Windows descendants
+  `session/cancel` on interruption. Cleanup uses only the ID returned by `session/new` on
+  that connection. Roundtable negotiates session history with AgentLink and sends a standard
+  `session/close` for its own session where available. With `require-ephemeral` it checks
+  every selected provider before dispatch and requires confirmation on each ACP session before
+  sending review text. With the default preference, providers can archive the chat or retain
+  it under their own policy. Cleanup has a deadline and
+  its outcome is recorded separately from the model reply. The process tree is terminated
+  after a bounded grace period. Already-orphaned Windows descendants
   are not guaranteed to be contained. Tokens are unknown unless valid optional
   end-turn counters are reported; existing seat/vendor budget rules still apply.
 
@@ -257,13 +263,11 @@ Demo mode uses scripted replies.
   spending joins the review's vendor budget and is shown separately from discussion seats.
   Live research checks up to eight provider citations and, if needed, explicit document URLs supplied by the user. The local server opens public HTTPS pages with no credentials, cookies, or referrer. Each connection uses a checked public DNS address. Redirect destinations must also pass address and scope checks. Reads have byte, redirect and time limits. Only matching page text and the resolved title and URL reach the panel. These checks do not establish the truth of a claim. An empty result ends the review. Existing records retain their original provenance.
   Every seat and the chairman receives that same bundle. Source text cannot authorize tools
-  or human decisions. Failed or interrupted research stops before discussion and is never
-  automatically rerun, with one exception: a Codex searcher call that makes no progress for 40
-  seconds is stopped and started once more within the same time limit, and both attempts are
-  recorded. That retry is a fresh call with its own search-operation limit, so one research
-  step can run up to twice the configured count. Completed evidence is reused without
-  fetching it again. Ordinary
-  discussion and verdict calls always retain the no-tools policy.
+  or human decisions. Failed or interrupted research stops before discussion. A stalled
+  Codex search can retry once with the remaining time and reported search allowance.
+  Roundtable skips that retry if the count is unknown or the allowance is exhausted.
+  The ledger records each attempt separately. Completed evidence is reused without
+  fetching it again. Ordinary discussion and verdict calls retain the no-tools policy.
 
 ## The local HTTP boundary
 

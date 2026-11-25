@@ -107,6 +107,7 @@ export function pickUsage(u) {
 }
 
 export async function run(prompt, sessionId = null, opts = {}) {
+  if (opts.providerHistory === 'require-ephemeral') throw new Error('This API endpoint cannot confirm a non-saving session.');
   const t0 = Date.now(), timeoutMs = opts.timeoutMs ?? 300_000;
   let firstOutputMs, lastOutputAt = t0, stdoutBytes = 0, stage = 'waiting';
   const progress = (outcome) => safeProgress({ elapsedMs: Date.now() - t0, timeoutMs, firstOutputMs,
@@ -174,5 +175,5 @@ export async function run(prompt, sessionId = null, opts = {}) {
   if (usedTools) throw fail('reported prohibited tool activity. This seat is stopped for the review.', { code: 'TOOL_POLICY', kind: 'policy', usedTools: true, usage });
   if (!reply && !usedTools) throw fail(`empty reply (finish_reason ${data?.choices?.[0]?.finish_reason || 'unknown'}).`, { raw, usage });
   stage = 'completed';
-  return { text: reply, usage, sessionId: null, quota: null, usedTools, raw, progress: progress('exited') };
+  return { text: reply, usage, sessionId: null, quota: null, usedTools, raw, progress: { ...progress('exited'), providerHistory: 'provider-managed' } };
 }

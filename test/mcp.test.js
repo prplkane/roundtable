@@ -1,7 +1,7 @@
 // Real stdio, installed-file layout and loopback server; every seat is scripted.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, cp, readdir, rm, access, rename, realpath } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, cp, readdir, rm, access, rename, realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +14,30 @@ import { LIMITS } from '../src/validate.js';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const MCP = path.join(ROOT, 'scripts', 'mcp.mjs');
+
+test('the agent CLI rejects a mismatched board before posting a review, including with a supplied token', async (t) => {
+  const token = 'c'.repeat(32);
+  let boardVersion;
+  const requests = [];
+  const server = http.createServer((req, res) => {
+    requests.push([req.method, req.url]);
+    if (boardVersion) res.setHeader('x-roundtable-version', boardVersion);
+    res.end(`<meta name="roundtable-token" content="${token}">`);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const cli = path.join(ROOT, 'scripts', 'agent.mjs');
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'rt-agent-version-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const input = path.join(dir, 'review.json');
+  await writeFile(input, JSON.stringify({ options: { providerHistory: 'require-ephemeral' } }));
+  for (const [command, version, supplied] of [['check', undefined, ''], ['start', '0.0.0', token]]) {
+    boardVersion = version;
+    await assert.rejects(exec(process.execPath, [cli, command, '--port', String(server.address().port), '--input', input],
+      { env: { ...process.env, ROUNDTABLE_TOKEN: supplied } }), e => /does not match Roundtable/.test(JSON.parse(e.stdout).error));
+  }
+  assert.deepEqual(requests, [['GET', '/'], ['GET', '/']]);
+});
 
 test('MCP retries slow and reset health reads, reads the catalogue once, and refuses mismatched boards', { timeout: 15000 }, async (t) => {
   let mode = 'live', reads = 0, catalogueReads = 0, version = VERSION, legacy = false;

@@ -12,6 +12,7 @@ import { ADAPTERS } from '../src/adapters/config.js';
 import { validateDebateRequest } from '../src/validate.js';
 import { createDebate } from '../src/engine.js';
 
+const historyKey = 'agentlink.dev/session-history';
 const fixture = fileURLToPath(new URL('./fixtures/fake-acp.mjs', import.meta.url));
 
 test('AgentLink resolves and launches the public scoped npm package from PATH', (t) => {
@@ -49,9 +50,86 @@ test('ACP streams an answer, sends only standard methods and uses a fresh isolat
   assert.deepEqual([reply.usage.input, reply.usage.cacheRead, reply.usage.output, reply.cost], [980, 20, 100, 0.01]);
   const events = c.events(), rpc = events.filter((e) => e.rpc?.method).map((e) => e.rpc);
   assert.deepEqual(rpc.map((m) => m.method), ['initialize', 'session/new', 'session/set_config_option', 'session/prompt']);
-  assert.deepEqual(rpc[0].params.clientCapabilities, {});
+  assert.deepEqual(rpc[0].params.clientCapabilities, { _meta: { [historyKey]: { version: 1 } } });
+  assert.equal(reply.progress.providerHistory, 'provider-managed');
   assert.deepEqual(rpc[1].params, { cwd: c.root, mcpServers: [] });
   assert.ok(events.some((e) => e.exit));
+});
+
+test('the gateway owns provider persistence and closes only the session used for the call', async (t) => {
+  for (const [mode, status] of [['codex-history', 'archived'], ['claude-history', 'ephemeral'], ['close-only', 'provider-managed']]) {
+    const c = setup(t, mode);
+    const result = await c.run('Synthetic private decision', null, c.opts);
+    const wire = c.events().filter(e => e.rpc?.method).map(e => e.rpc);
+    assert.deepEqual(wire.map(m => m.method), ['initialize', 'session/new', 'session/prompt', 'session/close']);
+    assert.deepEqual(wire[1].params._meta, { [historyKey]: { mode: 'prefer-ephemeral' } });
+    assert.deepEqual(wire.at(-1).params, { sessionId: result.sessionId });
+    assert.equal(result.progress.providerHistory, status);
+  }
+});
+
+test('requiring a non-saving session checks the advertised strategy and the actual new session', async t => {
+  for (const mode of ['legacy-history', 'wrong-version', 'close-only', 'codex-history', 'missing-history-ack', 'refuse-new', 'claude-history']) {
+    const c = setup(t, mode);
+    const run = c.run('sensitive review', null, { ...c.opts, providerHistory: 'require-ephemeral' });
+    if (mode === 'claude-history') assert.equal((await run).progress.providerHistory, 'ephemeral');
+    else await assert.rejects(run, { code: 'ACP_UNSUPPORTED', message: /cannot confirm a non-saving session/ });
+    const rpc = c.events().filter(e => e.rpc?.method).map(e => e.rpc);
+    const canOpen = ['missing-history-ack', 'refuse-new', 'claude-history'].includes(mode);
+    assert.equal(rpc.some(m => m.method === 'session/new'), canOpen);
+    if (canOpen) assert.equal(rpc.find(m => m.method === 'session/new').params._meta[historyKey].mode, 'require-ephemeral');
+    assert.equal(rpc.some(m => m.method === 'session/prompt'), mode === 'claude-history');
+    if (mode === 'missing-history-ack') assert.equal(rpc.at(-1).method, 'session/close');
+  }
+});
+
+test('provider-default omits the negotiation and preserves ordinary provider history', async t => {
+  const c = setup(t, 'codex-history');
+  const reply = await c.run('review', null, { ...c.opts, providerHistory: 'provider-default' });
+  const rpc = c.events().filter(e => e.rpc?.method).map(e => e.rpc);
+  assert.deepEqual(rpc[0].params.clientCapabilities, {});
+  assert.equal(rpc[1].params._meta, undefined);
+  assert.deepEqual(rpc.map(m => m.method), ['initialize', 'session/new', 'session/prompt', 'session/close']);
+  assert.equal(reply.progress.providerHistory, 'provider-managed');
+});
+
+test('a slow or refused history operation preserves paid output and usage with one prompt', async (t) => {
+  for (const mode of ['refuse-history', 'slow-history']) {
+    const c = setup(t, mode);
+    const result = await c.run('Synthetic review', null, c.opts);
+    assert.match(result.text, /^STANCE:/);
+    assert.equal(result.usage.input, 980);
+    assert.equal(result.progress.providerHistory, 'unconfirmed');
+    assert.equal(c.events().filter(e => e.rpc?.method === 'session/prompt').length, 1);
+  }
+});
+
+test('policy faults survive teardown, and a failed open cannot target a previous chat', async (t) => {
+  for (const mode of ['permission', 'late-tool', 'auth']) {
+    const c = setup(t, mode);
+    await assert.rejects(c.run('Synthetic review', null, c.opts), e => {
+      assert.equal(e.code, mode === 'auth' ? 'CLI_FAILURE' : 'TOOL_POLICY');
+      assert.equal(e.usage?.input, mode === 'late-tool' ? 980 : undefined);
+      return true;
+    });
+    const events = c.events();
+    const closed = events.filter(e => e.rpc?.method === 'session/close');
+    assert.deepEqual(closed.map(e => e.rpc.params), mode === 'auth' ? [] : [{ sessionId: 'fixture-' + events[0].pid }]);
+    assert.ok(!events.some(e => e.rpc?.method === 'session/list'));
+  }
+});
+
+test('cancelling while the owned session is opening cleans its late ID without sending a prompt', async (t) => {
+  const c = setup(t, 'late-new');
+  const controller = new AbortController();
+  const stopped = assert.rejects(c.run('q', null, { ...c.opts, signal: controller.signal }), e => e.progress.providerHistory === 'archived');
+  for (let waits = 0; waits < 200; waits++) {
+    try { if (c.events().some(e => e.rpc?.method === 'session/new')) break; } catch {}
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  controller.abort(new Error('Synthetic stop'));
+  await stopped;
+  assert.deepEqual(c.events().filter(e => e.rpc?.method).map(e => e.rpc.method), ['initialize', 'session/new', 'session/close']);
 });
 
 test('ACP selects an advertised reasoning level and refuses one the agent does not offer', async (t) => {
@@ -166,7 +244,7 @@ test('ACP profile selection survives seat/chair normalization and refuses resume
 });
 
 test('a complete offline review reaches chairman synthesis through ACP', async (t) => {
-  const c = setup(t), records = [];
+  const c = setup(t, 'codex-history'), records = [];
   const seats = normaliseSeats([{ vendor: 'acp', account: 'synthetic', lens: 'risk' }, { vendor: 'acp', account: 'synthetic', lens: 'cost' }], { vendors: ADAPTERS });
   const debate = createDebate({ fieldNotes: { decision: 'Synthetic review', options: ['Trial', 'Wait'] }, seats,
     runner: (vendor, prompt, sid, opts) => c.run(prompt, sid, { ...c.opts, ...opts, account: opts.seat.account, cwd: path.join(c.root, opts.seat.id) }),
@@ -177,7 +255,13 @@ test('a complete offline review reaches chairman synthesis through ACP', async (
   assert.equal(result.status, 'done'); assert.equal(result.verdict.failed, false); assert.match(result.verdict.text, /^RECOMMENDATION: opt-1/);
   assert.equal(result.rounds.length, 2);
   assert.equal(result.verdict.seat.account, 'synthetic', 'the default chairman retains its ACP profile');
-  assert.equal(records.filter((r) => r.type === 'attempt').length, 5);
+  const attempts = records.filter(r => r.type === 'attempt');
+  assert.equal(attempts.length, 5);
+  assert.ok(attempts.every(r => r.progress.providerHistory === 'archived'));
+  const closed = c.events().filter(e => e.rpc?.method === 'session/close');
+  assert.equal(closed.length, 5);
+  assert.equal(new Set(closed.map(e => e.rpc.params.sessionId)).size, 5);
+  assert.ok(closed.every(e => e.rpc.params.sessionId === 'fixture-' + e.pid));
   assert.equal(new Set(c.events().filter((e) => e.start).map((e) => e.pid)).size, 5);
 });
 

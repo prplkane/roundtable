@@ -149,6 +149,7 @@
           <div class="field"><label class="label help-label" data-help="auto" tabindex="0" for="auto" aria-describedby="help-auto">Review window (s)</label><input id="auto" type="number" min="0.1" step="0.1" max="600" value="15" aria-describedby="help-auto"></div>
           <div class="field"><label class="label help-label" data-help="questionWait" tabindex="0" for="question-wait" aria-describedby="help-questionWait">Answer window (s)</label><input id="question-wait" type="number" min="0.1" step="0.1" max="600" value="120" aria-describedby="help-questionWait"></div>
           <div class="field"><label class="label help-label" data-help="wall" tabindex="0" for="wall" aria-describedby="help-wall">Wall clock (min)</label><input id="wall" type="number" min="1" max="180" value="30" aria-describedby="help-wall"></div>
+          <div class="field"><label class="label help-label" data-help="providerHistory" tabindex="0" for="provider-history-mode" aria-describedby="help-providerHistory">Provider chat history</label><select id="provider-history-mode" aria-describedby="help-providerHistory"><option value="prefer-ephemeral">Keep out of history when possible</option><option value="require-ephemeral">Require a non-saving session</option><option value="provider-default">Use provider default</option></select></div>
           <div class="field"><label class="label help-label" data-help="memory" tabindex="0" for="memory" aria-describedby="help-memory">Memory</label><select id="memory" aria-describedby="help-memory"><option value="stateless">stateless: fresh call per round</option><option value="resume">resume: re-send the thread</option></select></div>
           <div class="field field-check"><label class="label help-label" data-help="unattended" tabindex="0" for="unattended" aria-describedby="help-unattended">Unattended</label><label class="check"><input id="unattended" type="checkbox" aria-describedby="help-unattended"><span class="switch" aria-hidden="true"></span><span class="switch-text" data-off="off" data-on="armed"></span></label></div>
         </div>
@@ -181,6 +182,7 @@
       </div>
       <div id="usage-details" class="panel usage-details" hidden>
         <table id="usage"><thead><tr><th class="label">Pool and seat</th><th class="label num" title="Fresh input tokens">Input</th><th class="label num" title="Input tokens read from or written to the provider's cache">Cached</th><th class="label num">Output</th><th class="label num" title="Separate total reported by the provider when available. A + indicates incomplete coverage.">CLI total</th><th class="label num" title="A + marks a sum where some calls reported no cost">Cost</th><th class="label num">Time</th><th class="label num" title="Input tokens, cache included, that this seat sent in its latest round">Last round</th></tr></thead><tbody></tbody></table>
+        <p id="provider-history" class="hint" hidden></p>
       </div>
       <header class="review-head" aria-label="Review">
         <h2 id="board-title" class="review-question"></h2>
